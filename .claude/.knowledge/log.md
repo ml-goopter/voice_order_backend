@@ -7,6 +7,47 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Ordering: fix cross-turn clarification leak + proposal-emit misclassification
+- **What:** Two review fixes. (1) The `normalize` node now resets the one-shot
+  `clarification_answer` channel to `undefined`; because the cart-keyed checkpointer
+  thread persists across turns, a prior turn's answer was leaking into the next turn's
+  parse prompt. `normalize` runs only on a fresh `start()` (a resume re-enters at
+  `clarify`), so a within-turn answer still survives to `parse`, while durable cart
+  context still persists. (2) `order-understanding-service.ts` now emits the proposal
+  OUTSIDE the parse `try/catch` (extracted `runTurn()`): a throwing
+  `order.operations_proposed` subscriber was being caught and mis-reported as
+  `order_parse_failed`, double-emitting a proposal AND `voice.session_failed`.
+- **Why:** Correctness bugs found in code review of the LangGraph port.
+- **Where:** `src/ordering/graph/build-graph.ts`, `src/ordering/order-understanding-service.ts`,
+  `src/ordering/order-understanding-service.test.ts` (2 regression tests).
+- **Notes:** Confirmed cross-turn persistence is intended (context follows the cart), so
+  the fix clears only the per-turn signal — it does not drop the thread. `MemorySaver`
+  in-process growth (one thread per cart) is an accepted consequence of that design; a
+  durable/bounded checkpointer remains a later step.
+
+## 2026-07-07 — Ordering: real LangGraph + clarification resume + repair + zod
+- **What:** Ported `ordering/order-graph.ts` from the hand-rolled pipeline to a real
+  `@langchain/langgraph` `StateGraph` (`graph/state.ts` + `graph/build-graph.ts`,
+  nodes `normalize → load_cart → retrieve → parse → decide{propose|clarify}`),
+  compiled with a `MemorySaver` checkpointer keyed `thread_id=${pos_config_id}:${cart_id}`.
+  Implemented clarification pause/resume via `interrupt()` + `Command({resume})`, with
+  `OrderGraph.start()/resume()` returning a `GraphTurnResult`. Rewrote
+  `order-understanding-service.ts` to drive the clarification loop while HOLDING the
+  per-cart FIFO slot (turn 2 blocks) with a `TIMEOUTS.clarificationMs` timeout →
+  `voice.session_failed(clarification_timeout)`; `handleClarificationAnswer` now
+  actually resumes (was a no-op). Added schema-repair retry
+  (`nodes/parse-and-validate.node.ts` + `buildRepairPrompt`). Migrated
+  `schemas/cart-operation` + `order-graph-output` to zod (`zod-error.ts` helper).
+  Added `order-understanding-service.test.ts` (7 tests).
+- **Why:** Close checklist §5 — real pause/resume, graceful LLM-failure handling,
+  and validated LLM I/O per design §6/§8/§9/§11.3.
+- **Where:** `src/ordering/**` (graph, nodes, schemas, service), `src/llm/prompt-builder.ts`.
+- **Notes:** Verified LangGraph interrupt/resume semantics by spike (interrupted
+  invoke returns `__interrupt__`; thrown node rejects invoke; plain input on a paused
+  thread restarts — so a timed-out clarification needs no thread cleanup). `MemorySaver`
+  is in-process; a durable checkpointer is a later step. `supported_languages` still
+  hardcoded `[]`. Full suite: 20 tests green, `tsc` clean.
+
 ## 2026-07-07 — Populate Redis with menu items from the Odoo dump
 - **What:** Added `scripts/populate-redis-menu.ts` (+ `populate:menu` npm script,
   `tsx` devDependency) that reads POS-available products from an Odoo Postgres

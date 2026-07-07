@@ -1,9 +1,23 @@
 /** LangGraph output: proposed operations, or a clarification request (design §8). */
+import { z } from 'zod';
+import { cartOperationSchema } from './cart-operation.schema.js';
 import type { CartOperation } from './cart-operation.schema.js';
-import { parseCartOperation } from './cart-operation.schema.js';
 import type { Result } from '../../shared/result.js';
 import { err, ok } from '../../shared/result.js';
 import { ValidationError } from '../../shared/errors.js';
+import { formatZodError } from './zod-error.js';
+
+const outputSchema = z
+  .object({
+    operations: z.array(cartOperationSchema).default([]),
+    needs_clarification: z.boolean().default(false),
+    clarification_question: z.string().nullable().default(null),
+    clarification_options: z.array(z.string()).optional(),
+  })
+  .refine((o) => !o.needs_clarification || o.clarification_question !== null, {
+    message: 'needs_clarification=true requires a clarification_question',
+    path: ['clarification_question'],
+  });
 
 export interface OrderGraphOutput {
   operations: CartOperation[];
@@ -13,31 +27,12 @@ export interface OrderGraphOutput {
 }
 
 export function parseOrderGraphOutput(u: unknown): Result<OrderGraphOutput> {
-  if (typeof u !== 'object' || u === null) {
-    return err(new ValidationError('output must be an object'));
-  }
-  const rec = u as Record<string, unknown>;
-  const rawOps = Array.isArray(rec['operations']) ? rec['operations'] : [];
-  const operations: CartOperation[] = [];
-  for (const raw of rawOps) {
-    const parsed = parseCartOperation(raw);
-    if (!parsed.ok) return parsed;
-    operations.push(parsed.value);
-  }
-
-  const needs = rec['needs_clarification'] === true;
-  const question = typeof rec['clarification_question'] === 'string' ? rec['clarification_question'] : null;
-  if (needs && question === null) {
-    return err(new ValidationError('needs_clarification=true requires a clarification_question'));
-  }
-
-  const options = Array.isArray(rec['clarification_options'])
-    ? rec['clarification_options'].filter((o): o is string => typeof o === 'string')
-    : undefined;
-
+  const r = outputSchema.safeParse(u);
+  if (!r.success) return err(new ValidationError(formatZodError(r.error)));
+  const { operations, needs_clarification, clarification_question, clarification_options } = r.data;
   return ok(
-    options === undefined
-      ? { operations, needs_clarification: needs, clarification_question: question }
-      : { operations, needs_clarification: needs, clarification_question: question, clarification_options: options },
+    clarification_options === undefined
+      ? { operations, needs_clarification, clarification_question }
+      : { operations, needs_clarification, clarification_question, clarification_options },
   );
 }
