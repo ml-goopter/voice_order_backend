@@ -56,17 +56,17 @@ References are to `design.cleaned.md` sections.
   prompt + fallback model.
 
 ## 5. Ordering / LangGraph (§6, §9)
-- [ ] **Port to real LangGraph** — `ordering/order-graph.ts` is a hand-rolled graph;
-  TODO: port to `@langchain/langgraph` with a cart-keyed checkpointer.
-- [ ] **Clarification resume** — `order-understanding-service.ts:74` is a **no-op
-  stub** (`clarification_resume_stub`); the pause/resume loop (§6) doesn't actually
-  resume yet.
-- [ ] **Schema-repair retry** — `nodes/validate-operations.node.ts` TODO: on schema
-  failure, retry once with a repair prompt (§11.3 stages 2/3).
-- [ ] **Supported languages** — `order-understanding-service.ts:26` TODO: source
-  from `voice_restaurant_settings` instead of hardcoding.
-- [ ] **Replace hand-written validators** — `ordering/schemas/*.schema.ts` TODO:
-  swap for `zod` (kept dependency-free for now).
+- [x] **Port to real LangGraph** — `ordering/order-graph.ts` is now a real
+  `@langchain/langgraph` `StateGraph` (`graph/state.ts` + `graph/build-graph.ts`) with
+  a `MemorySaver` checkpointer keyed `thread_id=${pos_config_id}:${cart_id}`.
+- [x] **Clarification resume** — `clarify` node `interrupt()`s; the service resumes via
+  `Command({resume})` while holding the per-cart FIFO slot (with a timeout).
+- [x] **Schema-repair retry** — `nodes/parse-and-validate.node.ts` retries once with
+  `buildRepairPrompt` on schema failure (§11.3 stages 2/3).
+- [ ] **Supported languages** — `order-understanding-service.ts` TODO: source
+  from `voice_restaurant_settings` instead of hardcoding `[]`.
+- [x] **Replace hand-written validators** — `ordering/schemas/{cart-operation,order-graph-output}.schema.ts`
+  now use `zod` (types inferred; `Result`-returning parsers).
 
 ## 6. Cart (§9)
 - [ ] **Pricing/tax in applier** — `cart/cart-operation-applier.ts:14` TODO:

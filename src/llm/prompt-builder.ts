@@ -40,3 +40,28 @@ export function buildPrompt(input: OrderGraphInput): LlmPrompt {
 
   return { system, user };
 }
+
+/**
+ * Repair prompt after schema-invalid output (design §11.3 stages 2/3). Re-states the
+ * contract, shows the model its rejected output and the validation error, and asks
+ * for corrected STRICT JSON only.
+ */
+export function buildRepairPrompt(
+  input: OrderGraphInput,
+  invalidOutput: string,
+  validationError: string,
+): LlmPrompt {
+  const base = buildPrompt(input);
+  const system = [
+    base.system,
+    '',
+    'Your previous response failed schema validation. Return ONLY corrected STRICT JSON — no prose, no code fences.',
+  ].join('\n');
+  const user = [
+    base.user,
+    '',
+    `PREVIOUS_INVALID_OUTPUT:\n${invalidOutput}`,
+    `VALIDATION_ERROR: ${validationError}`,
+  ].join('\n');
+  return { system, user };
+}
