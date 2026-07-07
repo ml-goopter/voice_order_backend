@@ -7,6 +7,19 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Docker setup (app + Redis)
+- **What:** Added `Dockerfile` (3-stage on `node:26-alpine`: build → compile TS,
+  deps → prod-only `node_modules`, runtime → copies both and runs `dist/server.js`
+  as non-root `node`), `.dockerignore`, and
+  `docker-compose.yml` with a `redis:7-alpine` service (persisted volume,
+  healthcheck) plus the `app` service wired to it via `REDIS_URL=redis://redis:6379`.
+- **Why:** Provide a local containerized run. Redis is the only backing service
+  needed right now; Postgres is intentionally omitted.
+- **Where:** repo root (build/infra tooling); no source modules touched.
+- **Notes:** `app` reads `.env` via `env_file` and overrides `REDIS_URL` to reach
+  the compose Redis. `docker compose config` validates. No Postgres service —
+  add one later if the `DATABASE_URL` stubs get wired.
+
 ## 2026-07-07 — Menu candidate matcher: hybrid ranking + Vitest
 - **What:** Replaced the naive substring placeholder in `candidate-matcher.ts` with
   hybrid ranking (embedding cosine + fuzzy + modifier, availability-filtered,
