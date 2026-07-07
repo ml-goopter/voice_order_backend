@@ -7,6 +7,23 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Cart Module unit tests
+- **What:** Added vitest suites for the Cart Module (33 tests): `cart-operation-applier.test.ts`
+  (every op × valid/reject branch, pricing, immutability, modifier idempotence),
+  `cart-validator.test.ts` (ok(void) + rejection mirrors the applier, no mutation),
+  and `cart-controller.test.ts` (cart creation, one-version-bump-per-proposal,
+  idempotency by `request_id`, mixed-batch apply+reject events, session_id
+  forwarding, rebase from a stale `base_version`, and apply-lock serialization of
+  concurrent applies).
+- **Why:** Lock in the deterministic §9 Tier-2 behavior (sole writer, rebase,
+  idempotency, versioning) before persistence/pricing are wired for real.
+- **Where:** `cart` module (tests only; no behavior change).
+- **Notes:** Tests use the real in-memory deps (MenuService, InMemoryCartCache,
+  CartRepository, EventBus) — no mocks. Added `src/**/*.test.ts` to tsconfig
+  `exclude` so `tsc` build/typecheck skip tests; vitest transpiles them. Verified:
+  `vitest run src/cart` 33 passed; `npm run typecheck` exit 0; test files typecheck
+  clean under a temp include.
+
 ## 2026-07-07 — Scaffold the modular monolith
 - **What:** Generated the full TypeScript (ESM) source tree from design §12 — 62
   files across realtime, voice, stt, ordering, menu, llm, cart, events, redis, db,
