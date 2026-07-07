@@ -1,0 +1,94 @@
+import type { EventBus } from '../events/event-bus.js';
+import type { CartCache } from '../redis/cart-cache.js';
+import type { MenuService } from '../menu/menu-service.js';
+import type { CartRepository } from './cart-repository.js';
+import type { OrderProposal } from '../ordering/schemas/proposal.js';
+import type { SessionId } from '../shared/types.js';
+import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
+import { KeyedAsyncLock } from '../shared/async-lock.js';
+import { CartRejectedError } from '../shared/errors.js';
+import { emptyCart } from './cart-types.js';
+import { applyOperation } from './cart-operation-applier.js';
+import { logger } from '../config/logger.js';
+
+/**
+ * The ONLY writer of cart state (design §9). Tier-2 guard: a per-cart apply lock
+ * makes the batch atomic, and each op is re-validated against the CURRENT cart
+ * (rebase) rather than the possibly-stale base_version. add_item always applies;
+ * a stale edit is rejected per-op with cart.operation_rejected — the rest apply.
+ */
+export class CartController {
+  private readonly applyLock = new KeyedAsyncLock();
+
+  constructor(
+    private readonly carts: CartCache,
+    private readonly menu: MenuService,
+    private readonly repo: CartRepository,
+    private readonly bus: EventBus,
+  ) {}
+
+  async applyProposal(proposal: OrderProposal, session_id?: SessionId): Promise<void> {
+    await this.applyLock.run(proposal.cart_id, async () => {
+      // Idempotency — never apply the same request twice (§9/§11).
+      if (await this.repo.wasProcessed(proposal.request_id)) {
+        logger.info('cart.duplicate_request', { request_id: proposal.request_id });
+        return;
+      }
+
+      let cart = (await this.carts.get(proposal.cart_id)) ?? emptyCart(proposal.cart_id, proposal.pos_config_id);
+      if (proposal.base_version !== cart.version) {
+        logger.info('cart.rebase', { cart_id: proposal.cart_id, base: proposal.base_version, current: cart.version });
+      }
+
+      const rejected: Array<{ op: CartOperation; error: CartRejectedError }> = [];
+      let applied = 0;
+
+      for (const op of proposal.operations) {
+        const r = applyOperation(cart, op, this.menu, proposal.pos_config_id);
+        if (r.ok) {
+          cart = r.value;
+          applied += 1;
+        } else if (r.error instanceof CartRejectedError) {
+          rejected.push({ op, error: r.error });
+        } else {
+          rejected.push({ op, error: new CartRejectedError('invalid', r.error.message) });
+        }
+      }
+
+      if (applied > 0) {
+        cart = { ...cart, version: cart.version + 1 };
+        await this.carts.set(cart);
+        await this.repo.saveSnapshot(cart);
+        await this.repo.markProcessed(proposal.request_id, 'applied', cart.version);
+        this.bus.emit('cart.updated', {
+          cart_id: cart.cart_id,
+          pos_config_id: cart.pos_config_id,
+          version: cart.version,
+          cart,
+        });
+      } else {
+        await this.repo.markProcessed(proposal.request_id, 'rejected');
+      }
+
+      for (const { op, error } of rejected) {
+        this.bus.emit('cart.operation_rejected', {
+          cart_id: proposal.cart_id,
+          request_id: proposal.request_id,
+          reason: error.reason,
+          message: error.message,
+          operation: op,
+          ...(session_id !== undefined ? { session_id } : {}),
+        });
+      }
+    });
+  }
+
+  /** Confirm the active cart into an Odoo pos_order (design §9, step 11). */
+  async confirm(cart_id: string): Promise<void> {
+    await this.applyLock.run(cart_id, async () => {
+      const cart = await this.carts.get(cart_id);
+      if (!cart) return;
+      await this.repo.confirmOrder(cart);
+    });
+  }
+}

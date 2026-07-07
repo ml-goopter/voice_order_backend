@@ -1,0 +1,35 @@
+{
+  "name": "voice_based_ordering",
+  "version": "0.1.0",
+  "description": "Voice-based restaurant ordering — event-driven modular monolith (see design.cleaned.md)",
+  "main": "dist/server.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "test": "vitest run",
+    "migrate": "tsx scripts/migrate.ts",
+    "seed:menu": "tsx scripts/seed-menu.ts",
+    "refresh:embeddings": "tsx scripts/refresh-embeddings.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@langchain/langgraph": "^1.4.7",
+    "assemblyai": "^4.35.3",
+    "ioredis": "^5.11.1",
+    "pg": "^8.22.0",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
+  }
+}
