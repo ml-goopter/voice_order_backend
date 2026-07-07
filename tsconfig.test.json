@@ -1,0 +1,12 @@
+{
+  // Type-checks the whole tree INCLUDING *.test.ts (which the build config
+  // excludes so tsc doesn't emit them to dist). vitest transpiles tests with
+  // esbuild, which strips types WITHOUT checking them — so without this config
+  // the test files would never be type-checked. noEmit: this is a check only.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}
