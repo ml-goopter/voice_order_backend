@@ -34,7 +34,7 @@ bumps the version, persists, and broadcasts `cart.updated`. Rejected ops surface
 - **Pricing** currently sums item base prices only (TODO modifier deltas + tax).
 
 ## Dependencies
-- `persistence` (CartCache, CartRepository, Db), `menu` (resolution + prices),
+- `persistence` (CartCache, CartRepository), `menu` (resolution + prices),
   `events` (EventBus). `register-handlers.ts` binds `order.operations_proposed`.
 
 ## Key files
@@ -42,5 +42,5 @@ bumps the version, persists, and broadcasts `cart.updated`. Rejected ops surface
   `cart-repository.ts`, `cart-types.ts`, `register-handlers.ts`.
 
 ## Not done yet
-- Persistence is in-memory (`CartRepository` idempotency/snapshots); `confirmOrder`
-  and modifier/tax pricing are stubs.
+- Persistence is in-memory (`CartRepository` idempotency/snapshots), to be backed
+  by Redis; `confirmOrder` and modifier/tax pricing are stubs.

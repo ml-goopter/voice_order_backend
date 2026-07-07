@@ -3,7 +3,6 @@ import { logger } from './config/logger.js';
 import { eventBus } from './events/event-bus.js';
 
 import { InMemoryCartCache } from './redis/cart-cache.js';
-import { createDb } from './db/db.js';
 import { MenuService } from './menu/menu-service.js';
 import { createSttProvider } from './stt/stt-client.js';
 import { createLlmProvider } from './llm/llm-client.js';
@@ -36,7 +35,6 @@ export function createApp(): App {
 
   // Infrastructure (stubs by default — see each module's TODO).
   const carts = new InMemoryCartCache();
-  const db = createDb();
   const menu = new MenuService();
   const stt = createSttProvider();
   const llm = createLlmProvider();
@@ -52,7 +50,7 @@ export function createApp(): App {
   registerOrderingHandlers(bus, ordering);
 
   // Cart (sole writer).
-  const repo = new CartRepository(db);
+  const repo = new CartRepository();
   const cartController = new CartController(carts, menu, repo, bus);
   registerCartHandlers(bus, cartController);
 

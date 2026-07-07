@@ -48,12 +48,15 @@ async function matcherWith(embedder: EmbeddingService, menu: MenuItem[] = MENU) 
  * any language → same vector, so cross-language matching works.
  */
 function conceptEmbedder(concepts: string[][]): EmbeddingService {
+  const embed = async (text: string): Promise<number[]> => {
+    const t = text.toLowerCase();
+    return concepts.map((surfaces) => (surfaces.some((s) => t.includes(s.toLowerCase())) ? 1 : 0));
+  };
   return {
     model: 'fake',
-    async embed(text: string): Promise<number[]> {
-      const t = text.toLowerCase();
-      return concepts.map((surfaces) => (surfaces.some((s) => t.includes(s.toLowerCase())) ? 1 : 0));
-    },
+    dimensions: concepts.length,
+    embed,
+    embedBatch: (texts: string[]) => Promise.all(texts.map((t) => embed(t))),
   };
 }
 

@@ -1,7 +1,7 @@
 import type { PosConfigId, ProductTmplId } from '../shared/types.js';
 import { MenuCache } from './menu-cache.js';
 import { CandidateMatcher } from './candidate-matcher.js';
-import { StubEmbeddingService } from './embedding-service.js';
+import { createEmbeddingService } from './embedding-service.js';
 import type { EmbeddingService } from './embedding-service.js';
 import type { CandidateSet, MenuItem } from './menu-types.js';
 
@@ -10,7 +10,7 @@ export class MenuService {
   readonly cache: MenuCache;
   private readonly matcher: CandidateMatcher;
 
-  constructor(embedder: EmbeddingService = new StubEmbeddingService()) {
+  constructor(embedder: EmbeddingService = createEmbeddingService()) {
     this.cache = new MenuCache(embedder);
     this.matcher = new CandidateMatcher(this.cache, embedder);
   }

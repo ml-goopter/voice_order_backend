@@ -7,6 +7,26 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Drop local Postgres (our state → Redis)
+- **What:** Removed our own Postgres entirely. Deleted `src/db/db.ts` (`Db` stub),
+  `scripts/migrate.ts`, the `migrate` npm script, the `pg`/`@types/pg` deps,
+  `DATABASE_URL` (config + `.env.example`), and our DDL (`02_settings`, `04_carts`,
+  `05_order_confirmations`, `06_voice`, `07_server_calls`). `CartRepository` no
+  longer takes a `Db` (in-memory Maps, to be backed by Redis); `app.ts` stops
+  constructing `db`. Rewrote `db/schema/README.md` and the persistence/cart
+  knowledge bundles around two stores.
+- **Why:** Decision: no local Postgres. Our durable app state (cart registry +
+  snapshots, sessions, transcripts, clarifications, server calls, idempotency,
+  order-confirmation bridge) targets **Redis** instead.
+- **Where:** `src/db/`, `scripts/`, `src/app.ts`, `src/cart/cart-repository.ts`,
+  `src/config/env.ts`, `.env.example`, `package.json`, knowledge bundles.
+- **Notes:** Scope is **our** Postgres only — the **Odoo POS** database stays the
+  read-only source of truth (menu reads, `pos_order` writes); `01_external_odoo.sql`
+  (reference-only, no DDL) is kept. `confirmOrder` will use an Odoo client. Redis
+  wiring itself is still a stub (`redis/*`), so state is in-memory for now. NOTE:
+  `design.cleaned.md` still documents the old three-store (Postgres) design — not
+  updated here.
+
 ## 2026-07-07 — Jina AI text embeddings (swappable provider)
 - **What:** Replaced the dead embedding term with a real provider. Extended
   `EmbeddingService` (added `dimensions` + `embedBatch` + an optional

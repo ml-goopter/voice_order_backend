@@ -24,7 +24,7 @@ export interface CartLine {
   combo_choices?: ProductId[];
 }
 
-/** The full cart snapshot — mirrors the Redis value and `cart_snapshots.snapshot`. */
+/** The full cart snapshot — mirrors the Redis value and its recovery snapshot. */
 export interface Cart {
   cart_id: CartId;
   pos_config_id: PosConfigId;
