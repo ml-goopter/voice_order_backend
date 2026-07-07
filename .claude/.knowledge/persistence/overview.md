@@ -11,6 +11,11 @@ timestamp: 2026-07-07
 ## Purpose
 Durable and hot state for the system (design §9). Three stores:
 - **Redis** — live active carts (`cart:{pos_config_id}:{cart_id}`); the sole hot copy.
+  Also holds a seeded menu snapshot: `menu:item:{pos_config_id}:{product_tmpl_id}`
+  (JSON: translated names/descriptions, `alternative_name`, `base_price_cents`,
+  `available`, categories, modifiers), `menu:items:{pos_config_id}` (SET of ids),
+  `menu:meta:{pos_config_id}` — loaded by `scripts/populate-redis-menu.ts` from the
+  Odoo POS Postgres.
 - **Our Postgres** — voice settings, cart registry + recovery snapshots, sessions,
   transcripts, clarifications, server calls, idempotency ledger, order-confirmation
   bridge.

@@ -7,6 +7,25 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Populate Redis with menu items from the Odoo dump
+- **What:** Added `scripts/populate-redis-menu.ts` (+ `populate:menu` npm script,
+  `tsx` devDependency) that reads POS-available products from an Odoo Postgres
+  (the restored `jadegarden1` dump) and writes one JSON blob per item to Redis:
+  `menu:item:{pos_config_id}:{product_tmpl_id}` (translated `names` + `descriptions`
+  keyed by res.lang, `alternative_name`, `base_price_cents`, `available`, POS
+  `categories`, and `modifiers` from `product_template_attribute_value` with
+  translated value names + `price_extra_cents`), plus `menu:items:{pos_config_id}`
+  (SET of ids) and `menu:meta:{pos_config_id}`.
+- **Why:** Seed the menu into Redis (item names, translations, price, availability,
+  modifiers) for the voice ordering flow.
+- **Where:** `scripts/populate-redis-menu.ts`, `package.json`.
+- **Notes:** Source is the `jadegarden1` Odoo dump restored into a throwaway
+  Postgres container (`SOURCE_DATABASE_URL`, default `localhost:5433`); Redis via
+  `docker compose up -d redis`. Loaded 351 items (pos_config_id=1 "Jade Garden";
+  config 2 is unused), 213 with modifiers, languages en_US + zh_CN. This dump has
+  **no description data** (all description columns NULL) — `descriptions` is written
+  as `{}`; the Chinese name lives in `alternative_name`. Money in integer cents.
+
 ## 2026-07-07 — Docker setup (app + Redis)
 - **What:** Added `Dockerfile` (3-stage on `node:26-alpine`: build → compile TS,
   deps → prod-only `node_modules`, runtime → copies both and runs `dist/server.js`
