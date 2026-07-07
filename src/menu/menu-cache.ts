@@ -27,6 +27,15 @@ export class MenuCache {
     this.byPos.set(pos_config_id, indexed);
   }
 
+  /**
+   * Load items whose name vectors are already computed (e.g. read from Redis),
+   * skipping the embedder entirely. This is the boot path when embeddings were
+   * persisted at seed time.
+   */
+  loadIndexed(pos_config_id: PosConfigId, items: IndexedMenuItem[]): void {
+    this.byPos.set(pos_config_id, items);
+  }
+
   private async embedNames(item: MenuItem): Promise<MenuVector[]> {
     const texts = Object.values(item.names);
     // Menu names are the retrieval corpus → 'passage' (design §7 asymmetric).

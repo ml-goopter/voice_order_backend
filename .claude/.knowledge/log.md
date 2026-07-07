@@ -7,6 +7,32 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Redis: real client, cart read/write, menu+embeddings persisted
+- **What:** Replaced the Redis stubs with a real `ioredis` integration. (1)
+  `redis/redis-client.ts` now returns a shared `ioredis` connection. (2)
+  `redis/cart-cache.ts` gained `RedisCartCache` (key `cart:{cart_id}`, JSON blob) —
+  `app.ts` uses it instead of `InMemoryCartCache`, so carts read/write from Redis.
+  (3) `scripts/populate-redis-menu.ts` now embeds each item's per-language names
+  ('passage' role, mirroring `MenuCache.embedNames`) and writes them as `vectors`
+  inside each `menu:item` record; `menu:meta` records the embedding model/dims.
+  (4) New `menu/menu-repository.ts` (`RedisMenuRepository`) reads items+vectors
+  from Redis and `MenuCache.loadIndexed` / `MenuService.loadIndexedMenu` load them
+  without re-embedding; `app.start()` auto-discovers seeded menus via `SCAN
+  menu:meta:*` and loads each.
+- **Why:** The scaffold had Redis stubs but nothing talked to Redis; items,
+  embeddings, and carts need to persist in and load from Redis.
+- **Where:** `src/redis/redis-client.ts`, `src/redis/cart-cache.ts`,
+  `src/menu/menu-repository.ts` (new), `src/menu/menu-cache.ts`,
+  `src/menu/menu-service.ts`, `src/app.ts`, `scripts/populate-redis-menu.ts`;
+  tests `src/redis/cart-cache.test.ts`, `src/menu/menu-repository.test.ts` (new).
+- **Notes:** Cart key is `cart:{cart_id}` (globally-unique text id) — the
+  `CartCache` interface only receives `cart_id`, so `pos_config_id` is not in the
+  key. Vectors ride inside the item JSON and the in-process cosine scan is
+  unchanged (no RediSearch; plain `redis:7-alpine`). Seeding writes real vectors
+  only with `EMBEDDING_PROVIDER=jina` + `JINA_API_KEY`; otherwise items are written
+  vectorless and the read-time dim check warns. Still stubs: `CartRepository`
+  idempotency ledger + `saveSnapshot`, and the LangGraph `MemorySaver`.
+
 ## 2026-07-07 — Ordering: fix cross-turn clarification leak + proposal-emit misclassification
 - **What:** Two review fixes. (1) The `normalize` node now resets the one-shot
   `clarification_answer` channel to `undefined`; because the cart-keyed checkpointer

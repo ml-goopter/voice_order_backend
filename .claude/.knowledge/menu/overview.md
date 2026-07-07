@@ -17,9 +17,18 @@ call — cuts token cost and improves accuracy (design §7). Also resolves LLM
 - **In-memory cache** (`menu-cache.ts`): `Map<pos_config_id, IndexedMenuItem[]>`,
   fine below ~2,000 items (§7). `MenuItem` carries translated `names` keyed by Odoo
   `res.lang` code, `base_price_cents`, availability, and its modifiers
-  (`modifier_key` ↔ `ptav_id`). At load (async) each item's per-language names are
-  embedded once via the injected `EmbeddingService` (`embedBatch(names, 'passage')`)
-  into `MenuVector`s; lookups by key and by `product_tmpl_id`.
+  (`modifier_key` ↔ `ptav_id`). Two load paths: `load()` (async) embeds each item's
+  per-language names once via the injected `EmbeddingService`
+  (`embedBatch(names, 'passage')`); `loadIndexed()` (sync) accepts
+  `IndexedMenuItem`s whose vectors were **already computed at seed time** (the Redis
+  boot path — no embedder call). Lookups by key and by `product_tmpl_id`.
+- **Redis repository** (`menu-repository.ts`): `RedisMenuRepository` reads the
+  seeded corpus written by `scripts/populate-redis-menu.ts` —
+  `SMEMBERS menu:items:{pos}` → `MGET menu:item:{pos}:{id}` → maps each JSON record
+  (`toMenuItem` / `toCandidateModifier`, en_US-first modifier name) into
+  `IndexedMenuItem`s with the stored `vectors`. `listPosConfigIds()` scans
+  `menu:meta:*`. `app.start()` loads every discovered pos via `loadIndexedMenu`. A
+  read-time check warns when a stored vector's length ≠ `EMBEDDING_DIMENSIONS`.
 - **Matcher** (`candidate-matcher.ts`): `chunk()` splits the transcript into
   item/modifier phrases; `match()` embeds all phrases in one `embedBatch(phrases,
   'query')`, then hybrid-ranks every available item by
@@ -53,7 +62,10 @@ call — cuts token cost and improves accuracy (design §7). Also resolves LLM
 - `*.test.ts` — Vitest coverage for the three matchers + the Jina client.
 
 ## Not done yet
-- Default is still `stub` until `EMBEDDING_PROVIDER=jina` + `JINA_API_KEY` are set.
-- Embeddings are **in-memory only** (not persisted to Postgres). At scale, a
-  Redis vector cache could replace the in-memory per-phrase vector loop (§13);
-  loading `MenuItem`s from the Odoo POS tables (`seed-menu`) is still pending.
+- Default is still `stub` until `EMBEDDING_PROVIDER=jina` + `JINA_API_KEY` are set;
+  seeding with the stub writes items with **no vectors** (matcher falls back to
+  fuzzy/modifier). The `populate-redis-menu.ts` Postgres source still needs the
+  `pg` package + an Odoo dump to run.
+- Vectors are now **persisted in Redis** inside each item record, but retrieval is
+  still an in-process cosine scan; a RediSearch/KNN vector index (§13) is the
+  scale-up path beyond ~2,000 items.

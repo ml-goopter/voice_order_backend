@@ -1,5 +1,6 @@
 import type { PosConfigId, ProductTmplId } from '../shared/types.js';
 import { MenuCache } from './menu-cache.js';
+import type { IndexedMenuItem } from './menu-cache.js';
 import { CandidateMatcher } from './candidate-matcher.js';
 import { createEmbeddingService } from './embedding-service.js';
 import type { EmbeddingService } from './embedding-service.js';
@@ -17,6 +18,11 @@ export class MenuService {
 
   loadMenu(pos_config_id: PosConfigId, items: MenuItem[]): Promise<void> {
     return this.cache.load(pos_config_id, items);
+  }
+
+  /** Load items with precomputed vectors (Redis boot path); skips embedding. */
+  loadIndexedMenu(pos_config_id: PosConfigId, items: IndexedMenuItem[]): void {
+    this.cache.loadIndexed(pos_config_id, items);
   }
 
   getCandidates(pos_config_id: PosConfigId, transcript: string): Promise<CandidateSet> {

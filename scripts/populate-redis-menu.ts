@@ -5,7 +5,11 @@
  * For each POS-available product it writes one JSON blob:
  *   menu:item:{pos_config_id}:{product_tmpl_id}  -> JSON (see MenuItemRecord)
  *   menu:items:{pos_config_id}                   -> SET of product_tmpl_ids
- *   menu:meta:{pos_config_id}                    -> JSON { count, languages, generated_at, source }
+ *   menu:meta:{pos_config_id}                    -> JSON { count, languages, embedding, source }
+ *
+ * Each record also carries `vectors`: its per-language names embedded with the
+ * 'passage' role (mirroring MenuCache.embedNames), so the app reads items AND
+ * their vectors from Redis and never re-embeds the menu at boot.
  *
  * Translations are read from Odoo jsonb columns (name/descriptions) keyed by
  * res.lang code (e.g. en_US, zh_CN). Money is stored in integer cents.
@@ -14,9 +18,13 @@
  *   SOURCE_DATABASE_URL  postgres://postgres:pass@localhost:5433/jadegarden1
  *   REDIS_URL            redis://localhost:6379
  *   POS_CONFIG_ID        1
+ *   EMBEDDING_PROVIDER   set to `jina` (+ JINA_API_KEY) to write real vectors;
+ *                        otherwise the stub writes items with no vectors.
  */
 import { Client } from 'pg';
 import Redis from 'ioredis';
+import { createEmbeddingService } from '../src/menu/embedding-service.js';
+import type { EmbeddingService } from '../src/menu/embedding-service.js';
 
 const SOURCE_DATABASE_URL =
   process.env.SOURCE_DATABASE_URL ?? 'postgres://postgres:pass@localhost:5433/jadegarden1';
@@ -39,6 +47,12 @@ interface MenuCategory {
   names: Translations;
 }
 
+/** One name embedded for retrieval — matches the runtime MenuVector shape. */
+interface StoredVector {
+  text: string;
+  vector: number[];
+}
+
 interface MenuItemRecord {
   product_tmpl_id: number;
   menu_item_key: string;
@@ -50,6 +64,20 @@ interface MenuItemRecord {
   available: boolean;
   categories: MenuCategory[];
   modifiers: MenuModifier[];
+  vectors: StoredVector[]; // per-language name embeddings ('passage' role)
+}
+
+/** Embed an item's per-language names, mirroring MenuCache.embedNames. */
+async function embedNames(names: Translations, embedder: EmbeddingService): Promise<StoredVector[]> {
+  const texts = Object.values(names);
+  if (texts.length === 0) return [];
+  const vectors = await embedder.embedBatch(texts, 'passage');
+  const out: StoredVector[] = [];
+  for (let i = 0; i < texts.length; i++) {
+    const vector = vectors[i] ?? [];
+    if (vector.length > 0) out.push({ text: texts[i]!, vector });
+  }
+  return out;
 }
 
 function toCents(numeric: string | number | null): number {
@@ -153,12 +181,21 @@ async function main(): Promise<void> {
       categoriesByTmpl.set(r.product_template_id, list);
     }
 
-    // 4. Build records and write to Redis in one pipeline.
+    // 4. Build records (embedding each item's names) and write in one pipeline.
+    const embedder = createEmbeddingService();
+    if (embedder.dimensions === 0) {
+      console.warn(
+        'EMBEDDING_PROVIDER yields no vectors (dimensions=0); items will be written ' +
+          'WITHOUT embeddings. Set EMBEDDING_PROVIDER=jina and JINA_API_KEY for retrieval.',
+      );
+    }
+
     const itemsSetKey = `menu:items:${POS_CONFIG_ID}`;
     const pipeline = redis.pipeline();
     pipeline.del(itemsSetKey);
 
     let withModifiers = 0;
+    let withVectors = 0;
     for (const p of products.rows) {
       const names = cleanTranslations(p.name);
       const descriptions = {
@@ -167,6 +204,9 @@ async function main(): Promise<void> {
       };
       const modifiers = modifiersByTmpl.get(p.id) ?? [];
       if (modifiers.length > 0) withModifiers++;
+
+      const vectors = await embedNames(names, embedder);
+      if (vectors.length > 0) withVectors++;
 
       const record: MenuItemRecord = {
         product_tmpl_id: p.id,
@@ -179,6 +219,7 @@ async function main(): Promise<void> {
         available: p.available_in_pos,
         categories: categoriesByTmpl.get(p.id) ?? [],
         modifiers,
+        vectors,
       };
 
       pipeline.set(`menu:item:${POS_CONFIG_ID}:${p.id}`, JSON.stringify(record));
@@ -194,6 +235,7 @@ async function main(): Promise<void> {
         pos_config_id: POS_CONFIG_ID,
         count: products.rows.length,
         languages,
+        embedding: { model: embedder.model, dimensions: embedder.dimensions },
         source: 'jadegarden1 (Odoo POS)',
       }),
     );
@@ -208,6 +250,7 @@ async function main(): Promise<void> {
       `Loaded ${products.rows.length} menu items into Redis under pos_config_id=${POS_CONFIG_ID}\n` +
         `  languages: ${languages.join(', ')}\n` +
         `  items with modifiers: ${withModifiers}\n` +
+        `  items with vectors: ${withVectors} (${embedder.model}, ${embedder.dimensions} dims)\n` +
         `  keys: menu:item:${POS_CONFIG_ID}:{id}, menu:items:${POS_CONFIG_ID}, menu:meta:${POS_CONFIG_ID}`,
     );
   } finally {

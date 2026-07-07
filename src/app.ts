@@ -2,8 +2,10 @@ import { config } from './config/env.js';
 import { logger } from './config/logger.js';
 import { eventBus } from './events/event-bus.js';
 
-import { InMemoryCartCache } from './redis/cart-cache.js';
+import { createRedisClient } from './redis/redis-client.js';
+import { RedisCartCache } from './redis/cart-cache.js';
 import { MenuService } from './menu/menu-service.js';
+import { RedisMenuRepository } from './menu/menu-repository.js';
 import { createSttProvider } from './stt/stt-client.js';
 import { createLlmProvider } from './llm/llm-client.js';
 
@@ -33,9 +35,11 @@ export interface App {
 export function createApp(): App {
   const bus = eventBus;
 
-  // Infrastructure (stubs by default — see each module's TODO).
-  const carts = new InMemoryCartCache();
+  // Infrastructure.
+  const redis = createRedisClient();
+  const carts = new RedisCartCache(redis);
   const menu = new MenuService();
+  const menuRepo = new RedisMenuRepository(redis);
   const stt = createSttProvider();
   const llm = createLlmProvider();
 
@@ -59,11 +63,19 @@ export function createApp(): App {
   return {
     gateway,
     async start() {
+      // Load every seeded restaurant's menu (+ precomputed vectors) from Redis.
+      const posConfigIds = await menuRepo.listPosConfigIds();
+      for (const pos of posConfigIds) {
+        menu.loadIndexedMenu(pos, await menuRepo.load(pos));
+      }
+      logger.info('menu.boot_loaded', { pos_config_ids: posConfigIds });
+
       ws = startWebSocketServer(gateway, config.port);
       logger.info('app.started', { port: config.port, env: config.nodeEnv });
     },
     async stop() {
       ws?.close();
+      redis.disconnect();
       logger.info('app.stopped');
     },
   };
