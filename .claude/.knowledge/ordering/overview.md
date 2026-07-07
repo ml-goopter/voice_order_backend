@@ -18,29 +18,51 @@ proposer**; the Cart Module validates and applies.
   final transcripts for one `cart_id` run one turn at a time in arrival order, so
   turn 2 sees turn 1's result and loads a fresh `base_version` (design §9). Sits
   **in front of** the graph.
-- **Graph** (`order-graph.ts`) is a hand-rolled node pipeline standing in for
-  LangGraph JS: `normalize-transcript → load-cart → retrieve-candidates →
-  parse-order (LLM) → validate-operations`. Returns `{ output, base_version }`
-  where `base_version = cart.version` at load time.
-- **Service** (`order-understanding-service.ts`) enqueues the turn, then emits
-  `order.operations_proposed` (with the `OrderProposal`) or
-  `order.clarification_needed`, or `voice.session_failed` on parse failure.
-- **Contracts** in `schemas/`: `cart-operation` (LLM output ops, hand-written
-  validators — TODO zod), `order-graph-input/output`, `clarification`, `proposal`.
+- **Graph** (`order-graph.ts` + `graph/`) is a real `@langchain/langgraph`
+  `StateGraph`: `normalize → load_cart → retrieve → parse → decide{propose | clarify}`.
+  Compiled with a `MemorySaver` checkpointer keyed by
+  `thread_id = ${pos_config_id}:${cart_id}` — context follows the CART, not a
+  session, so multiple sessions on one cart share conversational memory (§6). State
+  channels live in `graph/state.ts` (`Annotation.Root`, last-write-wins with
+  defaults); `base_version` is captured at `load_cart` (= `cart.version`) and rides
+  through resumes. The `OrderGraph` façade exposes `start()` / `resume()` returning
+  a `GraphTurnResult` (`complete` with `{output, base_version}` | `clarify`).
+- **Clarification pause/resume** (§6): the `clarify` node calls `interrupt(payload)`;
+  the graph pauses (invoke returns `__interrupt__`) and, on resume via
+  `Command({resume: answer})`, loops `clarify → parse` so the model produces final
+  operations. The **service holds its FIFO slot** while awaiting the answer (turn 2
+  blocks behind), with a `TIMEOUTS.clarificationMs` timeout that fails the turn
+  (`voice.session_failed` reason `clarification_timeout`) so the cart never freezes.
+  A `MAX_CLARIFICATION_ROUNDS` cap guards a looping model.
+- **Schema-repair retry** (§11.3 stages 2/3): `nodes/parse-and-validate.node.ts`
+  validates the LLM JSON and, on failure, re-prompts once (`LIMITS.llmMaxRetries`)
+  with `buildRepairPrompt` (rejected output + validation error). Exhaustion throws →
+  the `parse` node rejects → service emits `voice.session_failed` (`order_parse_failed`).
+- **Service** (`order-understanding-service.ts`) enqueues the turn, drives the
+  clarification loop, then emits `order.operations_proposed` (with the
+  `OrderProposal`) or `order.clarification_needed`, or `voice.session_failed`.
+- **Contracts** in `schemas/`: `cart-operation` + `order-graph-output` are **zod**
+  schemas (types inferred; `parse*` return `Result` with a repair-friendly message
+  via `zod-error.ts`); `order-graph-input`, `clarification`, `proposal` are types.
   The LLM speaks in `menu_item_key`/`modifier_key`; edits target a `line_id`.
 
 ## Dependencies
+- `@langchain/langgraph` (graph + checkpointer), `zod` (schemas).
 - `menu` (candidates + key resolution), `llm` (parse), `persistence` (CartCache
   load), `events` (EventBus). `register-handlers.ts` binds to the bus.
 
 ## Key files
-- `order-understanding-service.ts`, `order-graph.ts`, `cart-turn-queue.ts`,
+- `order-understanding-service.ts`, `order-graph.ts` (façade), `cart-turn-queue.ts`,
   `register-handlers.ts`.
-- `nodes/*.node.ts` — the five pipeline steps.
-- `schemas/*.ts` — operation/input/output/clarification/proposal types + validators.
+- `graph/state.ts`, `graph/build-graph.ts` — LangGraph state + graph wiring.
+- `nodes/*.node.ts` — `normalize`, `load-cart`, `retrieve-candidates`, `parse-order`,
+  `validate-operations`, and `parse-and-validate` (parse + repair loop).
+- `schemas/*.ts` — operation/input/output/clarification/proposal types + zod validators.
+- `order-understanding-service.test.ts` — happy path, edits, clarify+resume, repair
+  (retry + exhaustion), per-cart FIFO ordering, clarification timeout.
 
 ## Not done yet
-- Real LangGraph with a cart-keyed checkpointer (thread = `${pos_config_id}:${cart_id}`)
-  for pause/resume; `handleClarificationAnswer` is a stub. Business validation of
-  operations against candidates (unknown key → clarify, §11.3) is deferred to the
-  Cart Validator.
+- Business validation of operations against candidates (unknown key → clarify,
+  §11.3 stage 4) is deferred to the Cart Validator. `supported_languages` is still
+  hardcoded `[]` (TODO: source from `voice_restaurant_settings`). `MemorySaver` is
+  in-process only — a durable (Redis/Postgres) checkpointer would survive restarts.
