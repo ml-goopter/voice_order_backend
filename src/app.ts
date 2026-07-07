@@ -2,7 +2,7 @@ import { config } from './config/env.js';
 import { logger } from './config/logger.js';
 import { eventBus } from './events/event-bus.js';
 
-import { createRedisClient } from './redis/redis-client.js';
+import { createRedisClient, closeRedisClient } from './redis/redis-client.js';
 import { RedisCartCache } from './redis/cart-cache.js';
 import { MenuService } from './menu/menu-service.js';
 import { RedisMenuRepository } from './menu/menu-repository.js';
@@ -75,7 +75,7 @@ export function createApp(): App {
     },
     async stop() {
       ws?.close();
-      redis.disconnect();
+      await closeRedisClient();
       logger.info('app.stopped');
     },
   };

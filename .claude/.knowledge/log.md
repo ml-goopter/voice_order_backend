@@ -7,6 +7,24 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Redis review follow-ups: graceful close + embedder-mismatch caveat
+- **What:** (1) Shutdown now calls a new `closeRedisClient()` that `quit()`s the
+  shared connection (drains in-flight commands, vs the old abrupt `disconnect()`)
+  and clears the module singleton so a later `createRedisClient()` (restart/tests)
+  gets a live client. (2) Documented `CartId` as MUST-be-globally-unique (it is the
+  un-namespaced `cart:{cart_id}` key).
+- **Why:** Code-review findings: `disconnect()` could drop in-flight cart writes and
+  left a permanently-dead cached client after `stop()`; the cart key is not scoped
+  by `pos_config_id`, so uniqueness must hold at the `cart_id` level.
+- **Where:** `src/redis/redis-client.ts`, `src/app.ts`, `src/shared/types.ts`.
+- **Notes:** KNOWN CAVEAT (not yet fixed) — `menu-repository.ts` checks stored
+  vector length against `config.embeddingDimensions` (a static config default), not
+  the *live* embedder's `dimensions`. If the menu is seeded with `jina` (1024-dim)
+  but the app runs the default `stub` embedder (0-dim query vectors), no dim
+  warning fires yet `cosine()` returns 0 for every item, so retrieval silently
+  degrades to fuzzy-only. A real fix should compare stored dims against the running
+  embedder (and/or against `menu:meta.embedding`) and warn when they differ.
+
 ## 2026-07-07 — Redis: real client, cart read/write, menu+embeddings persisted
 - **What:** Replaced the Redis stubs with a real `ioredis` integration. (1)
   `redis/redis-client.ts` now returns a shared `ioredis` connection. (2)

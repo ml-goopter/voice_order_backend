@@ -7,7 +7,7 @@
  */
 
 // Our identities
-export type CartId = string; // e.g. "cart_456"
+export type CartId = string; // e.g. "cart_456"; MUST be globally unique — it is the Redis cart key (`cart:{cart_id}`), which is not namespaced by pos_config_id.
 export type SessionId = string; // e.g. "voice_session_123"
 export type RequestId = string; // e.g. "voice_final_abc123" (idempotency key)
 export type LineId = string; // e.g. "ln_1" (assigned by the Cart Module)

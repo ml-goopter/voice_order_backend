@@ -17,3 +17,19 @@ export function createRedisClient(): Redis {
   client = redis;
   return client;
 }
+
+/**
+ * Gracefully close the shared connection and clear the singleton. `quit()` drains
+ * in-flight commands (unlike `disconnect()`), and resetting `client` lets a later
+ * `createRedisClient()` (restart, test lifecycle) get a fresh, live connection.
+ */
+export async function closeRedisClient(): Promise<void> {
+  const c = client;
+  client = undefined;
+  if (!c) return;
+  try {
+    await c.quit();
+  } catch {
+    c.disconnect();
+  }
+}
