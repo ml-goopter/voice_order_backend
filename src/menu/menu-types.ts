@@ -21,6 +21,15 @@ export interface CandidateSet {
   items: CandidateItem[];
 }
 
+/**
+ * A precomputed embedding for one piece of an item's text (a name in some
+ * language). Multiple per item drive cross-language matching (design §7/§15).
+ */
+export interface MenuVector {
+  text: string;
+  vector: number[];
+}
+
 /** A menu item as loaded from Odoo (product_template) into the in-memory cache. */
 export interface MenuItem {
   product_tmpl_id: ProductTmplId;
@@ -29,6 +38,5 @@ export interface MenuItem {
   names: Record<LangCode, string>;
   base_price_cents: number;
   available: boolean;
-  popularity: number;
   modifiers: CandidateModifier[];
 }

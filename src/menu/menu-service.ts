@@ -1,18 +1,25 @@
 import type { PosConfigId, ProductTmplId } from '../shared/types.js';
 import { MenuCache } from './menu-cache.js';
 import { CandidateMatcher } from './candidate-matcher.js';
+import { StubEmbeddingService } from './embedding-service.js';
+import type { EmbeddingService } from './embedding-service.js';
 import type { CandidateSet, MenuItem } from './menu-types.js';
 
 /** Facade over the menu cache + candidate matcher (design §7). */
 export class MenuService {
-  readonly cache = new MenuCache();
-  private readonly matcher = new CandidateMatcher(this.cache);
+  readonly cache: MenuCache;
+  private readonly matcher: CandidateMatcher;
 
-  loadMenu(pos_config_id: PosConfigId, items: MenuItem[]): void {
-    this.cache.load(pos_config_id, items);
+  constructor(embedder: EmbeddingService = new StubEmbeddingService()) {
+    this.cache = new MenuCache(embedder);
+    this.matcher = new CandidateMatcher(this.cache, embedder);
   }
 
-  getCandidates(pos_config_id: PosConfigId, transcript: string): CandidateSet {
+  loadMenu(pos_config_id: PosConfigId, items: MenuItem[]): Promise<void> {
+    return this.cache.load(pos_config_id, items);
+  }
+
+  getCandidates(pos_config_id: PosConfigId, transcript: string): Promise<CandidateSet> {
     return this.matcher.match(pos_config_id, transcript);
   }
 

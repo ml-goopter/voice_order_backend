@@ -7,6 +7,30 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Menu candidate matcher: hybrid ranking + Vitest
+- **What:** Replaced the naive substring placeholder in `candidate-matcher.ts` with
+  hybrid ranking (embedding cosine + fuzzy + modifier, availability-filtered,
+  top-N). Added `fuzzy-matcher.ts` (Levenshtein + substring similarity) and
+  `modifier-matcher.ts` (phrase↔modifier scoring). `menu-cache.ts` now precomputes
+  per-language name vectors at load via the injected `EmbeddingService` (async
+  `load`); added `MenuVector` + `IndexedMenuItem`. `MenuService` injects the
+  embedder (defaults to `StubEmbeddingService`); `loadMenu`/`getCandidates` are now
+  async. Dropped `aliases` and `popularity` from ranking and from `MenuItem`.
+- **Why:** Turn the §7 candidate matcher from a placeholder into real, tested
+  ranking logic that degrades to fuzzy/modifier when the embedder is a stub and
+  sharpens when a real embedder is injected.
+- **Where:** menu module; `ordering/nodes/retrieve-candidates.node.ts` and
+  `ordering/order-graph.ts` await the now-async call.
+- **Notes:** Stood up Vitest — `vitest.config.ts`; `tsconfig.build.json` excludes
+  `*.test.ts` from the emitted build; `build` script → `tsconfig.build.json`
+  (`typecheck` still covers tests). 13 tests pass, `tsc --noEmit` green. Installed
+  runtime deps (`ws`, `ioredis`, `pg`, `zod`, `@langchain/langgraph`, `assemblyai`)
+  + dev types (`@types/ws`, `@types/pg`, `vitest`). Still stubbed/deferred: the real
+  embedding provider (`StubEmbeddingService` returns `[]`) and the Odoo
+  menu-repository load. Redis vector search (to replace the per-phrase vector loop)
+  was considered and **deferred** — needs Redis Stack/RediSearch + a fixed embedding
+  DIM, and §13 notes the search is <1 ms and not the bottleneck at ≤2k items.
+
 ## 2026-07-07 — Scaffold the modular monolith
 - **What:** Generated the full TypeScript (ESM) source tree from design §12 — 62
   files across realtime, voice, stt, ordering, menu, llm, cart, events, redis, db,

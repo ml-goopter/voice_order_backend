@@ -7,6 +7,6 @@ export function retrieveCandidates(
   menu: MenuService,
   pos_config_id: PosConfigId,
   text: string,
-): CandidateSet {
+): Promise<CandidateSet> {
   return menu.getCandidates(pos_config_id, text);
 }

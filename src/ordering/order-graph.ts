@@ -44,7 +44,7 @@ export class OrderGraph {
   async run(p: OrderGraphParams): Promise<Result<OrderGraphResult>> {
     const text = normalizeTranscript(p.text);
     const cart = await loadCart(this.carts, p.cart_id, p.pos_config_id);
-    const candidates = retrieveCandidates(this.menu, p.pos_config_id, text);
+    const candidates = await retrieveCandidates(this.menu, p.pos_config_id, text);
 
     const input: OrderGraphInput = {
       request_id: p.request_id,
