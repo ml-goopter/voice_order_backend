@@ -58,7 +58,8 @@ export class CandidateMatcher {
     const phrases = this.chunk(text.toLowerCase());
     if (phrases.length === 0) return { items: [] };
 
-    const phraseVectors = await Promise.all(phrases.map((p) => this.embedder.embed(p)));
+    // Customer transcript phrases are the search side → 'query' (design §7).
+    const phraseVectors = await this.embedder.embedBatch(phrases, 'query');
     const scored: Array<{ item: CandidateItem; score: number }> = [];
 
     for (const { item, vectors } of this.cache.indexed(pos_config_id)) {

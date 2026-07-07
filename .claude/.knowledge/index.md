@@ -28,7 +28,7 @@ sit behind interfaces with stub implementations (search `TODO`).
 | [llm](./llm/index.md) | Cloud LLM abstraction + prompt building (design §8) |
 | [cart](./cart/index.md) | Sole writer of cart state: validate → apply → persist (design §9) |
 | [events](./events/index.md) | Typed in-process event bus + event contracts (design §2) |
-| [persistence](./persistence/index.md) | Redis cart cache, Postgres, Odoo-referenced SQL schema |
+| [persistence](./persistence/index.md) | Redis (hot + durable state), Odoo-referenced source of truth |
 | [platform](./platform/index.md) | Config, shared utils, auth, observability, composition root |
 
 ## Change history

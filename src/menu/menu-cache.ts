@@ -10,9 +10,9 @@ export interface IndexedMenuItem {
 
 /**
  * In-memory menu, loaded from Odoo (product_template + attributes). Fine below
- * ~2,000 items (design §7); move to Postgres + pgvector beyond that. Name vectors
- * are embedded once at load, not per query. With a stub embedder the vectors are
- * empty and the matcher degrades to fuzzy/modifier signals.
+ * ~2,000 items (design §7); a Redis vector cache is the scale-up path. Name
+ * vectors are embedded once at load, not per query. With a stub embedder the
+ * vectors are empty and the matcher degrades to fuzzy/modifier signals.
  * TODO: populate from menu-repository (reads the Odoo POS tables).
  */
 export class MenuCache {
@@ -28,10 +28,13 @@ export class MenuCache {
   }
 
   private async embedNames(item: MenuItem): Promise<MenuVector[]> {
+    const texts = Object.values(item.names);
+    // Menu names are the retrieval corpus → 'passage' (design §7 asymmetric).
+    const vectors = await this.embedder.embedBatch(texts, 'passage');
     const out: MenuVector[] = [];
-    for (const text of Object.values(item.names)) {
-      const vector = await this.embedder.embed(text);
-      if (vector.length > 0) out.push({ text, vector });
+    for (let i = 0; i < texts.length; i++) {
+      const vector = vectors[i] ?? [];
+      if (vector.length > 0) out.push({ text: texts[i]!, vector });
     }
     return out;
   }

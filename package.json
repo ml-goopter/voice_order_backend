@@ -10,17 +10,13 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "test": "vitest run",
-    "migrate": "tsx scripts/migrate.ts",
-    "seed:menu": "tsx scripts/seed-menu.ts",
-    "populate:menu": "tsx scripts/populate-redis-menu.ts",
-    "refresh:embeddings": "tsx scripts/refresh-embeddings.ts"
+    "seed:menu": "tsx scripts/seed-menu.ts"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^26.1.0",
-    "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
     "typescript": "^6.0.3",
@@ -30,7 +26,6 @@
     "@langchain/langgraph": "^1.4.7",
     "assemblyai": "^4.35.3",
     "ioredis": "^5.11.1",
-    "pg": "^8.22.0",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
   }

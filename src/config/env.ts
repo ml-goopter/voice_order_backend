@@ -21,11 +21,14 @@ export interface AppConfig {
   readonly logLevel: string;
 
   readonly redisUrl: string;
-  readonly databaseUrl: string;
 
   readonly sttProvider: string; // 'assemblyai' | 'deepgram' | ...
   readonly llmProvider: string; // 'groq' | 'openai' | 'gemini' | ...
+  readonly embeddingProvider: string; // 'stub' | 'jina' | ...
   readonly embeddingModel: string;
+  readonly embeddingDimensions: number;
+  readonly jinaApiKey: string;
+  readonly jinaBaseUrl: string;
 }
 
 export const config: AppConfig = {
@@ -34,9 +37,12 @@ export const config: AppConfig = {
   logLevel: str('LOG_LEVEL', 'info'),
 
   redisUrl: str('REDIS_URL', 'redis://localhost:6379'),
-  databaseUrl: str('DATABASE_URL', 'postgres://localhost:5432/voice_ordering'),
 
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
   llmProvider: str('LLM_PROVIDER', 'groq'),
-  embeddingModel: str('EMBEDDING_MODEL', 'text-embedding-3-small'),
+  embeddingProvider: str('EMBEDDING_PROVIDER', 'stub'),
+  embeddingModel: str('EMBEDDING_MODEL', 'jina-embeddings-v3'),
+  embeddingDimensions: int('EMBEDDING_DIMENSIONS', 1024),
+  jinaApiKey: str('JINA_API_KEY', ''),
+  jinaBaseUrl: str('JINA_BASE_URL', 'https://api.jina.ai/v1/embeddings'),
 };
