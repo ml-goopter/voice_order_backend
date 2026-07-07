@@ -12,6 +12,7 @@
     "test": "vitest run",
     "migrate": "tsx scripts/migrate.ts",
     "seed:menu": "tsx scripts/seed-menu.ts",
+    "populate:menu": "tsx scripts/populate-redis-menu.ts",
     "refresh:embeddings": "tsx scripts/refresh-embeddings.ts"
   },
   "keywords": [],
@@ -21,6 +22,7 @@
     "@types/node": "^26.1.0",
     "@types/pg": "^8.20.0",
     "@types/ws": "^8.18.1",
+    "tsx": "^4.19.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
   },
