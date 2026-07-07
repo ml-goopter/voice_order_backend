@@ -55,10 +55,15 @@ call — cuts token cost and improves accuracy (design §7). Also resolves LLM
   `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `JINA_API_KEY`, `JINA_BASE_URL`).
 
 ## Key files
-- `menu-service.ts`, `menu-cache.ts`, `candidate-matcher.ts`, `menu-types.ts`.
+- `menu-service.ts` (`loadMenu`, `loadIndexedMenu`, `getCandidates`, …), `menu-cache.ts`,
+  `candidate-matcher.ts`, `menu-types.ts`.
+- `menu-repository.ts` — `RedisMenuRepository` (Redis boot path; reads items+vectors).
 - `fuzzy-matcher.ts`, `modifier-matcher.ts` — pure ranking signals (unit-tested).
 - `embedding-service.ts` — interface + `StubEmbeddingService` + factory.
 - `jina-embedding-service.ts` — real Jina provider (default when `EMBEDDING_PROVIDER=jina`).
+- `scripts/populate-redis-menu.ts` — seed from Odoo Postgres (+ embed);
+  `scripts/embed-redis-menu.ts` (`npm run embed:menu`) — backfill embeddings into an
+  already-seeded Redis menu, no Postgres.
 - `*.test.ts` — Vitest coverage for the three matchers + the Jina client.
 
 ## Not done yet

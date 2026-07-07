@@ -10,7 +10,8 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "test": "vitest run",
-    "seed:menu": "tsx scripts/seed-menu.ts"
+    "seed:menu": "tsx scripts/seed-menu.ts",
+    "embed:menu": "tsx scripts/embed-redis-menu.ts"
   },
   "keywords": [],
   "author": "",

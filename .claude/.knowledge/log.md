@@ -7,6 +7,22 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Backfill: embed an already-seeded Redis menu in place
+- **What:** New `scripts/embed-redis-menu.ts` (npm `embed:menu`). Reads each
+  existing `menu:item:{pos}:{id}` record straight from Redis, embeds its
+  per-language names ('passage' role, mirroring `MenuCache.embedNames`), writes the
+  `vectors` back into the record, and stamps `menu:meta:{pos}.embedding =
+  { model, dimensions }`. Discovers pos_config_ids via `SCAN menu:meta:*`; embeds in
+  chunks of 100 names/request; idempotent (re-run overwrites vectors).
+- **Why:** The corpus was already seeded from Odoo (351 items, pos 1) but written
+  WITHOUT vectors and with no `menu:meta.embedding`. `populate-redis-menu.ts`
+  re-sources from Postgres; this backfills embeddings using only what's in Redis.
+- **Where:** `scripts/embed-redis-menu.ts` (new), `package.json` (`embed:menu`).
+- **Notes:** Requires `EMBEDDING_PROVIDER=jina` + `JINA_API_KEY`; exits early (no
+  Redis writes) if the embedder yields 0 dims. Only `names` are embedded (not
+  `alternative_name`/`descriptions`) so seed vectors match what the runtime matcher
+  would produce. Run: `EMBEDDING_PROVIDER=jina JINA_API_KEY=… npm run embed:menu`.
+
 ## 2026-07-07 — Redis review follow-ups: graceful close + embedder-mismatch caveat
 - **What:** (1) Shutdown now calls a new `closeRedisClient()` that `quit()`s the
   shared connection (drains in-flight commands, vs the old abrupt `disconnect()`)
