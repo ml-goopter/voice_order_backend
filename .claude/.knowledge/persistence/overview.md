@@ -34,7 +34,7 @@ Durable and hot state for the system (design §9). Three stores:
 
 ## Key files
 - `redis/cart-cache.ts`, `redis/redis-client.ts`, `db/db.ts`.
-- `db/schema/00_extensions.sql` … `07_server_calls.sql` + `db/schema/README.md`.
+- `db/schema/01_external_odoo.sql` … `07_server_calls.sql` + `db/schema/README.md`.
 
 ## Not done yet
 - Real Redis/Postgres wiring; migration runner (`scripts/migrate.ts` is a stub);

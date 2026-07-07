@@ -7,6 +7,39 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-07 — Jina AI text embeddings (swappable provider)
+- **What:** Replaced the dead embedding term with a real provider. Extended
+  `EmbeddingService` (added `dimensions` + `embedBatch` + an optional
+  `role: 'query' | 'passage'` hint), added `JinaEmbeddingService` (Jina
+  `/v1/embeddings`, `jina-embeddings-v3`, batched, `index`-ordered parse, one
+  retry on 429/5xx, fail-fast on 4xx) and a `createEmbeddingService()` factory —
+  the single swap point, mirroring `createLlmProvider`/`createSttProvider`.
+  `MenuCache` now embeds names as `'passage'`, `CandidateMatcher` embeds transcript
+  phrases as `'query'` (design §7 asymmetric retrieval). Config gained
+  `EMBEDDING_PROVIDER`, `EMBEDDING_DIMENSIONS`, `JINA_API_KEY`, `JINA_BASE_URL`;
+  default model is now `jina-embeddings-v3`.
+- **Why:** The stub returned `[]`, so cross-language matching (design §7/§15) was
+  impossible with fuzzy signals alone. Swapping the model is now an env change.
+- **Where:** `menu` module (`embedding-service.ts`, new `jina-embedding-service.ts`,
+  `menu-service.ts`, `menu-cache.ts`, `candidate-matcher.ts`); `config/env.ts`;
+  `.env.example`; new `menu/jina-embedding-service.test.ts`.
+- **Notes:** Default provider stays `stub` (zero behavior change until
+  `EMBEDDING_PROVIDER=jina` + `JINA_API_KEY` are set). Embeddings live **in-memory
+  only** — see the removal entry below.
+
+## 2026-07-07 — Drop Postgres embedding store (in-memory only)
+- **What:** Removed the pgvector persistence path: deleted `03_embeddings.sql`
+  (`menu_embeddings` table), `00_extensions.sql` (its only content was the `vector`
+  extension), `scripts/refresh-embeddings.ts`, and the `refresh:embeddings`
+  npm script. Updated `db/schema/README.md` (file list, `01`→`07` ordering, FR5
+  coverage) and the persistence/menu knowledge bundles.
+- **Why:** Decision: embeddings are not stored in Postgres. The Menu Candidate
+  Matcher keeps them in memory (design §7), so the persistent vector store and its
+  re-embed script are dead weight.
+- **Where:** `src/db/schema/`, `scripts/`, `package.json`, knowledge bundles.
+- **Notes:** No table used `vector` besides `menu_embeddings`; `gen_random_uuid()`
+  is core PG13+, so removing `00_extensions.sql` needs no replacement.
+
 ## 2026-07-07 — Docker setup (app + Redis)
 - **What:** Added `Dockerfile` (3-stage on `node:26-alpine`: build → compile TS,
   deps → prod-only `node_modules`, runtime → copies both and runs `dist/server.js`
