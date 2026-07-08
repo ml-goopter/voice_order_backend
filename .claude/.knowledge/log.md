@@ -7,6 +7,43 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-08 — Redis-backed cart idempotency ledger + infra-failure handling
+- **What:** (F3) Turned `CartRepository` into an interface with `RedisCartRepository`
+  (idempotency ledger at `cart:req:{request_id}`, TTL-bounded via new
+  `CART_IDEMPOTENCY_TTL_SECONDS`, default 24h) + `InMemoryCartRepository` for tests —
+  mirroring the `CartCache` two-impl pattern. New `commitApplied` writes the cart blob
+  and the ledger mark in one Redis `MULTI`. (F2) Wrapped `CartController.applyProposal`
+  in try/catch: an unexpected/infra throw (Redis/menu down) now aborts before any
+  persist, leaves the request un-marked (retry-safe), and emits one
+  `cart.operation_rejected` with reason `internal_error` instead of silently dropping
+  the turn; `registerCartHandlers` also `.catch`es as a last-resort guard. Tightened
+  `applyOperation`/`validateOperation` error types to `CartRejectedError` and removed
+  the now-dead non-rejection `else` branch in the controller.
+- **Why:** The in-memory ledger grew unbounded (F3), and infra errors escaped as
+  unhandled promise rejections that dropped the turn with no client signal; the
+  separate cart-write/ledger-mark also had a double-apply-on-partial-failure window (F2).
+- **Where:** `src/cart/cart-repository.ts` (+ test), `cart-controller.ts` (+ test),
+  `cart-operation-applier.ts`, `cart-validator.ts`, `register-handlers.ts`,
+  `src/redis/cart-cache.ts` (export `cartKey`), `src/config/env.ts`, `app.ts`,
+  `src/ordering/final-transcript.e2e.ts`, `.env.example`.
+- **Notes:** New env var `CART_IDEMPOTENCY_TTL_SECONDS`. `RedisCartRepository` writes
+  the cart key too (via `commitApplied`), so the controller's applied path no longer
+  calls `CartCache.set` — reads still go through `CartCache`. The try/catch guards only
+  the compute-and-persist section; the `cart.updated` and per-op rejection emits run
+  after it (outside the try) so a synchronously-throwing event listener (`EventBus.emit`
+  isolates nothing) can't be misread as an infra failure and emit a spurious
+  `internal_error` for an already-committed cart.
+
+## 2026-07-08 — cart-controller test aligned with in-memory CartRepository
+- **What:** Removed dead `import type { Db } from '../db/db.js'`, the unused `dbStub`,
+  and the stray `new CartRepository(dbStub)` argument from `cart-controller.test.ts`;
+  the constructor takes no args.
+- **Why:** Leftover from an abandoned Postgres-backed-repository direction — the module
+  removed by `db/db.js` never existed, and test files are excluded from `tsc` (and
+  vitest strips types), so the dangling import + wrong arity slipped through both gates.
+  With "persist only to Redis for now," `CartRepository` stays in-memory.
+- **Where:** `src/cart/cart-controller.test.ts`.
+
 ## 2026-07-08 — e2e coverage for edit ops + stricter clarification tests
 - **What:** Added real-stack e2e cases for the four edit operations that had no
   coverage — `update_quantity`, `remove_item`, `add_modifier`, `remove_modifier` —
@@ -22,6 +59,14 @@ timestamp: 2026-07-07
   modifier on an existing line depends on candidate retrieval surfacing the item's
   modifier_key from a transcript naming no dish — a genuine weak spot in the pipeline
   (retrieve-candidates keys off the transcript only, not the cart's lines).
+- **Known-gap test:** added an `it.fails` case ("cross-turn modifier edit by reference")
+  that drives a real two-turn flow on one cart — add by name, then edit by pronoun
+  ("add broccoli to that") — and asserts the DESIRED outcome (broccoli lands on the
+  line). It passes today because that outcome does NOT hold: on the edit turn the model
+  has no valid modifier_key for the prior-turn line. When the cart-enrichment fix lands,
+  `it.fails` flips to failing and the marker should be removed. Fix options captured for
+  later: (A) enrich current_cart with each line's item name + available_modifiers/keys;
+  (B) accumulate candidates across turns instead of last-write-wins in the graph state.
 
 ## 2026-07-08 — Prompt: inline modifiers on add_item
 - **What:** Reworded the order-parse system prompt in `buildPrompt` to state that a

@@ -8,7 +8,7 @@ import type { MenuLookup } from '../menu/menu-service.js';
 import type { Cart, CartLine, CartModifier } from './cart-types.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 
-const reject = (reason: string, message: string): Result<Cart> =>
+const reject = (reason: string, message: string): Result<Cart, CartRejectedError> =>
   err(new CartRejectedError(reason, message));
 
 /** Recompute totals from menu prices. TODO: modifier price deltas + tax (§9). */
@@ -35,7 +35,7 @@ export async function applyOperation(
   op: CartOperation,
   menu: MenuLookup,
   pos: PosConfigId,
-): Promise<Result<Cart>> {
+): Promise<Result<Cart, CartRejectedError>> {
   switch (op.action) {
     case 'add_item': {
       const item = await menu.resolveItemKey(pos, op.menu_item_key);

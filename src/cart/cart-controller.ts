@@ -8,6 +8,7 @@ import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js
 import { KeyedAsyncLock } from '../shared/async-lock.js';
 import { CartRejectedError } from '../shared/errors.js';
 import { emptyCart } from './cart-types.js';
+import type { Cart } from './cart-types.js';
 import { applyOperation } from './cart-operation-applier.js';
 import { logger } from '../config/logger.js';
 
@@ -29,45 +30,71 @@ export class CartController {
 
   async applyProposal(proposal: OrderProposal, session_id?: SessionId): Promise<void> {
     await this.applyLock.run(proposal.cart_id, async () => {
-      // Idempotency — never apply the same request twice (§9/§11).
-      if (await this.repo.wasProcessed(proposal.request_id)) {
-        logger.info('cart.duplicate_request', { request_id: proposal.request_id });
+      const rejected: Array<{ op: CartOperation; error: CartRejectedError }> = [];
+      let updatedCart: Cart | undefined;
+
+      try {
+        // Idempotency — never apply the same request twice (§9/§11).
+        if (await this.repo.wasProcessed(proposal.request_id)) {
+          logger.info('cart.duplicate_request', { request_id: proposal.request_id });
+          return;
+        }
+
+        let cart = (await this.carts.get(proposal.cart_id)) ?? emptyCart(proposal.cart_id, proposal.pos_config_id);
+        if (proposal.base_version !== cart.version) {
+          logger.info('cart.rebase', { cart_id: proposal.cart_id, base: proposal.base_version, current: cart.version });
+        }
+
+        let applied = 0;
+        for (const op of proposal.operations) {
+          const r = await applyOperation(cart, op, this.menu, proposal.pos_config_id);
+          if (r.ok) {
+            cart = r.value;
+            applied += 1;
+          } else {
+            rejected.push({ op, error: r.error });
+          }
+        }
+
+        if (applied > 0) {
+          cart = { ...cart, version: cart.version + 1 };
+          // Atomic: persist the cart AND mark the request processed together (§9).
+          await this.repo.commitApplied(cart, proposal.request_id);
+          await this.repo.saveSnapshot(cart);
+          updatedCart = cart;
+        } else {
+          await this.repo.markProcessed(proposal.request_id, 'rejected');
+        }
+      } catch (err) {
+        // Unexpected/infra failure (Redis or menu unavailable). Nothing was persisted
+        // — commitApplied runs only after the loop — and the request was NOT marked
+        // processed, so a retry can reprocess cleanly. Surface it to the client over
+        // the existing rejection channel rather than dropping the turn silently.
+        logger.error('cart.apply_failed', {
+          cart_id: proposal.cart_id,
+          request_id: proposal.request_id,
+          message: (err as Error).message,
+        });
+        this.bus.emit('cart.operation_rejected', {
+          cart_id: proposal.cart_id,
+          request_id: proposal.request_id,
+          reason: 'internal_error',
+          message: 'Sorry, something went wrong. Please try again.',
+          ...(session_id !== undefined ? { session_id } : {}),
+        });
         return;
       }
 
-      let cart = (await this.carts.get(proposal.cart_id)) ?? emptyCart(proposal.cart_id, proposal.pos_config_id);
-      if (proposal.base_version !== cart.version) {
-        logger.info('cart.rebase', { cart_id: proposal.cart_id, base: proposal.base_version, current: cart.version });
-      }
-
-      const rejected: Array<{ op: CartOperation; error: CartRejectedError }> = [];
-      let applied = 0;
-
-      for (const op of proposal.operations) {
-        const r = await applyOperation(cart, op, this.menu, proposal.pos_config_id);
-        if (r.ok) {
-          cart = r.value;
-          applied += 1;
-        } else if (r.error instanceof CartRejectedError) {
-          rejected.push({ op, error: r.error });
-        } else {
-          rejected.push({ op, error: new CartRejectedError('invalid', r.error.message) });
-        }
-      }
-
-      if (applied > 0) {
-        cart = { ...cart, version: cart.version + 1 };
-        await this.carts.set(cart);
-        await this.repo.saveSnapshot(cart);
-        await this.repo.markProcessed(proposal.request_id, 'applied', cart.version);
+      // Persist succeeded. Emit OUTSIDE the try so a throwing cart.updated / rejection
+      // listener can't be misread as an infra failure and trigger a spurious
+      // internal_error for a cart that's already committed and marked processed.
+      if (updatedCart) {
         this.bus.emit('cart.updated', {
-          cart_id: cart.cart_id,
-          pos_config_id: cart.pos_config_id,
-          version: cart.version,
-          cart,
+          cart_id: updatedCart.cart_id,
+          pos_config_id: updatedCart.pos_config_id,
+          version: updatedCart.version,
+          cart: updatedCart,
         });
-      } else {
-        await this.repo.markProcessed(proposal.request_id, 'rejected');
       }
 
       for (const { op, error } of rejected) {

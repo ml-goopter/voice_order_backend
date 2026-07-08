@@ -28,21 +28,34 @@ bumps the version, persists, and broadcasts `cart.updated`. Rejected ops surface
   - **Rebase per op** — every op is re-validated against the **current** cart, not
     the stale `base_version`; `add_item` always applies, stale edits reject
     individually, the rest apply.
-  - Bumps `version`, writes the cache, snapshots, marks processed, emits
-    `cart.updated`; emits `cart.operation_rejected` per failed op.
+  - Bumps `version`, then `commitApplied` writes the cart blob AND the idempotency
+    mark in one Redis `MULTI` (so a crash can't leave the cart persisted but the
+    request un-marked → double-apply on retry), snapshots, emits `cart.updated`;
+    emits `cart.operation_rejected` per failed op.
+  - **Infra failure** — the compute-and-persist section is wrapped in try/catch. An
+    unexpected throw (Redis/menu down) aborts before any persist, leaves the
+    `request_id` un-marked (so a retry reprocesses), and emits one
+    `cart.operation_rejected` with reason `internal_error`. The `cart.updated` and
+    per-op rejection emits run **outside** the try (after a successful persist) so a
+    throwing event listener can't be misread as an infra failure and trigger a
+    spurious `internal_error` for an already-committed cart. `register-handlers` also
+    `.catch`es as a last-resort guard.
   - `confirm()` writes the cart to Odoo `pos_order` (stub).
 - **Pricing** currently sums item base prices only (TODO modifier deltas + tax).
   The applier is async and reads prices from the Redis-backed `MenuLookup`; repricing
   batches every line through one `getItems` (MGET) rather than a lookup per line.
 
 ## Dependencies
-- `persistence` (CartCache, CartRepository), `menu` (resolution + prices),
-  `events` (EventBus). `register-handlers.ts` binds `order.operations_proposed`.
+- `persistence` (CartCache, CartRepository — both Redis-backed, with in-memory
+  doubles for tests), `menu` (resolution + prices), `events` (EventBus).
+  `register-handlers.ts` binds `order.operations_proposed`.
 
 ## Key files
 - `cart-controller.ts`, `cart-operation-applier.ts`, `cart-validator.ts`,
   `cart-repository.ts`, `cart-types.ts`, `register-handlers.ts`.
 
 ## Not done yet
-- Persistence is in-memory (`CartRepository` idempotency/snapshots), to be backed
-  by Redis; `confirmOrder` and modifier/tax pricing are stubs.
+- `CartRepository` is Redis-backed: the idempotency ledger lives at `cart:req:{request_id}`
+  with a TTL (`CART_IDEMPOTENCY_TTL_SECONDS`, default 24h) so it stays bounded.
+  `saveSnapshot` (versioned recovery snapshot), `confirmOrder` (Odoo pos_order), and
+  modifier/tax pricing are still stubs.

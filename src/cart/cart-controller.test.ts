@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { CartId, PosConfigId } from '../shared/types.js';
-import type { Db } from '../db/db.js';
 import { EventBus } from '../events/event-bus.js';
 import type { CartOperationRejected, CartUpdated } from '../events/event-types.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
@@ -10,13 +9,10 @@ import type { MenuItem } from '../menu/menu-types.js';
 import type { OrderProposal } from '../ordering/schemas/proposal.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 import { CartController } from './cart-controller.js';
-import { CartRepository } from './cart-repository.js';
+import { InMemoryCartRepository } from './cart-repository.js';
 
 const POS: PosConfigId = 1;
 const CART: CartId = 'cart_1';
-
-/** A db stub — CartRepository only touches it in confirmOrder, unused here. */
-const dbStub: Db = { connected: false, query: async () => [] };
 
 function makeMenu(): MenuService {
   const items: MenuItem[] = [
@@ -43,7 +39,7 @@ function makeMenu(): MenuService {
 interface Harness {
   bus: EventBus;
   cache: InMemoryCartCache;
-  repo: CartRepository;
+  repo: InMemoryCartRepository;
   controller: CartController;
   updated: CartUpdated[];
   rejected: CartOperationRejected[];
@@ -52,7 +48,7 @@ interface Harness {
 function setup(): Harness {
   const bus = new EventBus();
   const cache = new InMemoryCartCache();
-  const repo = new CartRepository(dbStub);
+  const repo = new InMemoryCartRepository(cache);
   const controller = new CartController(cache, makeMenu(), repo, bus);
   const updated: CartUpdated[] = [];
   const rejected: CartOperationRejected[] = [];
@@ -196,5 +192,34 @@ describe('CartController.applyProposal', () => {
     // Second call short-circuits on idempotency: still exactly one rejection emitted.
     expect(h.rejected).toHaveLength(1);
     expect(h.updated).toHaveLength(0);
+  });
+
+  it('surfaces an infra error as internal_error and leaves the request unmarked for retry', async () => {
+    // A menu that throws stands in for Redis/menu being unavailable mid-apply.
+    const throwingMenu = {
+      resolveItemKey: async () => {
+        throw new Error('redis down');
+      },
+      findByTmplId: async () => undefined,
+      getItems: async () => [],
+    } as unknown as MenuService;
+    const bus = new EventBus();
+    const cache = new InMemoryCartCache();
+    const repo = new InMemoryCartRepository(cache);
+    const controller = new CartController(cache, throwingMenu, repo, bus);
+    const updated: CartUpdated[] = [];
+    const rejected: CartOperationRejected[] = [];
+    bus.on('cart.updated', (e) => updated.push(e));
+    bus.on('cart.operation_rejected', (e) => rejected.push(e));
+
+    const p = proposal([addBurger]);
+    await controller.applyProposal(p, 'sess_1');
+
+    expect(updated).toHaveLength(0);
+    expect(await cache.get(CART)).toBeUndefined(); // nothing persisted
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.reason).toBe('internal_error');
+    expect(rejected[0]!.session_id).toBe('sess_1');
+    expect(await repo.wasProcessed(p.request_id)).toBe(false); // retry can reprocess
   });
 });

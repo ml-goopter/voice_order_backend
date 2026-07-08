@@ -18,7 +18,7 @@ import { OrderGraph } from './ordering/order-graph.js';
 import { OrderUnderstandingService } from './ordering/order-understanding-service.js';
 import { registerOrderingHandlers } from './ordering/register-handlers.js';
 
-import { CartRepository } from './cart/cart-repository.js';
+import { RedisCartRepository } from './cart/cart-repository.js';
 import { CartController } from './cart/cart-controller.js';
 import { registerCartHandlers } from './cart/register-handlers.js';
 
@@ -53,7 +53,7 @@ export function createApp(): App {
   registerOrderingHandlers(bus, ordering);
 
   // Cart (sole writer).
-  const repo = new CartRepository();
+  const repo = new RedisCartRepository(redis, config.cartIdempotencyTtlSeconds);
   const cartController = new CartController(carts, menu, repo, bus);
   registerCartHandlers(bus, cartController);
 

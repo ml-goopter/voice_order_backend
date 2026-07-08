@@ -37,7 +37,7 @@ import { createLlmProvider } from '../llm/llm-client.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
 import { registerOrderingHandlers } from './register-handlers.js';
-import { CartRepository } from '../cart/cart-repository.js';
+import { RedisCartRepository } from '../cart/cart-repository.js';
 import { CartController } from '../cart/cart-controller.js';
 import { registerCartHandlers } from '../cart/register-handlers.js';
 import type { Cart, CartLine, CartModifier } from '../cart/cart-types.js';
@@ -312,7 +312,7 @@ beforeAll(async () => {
   const ordering = new OrderUnderstandingService(graph, bus);
   registerOrderingHandlers(bus, ordering);
 
-  const cartController = new CartController(carts, menu, new CartRepository(), bus);
+  const cartController = new CartController(carts, menu, new RedisCartRepository(redis, config.cartIdempotencyTtlSeconds), bus);
   registerCartHandlers(bus, cartController);
 
   infraReady = true;
@@ -545,6 +545,51 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
     expect(edited?.modifiers.some((m) => m.ptav_id === seededMod.ptav_id), 'broccoli ptav_id still on line').toBe(false);
   });
+
+  // KNOWN GAP (documented as a failing test). A modifier edit that refers to a line
+  // added in an EARLIER turn by pronoun ("that"), not by dish name, cannot resolve the
+  // modifier: `retrieve` keys off the current utterance only, so the chicken item's
+  // available_modifiers (and thus the broccoli modifier_key) are never surfaced this
+  // turn, and current_cart carries only numeric ids — the model has no valid key for the
+  // existing line. `it.fails` expects the DESIRED behavior to NOT hold today; when the
+  // cart-enrichment fix lands this flips to failing, signalling the marker to be removed.
+  it.fails(
+    'cross-turn modifier edit by reference ("add broccoli to that") does not land the modifier',
+    async (ctx) => {
+      if (!infraReady) return ctx.skip(infraSkipReason);
+      const o = ids('crossmod');
+      await seedEmptyCart(o.cart_id);
+
+      // Turn 1 — add the item BY NAME. This is the only turn whose candidates carry the
+      // item's modifier keys. Completes and checkpoints the cart-keyed graph thread.
+      emitFinal('one sweet and sour chicken', o);
+      const t1 = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+      expect(t1.name, `turn 1 failed: ${JSON.stringify(t1.payload)}`).toBe('cart.updated');
+      const line = await expectLine((t1.payload as AppEventMap['cart.updated']).cart, /sweet.*sour.*chicken/i, 1);
+      const item = await menu.findByTmplId(POS, line.product_tmpl_id);
+      const broccoli = item?.modifiers.find((m) => /add broccoli/i.test(m.name));
+      expect(broccoli, 'fixture item has no "add broccoli" modifier').toBeDefined();
+
+      // Turn 2 — edit BY REFERENCE (fresh request_id, same cart/thread). A new invoke whose
+      // `retrieve` runs on "add broccoli to that": surfaces neither the chicken item nor its
+      // broccoli modifier_key. We widen the wait so the turn resolves promptly (rejected/
+      // clarify) instead of timing out.
+      const t2o = { cart_id: o.cart_id, session_id: o.session_id, request_id: `${o.request_id}_edit` };
+      emitFinal('add broccoli to that', t2o);
+      const t2 = await waitForAny(
+        ['cart.updated', 'voice.session_failed', 'order.clarification_needed', 'cart.operation_rejected'],
+        o.cart_id,
+        TURN_MS,
+      );
+
+      // DESIRED behavior (does NOT hold today): the edit applies and broccoli lands on the
+      // existing line. Whichever expectation throws is what marks the gap present.
+      expect(t2.name, `edit did not apply, got ${t2.name}: ${JSON.stringify(t2.payload)}`).toBe('cart.updated');
+      const edited = (t2.payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
+      expect(edited?.modifiers.some((m) => m.ptav_id === broccoli!.ptav_id), 'broccoli extra did not land on the line').toBe(true);
+    },
+    480_000,
+  );
 
   // Parse-failure (voice.session_failed / order_parse_failed) requires the LLM to
   // return invalid JSON twice (after one schema-repair retry). A compliant model in

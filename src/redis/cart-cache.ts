@@ -14,7 +14,7 @@ export interface CartCache {
 }
 
 /** Redis key for a cart. `cart_id` is a globally-unique text key (see shared/types). */
-function cartKey(cart_id: CartId): string {
+export function cartKey(cart_id: CartId): string {
   return `cart:${cart_id}`;
 }
 

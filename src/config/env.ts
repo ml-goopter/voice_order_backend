@@ -21,6 +21,7 @@ export interface AppConfig {
   readonly logLevel: string;
 
   readonly redisUrl: string;
+  readonly cartIdempotencyTtlSeconds: number; // TTL on the cart idempotency ledger (design §9)
 
   readonly sttProvider: string; // 'assemblyai' | 'deepgram' | ...
   readonly sttSampleRate: number; // Hz of the client PCM16 stream (design §5)
@@ -43,6 +44,7 @@ export const config: AppConfig = {
   logLevel: str('LOG_LEVEL', 'info'),
 
   redisUrl: str('REDIS_URL', 'redis://localhost:6379'),
+  cartIdempotencyTtlSeconds: int('CART_IDEMPOTENCY_TTL_SECONDS', 86_400),
 
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
   sttSampleRate: int('STT_SAMPLE_RATE', 16_000),
