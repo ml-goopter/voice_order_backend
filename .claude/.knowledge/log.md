@@ -7,6 +7,17 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-08 — Realtime gateway frontend-integration doc
+- **What:** Added `docs/realtime-gateway-frontend-integration.md` — client-facing
+  spec for the `/ws` WebSocket: endpoint/port, query-string auth (+`4001`), heartbeat,
+  the inbound/outbound message schemas (`voice.*` / `order.*` / `cart.*` / `connection.*`),
+  audio format (base64 PCM16 @ 16 kHz), the `Cart` shape, turn lifecycle, and reconnect.
+- **Why:** Frontend needs the exact wire contract to integrate against the gateway.
+- **Where:** `docs/` (new); derives from `src/realtime/*`, `src/auth/session-auth.ts`,
+  `src/voice/voice-message-handler.ts`, `src/cart/cart-types.ts`, `src/config/*`.
+- **Notes:** Doc-only, no code change. Flags that `authenticate()` is still a stub
+  (`token` parsed but unverified).
+
 ## 2026-07-08 — Real-stack e2e for the final-transcript pipeline
 - **What:** New `src/ordering/final-transcript.e2e.ts` — an opt-in e2e that emits
   `stt.final_transcript.received` on a real `EventBus` and drives the full pipeline
