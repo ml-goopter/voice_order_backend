@@ -23,6 +23,8 @@ export interface AppConfig {
   readonly redisUrl: string;
 
   readonly sttProvider: string; // 'assemblyai' | 'deepgram' | ...
+  readonly sttSampleRate: number; // Hz of the client PCM16 stream (design §5)
+  readonly assemblyAiApiKey: string;
   readonly llmProvider: string; // 'groq' | 'openai' | 'gemini' | ...
   readonly embeddingProvider: string; // 'stub' | 'jina' | ...
   readonly embeddingModel: string;
@@ -39,6 +41,8 @@ export const config: AppConfig = {
   redisUrl: str('REDIS_URL', 'redis://localhost:6379'),
 
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
+  sttSampleRate: int('STT_SAMPLE_RATE', 16_000),
+  assemblyAiApiKey: str('ASSEMBLYAI_API_KEY', ''),
   llmProvider: str('LLM_PROVIDER', 'groq'),
   embeddingProvider: str('EMBEDDING_PROVIDER', 'stub'),
   embeddingModel: str('EMBEDDING_MODEL', 'jina-embeddings-v3'),
