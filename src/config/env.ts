@@ -23,7 +23,10 @@ export interface AppConfig {
   readonly redisUrl: string;
 
   readonly sttProvider: string; // 'assemblyai' | 'deepgram' | ...
-  readonly llmProvider: string; // 'groq' | 'openai' | 'gemini' | ...
+  readonly llmProvider: string; // 'stub' | 'ollama' | 'openai' | ...
+  readonly llmModel: string;
+  readonly llmBaseUrl: string; // OpenAI-compatible base URL (Ollama by default)
+  readonly llmApiKey: string;
   readonly embeddingProvider: string; // 'stub' | 'jina' | ...
   readonly embeddingModel: string;
   readonly embeddingDimensions: number;
@@ -39,7 +42,10 @@ export const config: AppConfig = {
   redisUrl: str('REDIS_URL', 'redis://localhost:6379'),
 
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
-  llmProvider: str('LLM_PROVIDER', 'groq'),
+  llmProvider: str('LLM_PROVIDER', 'stub'),
+  llmModel: str('LLM_MODEL', 'llama3.1'),
+  llmBaseUrl: str('LLM_BASE_URL', 'http://localhost:11434/v1'),
+  llmApiKey: str('LLM_API_KEY', ''),
   embeddingProvider: str('EMBEDDING_PROVIDER', 'stub'),
   embeddingModel: str('EMBEDDING_MODEL', 'jina-embeddings-v3'),
   embeddingDimensions: int('EMBEDDING_DIMENSIONS', 1024),

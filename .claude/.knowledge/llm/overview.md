@@ -15,7 +15,11 @@ deterministic source of truth. Output is strict JSON, schema-validated before us
 
 ## Mechanics
 - `LlmProvider` interface: `complete(prompt) → string` (raw JSON text).
-  `createLlmProvider` selects by config.
+  `createLlmProvider` selects by `config.llmProvider` (`stub` | `ollama` | `openai`).
+- `OpenAiCompatibleLlmProvider` (real): OpenAI SDK against a configurable base URL,
+  so one client serves Ollama (default `http://localhost:11434/v1`), OpenAI, Groq.
+  Env-driven (`LLM_MODEL`/`LLM_BASE_URL`/`LLM_API_KEY`). Sends system+user messages
+  with `response_format: json_object`, `temperature: 0`; SDK handles transient retries.
 - `prompt-builder.ts` assembles the prompt from `OrderGraphInput`: a system message
   fixing the output contract and rules (use candidate keys, edits target `line_id`,
   only `add_item` omits it, clarify when ambiguous) and a user message with the
@@ -28,6 +32,6 @@ deterministic source of truth. Output is strict JSON, schema-validated before us
 ## Key files
 - `llm-provider.ts` — `LlmProvider` + `LlmPrompt`.
 - `prompt-builder.ts` — `buildPrompt`.
-- `llm-client.ts` — **stub** `StubLlmProvider` (returns a valid empty proposal so
-  the pipeline runs). TODO Groq/OpenAI/Gemini with retry + repair prompt +
-  schema-validated output (§8/§11.3/§14).
+- `llm-client.ts` — `createLlmProvider` switch + `StubLlmProvider` (valid empty
+  proposal so the pipeline runs keyless).
+- `openai-compatible-provider.ts` — `OpenAiCompatibleLlmProvider` (Ollama/OpenAI/…).

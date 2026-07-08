@@ -7,6 +7,23 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-08 — LLM: OpenAI-compatible provider (Ollama by default)
+- **What:** New `src/llm/openai-compatible-provider.ts` —
+  `OpenAiCompatibleLlmProvider` uses the OpenAI SDK against a configurable
+  base URL, so one client serves Ollama (default `http://localhost:11434/v1`),
+  OpenAI, Groq, etc. Forces `response_format: json_object`, `temperature: 0`,
+  30s timeout, SDK transport retries = `LIMITS.llmTransportMaxRetries` (distinct
+  from `llmMaxRetries`, the schema-repair budget). `LLM_API_KEY` has no default
+  and is required (constructor throws when empty). `createLlmProvider` now
+  routes `ollama`/`openai` to it (default stays stub). Added `openai` dependency.
+- **Why:** Wire a real, locally-runnable LLM; the OpenAI SDK + env-driven base
+  URL keeps the parser provider-agnostic (design §8/§14).
+- **Where:** `src/llm/openai-compatible-provider.ts` (new), `src/llm/llm-client.ts`,
+  `src/config/env.ts` (`llmModel`/`llmBaseUrl`/`llmApiKey`; default `LLM_PROVIDER`
+  now `stub`), `.env.example`, `package.json`.
+- **Notes:** Local use: `ollama pull llama3.1` then `LLM_PROVIDER=ollama`. For
+  OpenAI, set `LLM_BASE_URL=https://api.openai.com/v1`, `LLM_MODEL`, `LLM_API_KEY`.
+
 ## 2026-07-07 — Backfill: embed an already-seeded Redis menu in place
 - **What:** New `scripts/embed-redis-menu.ts` (npm `embed:menu`). Reads each
   existing `menu:item:{pos}:{id}` record straight from Redis, embeds its

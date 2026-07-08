@@ -16,6 +16,8 @@ export const LIMITS = {
   inMemoryEmbeddingCap: 2_000,
   /** §7 — candidate set size returned to the LLM. */
   maxCandidatesToLlm: 8,
-  /** §11.3 — LLM retry budget before falling back to clarify/manual. */
+  /** §11.3 — schema-repair re-prompts on invalid LLM JSON before falling back to clarify/manual. */
   llmMaxRetries: 1,
+  /** Transport-level retries (429/5xx/network) the OpenAI SDK performs per request. */
+  llmTransportMaxRetries: 1,
 } as const;
