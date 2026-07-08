@@ -29,6 +29,7 @@ export interface AppConfig {
   readonly llmModel: string;
   readonly llmBaseUrl: string; // OpenAI-compatible base URL (Ollama by default)
   readonly llmApiKey: string;
+  readonly llmTimeoutMs: number; // per-request timeout; raise for slow local models
   readonly embeddingProvider: string; // 'stub' | 'jina' | ...
   readonly embeddingModel: string;
   readonly embeddingDimensions: number;
@@ -50,6 +51,7 @@ export const config: AppConfig = {
   llmModel: str('LLM_MODEL', 'llama3.1'),
   llmBaseUrl: str('LLM_BASE_URL', 'http://localhost:11434/v1'),
   llmApiKey: str('LLM_API_KEY', ''),
+  llmTimeoutMs: int('LLM_TIMEOUT_MS', 30_000),
   embeddingProvider: str('EMBEDDING_PROVIDER', 'stub'),
   embeddingModel: str('EMBEDDING_MODEL', 'jina-embeddings-v3'),
   embeddingDimensions: int('EMBEDDING_DIMENSIONS', 1024),

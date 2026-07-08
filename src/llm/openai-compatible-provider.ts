@@ -4,8 +4,6 @@ import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { LIMITS } from '../config/constants.js';
 
-const REQUEST_TIMEOUT_MS = 30_000;
-
 /**
  * LLM backed by any OpenAI-compatible chat endpoint — Ollama (default,
  * http://localhost:11434/v1), OpenAI, Groq, etc. The single swap point is env:
@@ -29,7 +27,7 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
     this.client = new OpenAI({
       baseURL: config.llmBaseUrl,
       apiKey: config.llmApiKey,
-      timeout: REQUEST_TIMEOUT_MS,
+      timeout: config.llmTimeoutMs,
       maxRetries: LIMITS.llmTransportMaxRetries,
     });
   }
