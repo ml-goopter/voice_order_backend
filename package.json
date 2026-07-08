@@ -27,6 +27,7 @@
     "@langchain/langgraph": "^1.4.7",
     "assemblyai": "^4.35.3",
     "ioredis": "^5.11.1",
+    "openai": "^6.45.0",
     "ws": "^8.21.0",
     "zod": "^4.4.3"
   }
