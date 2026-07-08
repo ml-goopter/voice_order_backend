@@ -7,6 +7,41 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-08 — Realtime: harden the `ws` transport error paths
+- **What:** Two crash-safety fixes in `websocket-server.ts`. (1) The
+  `socket.on('message')` handler now `.catch()`es `gateway.onRawMessage` — a
+  downstream rejection (STT open failure, cart-cache error) was floating
+  unhandled. (2) The per-socket `'error'` listener moved above the auth check so
+  auth-rejected sockets are covered too (an unhandled `'error'` on a ws socket is
+  an uncaught throw); `session_id` is threaded via a closure var. Added a test
+  that a rejecting gateway does not crash the server.
+- **Why:** Both were error-path process crashes (`unhandledRejection` / uncaught
+  `'error'`) that the happy-path tests never exercised.
+- **Where:** `src/realtime/websocket-server.ts`,
+  `src/realtime/websocket-server.test.ts`. No behavior/structure change to the
+  documented transport, so no bundle edit.
+
+## 2026-07-08 — Realtime: wire the `ws` transport (gateway goes live)
+- **What:** Replaced the `websocket-server.ts` stub with a real `ws`
+  `WebSocketServer` on path `/ws`, attached to an `http.Server` that also serves
+  `GET /health`. Per socket: authenticate from URL query params (close `4001` on
+  failure), build a `ClientConnection` adapter, forward message/close/error to the
+  gateway, and run a single heartbeat interval (ping; miss one → `terminate()`,
+  per `TIMEOUTS.heartbeatIntervalMs`). The handle now exposes the `http.Server`
+  and closes the interval + both servers on shutdown. Added
+  `websocket-server.test.ts` (connect+resume round-trip, 4001 on missing auth,
+  `bad_message` on malformed frame, `/health`).
+- **Why:** The gateway logic was complete but had no live transport; this lets the
+  app accept real WebSocket clients end-to-end (design §4, §3/§11.1).
+- **Where:** `src/realtime/websocket-server.ts`,
+  `src/realtime/websocket-server.test.ts` (new). No changes to gateway/router/
+  registry/contracts. `app.ts` wiring unchanged (still `startWebSocketServer`/
+  `.close()`).
+- **Notes:** Auth stays the query-param stub (`?token&session_id&cart_id&pos_config_id`)
+  — signed-token verification is still a TODO. A server-side reconnect-hold timer
+  (§11.1 "short window") was left out; the client-driven `connection.resume` path
+  already returns a fresh snapshot.
+
 ## 2026-07-08 — LLM: OpenAI-compatible provider (Ollama by default)
 - **What:** New `src/llm/openai-compatible-provider.ts` —
   `OpenAiCompatibleLlmProvider` uses the OpenAI SDK against a configurable
