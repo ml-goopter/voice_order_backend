@@ -14,8 +14,10 @@ export const TIMEOUTS = {
 export const LIMITS = {
   /** §7 — in-memory embedding matcher is fine below this many menu vectors. */
   inMemoryEmbeddingCap: 2_000,
-  /** §7 — candidate set size returned to the LLM. */
+  /** §7 — candidate set size returned to the LLM per turn. */
   maxCandidatesToLlm: 8,
+  /** Plan A — turns of prior (utterance + clarification answer) resent to the model as context. */
+  maxHistoryTurns: 6,
   /** §11.3 — schema-repair re-prompts on invalid LLM JSON before falling back to clarify/manual. */
   llmMaxRetries: 1,
   /** Transport-level retries (429/5xx/network) the OpenAI SDK performs per request. */

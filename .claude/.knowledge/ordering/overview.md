@@ -19,13 +19,30 @@ proposer**; the Cart Module validates and applies.
   turn 2 sees turn 1's result and loads a fresh `base_version` (design §9). Sits
   **in front of** the graph.
 - **Graph** (`order-graph.ts` + `graph/`) is a real `@langchain/langgraph`
-  `StateGraph`: `normalize → load_cart → retrieve → parse → decide{propose | clarify}`.
-  Compiled with a `MemorySaver` checkpointer keyed by
+  `StateGraph`: `normalize → load_cart → retrieve → parse → decide{clarify | finalize}`
+  (`finalize → END`). Compiled with a `MemorySaver` checkpointer keyed by
   `thread_id = ${pos_config_id}:${cart_id}` — context follows the CART, not a
   session, so multiple sessions on one cart share conversational memory (§6). State
   channels live in `graph/state.ts` (`Annotation.Root`, last-write-wins with
   defaults); `base_version` is captured at `load_cart` (= `cart.version`) and rides
-  through resumes. The `OrderGraph` façade exposes `start()` / `resume()` returning
+  through resumes. Two channels carry information across turns beyond a single
+  invoke (Plan A); `candidates` is per-turn (last-write-wins — `retrieve` fully
+  replaces it each turn, capped at `LIMITS.maxCandidatesToLlm`):
+  - **`cart_view`** (Plan A): `load_cart` projects the stored cart into a
+    self-describing `CartView` (`buildCartView`) — each line carries `line_id`, `name`,
+    `menu_item_key`, its current modifiers, and the item's `available_modifiers`
+    (keys/names only; numeric ids omitted) so an edit by reference resolves from the
+    cart alone. This is the prompt's `current_cart`; the stored `Cart` shape is untouched.
+    It supersedes the earlier candidate-accumulation idea (Plan B, removed): a
+    cart-resident item's `line_id` + modifier vocabulary now come from the cart itself,
+    not from keeping stale candidates alive.
+  - **`history`** (Plan A): the `finalize` node appends each completed turn's
+    `customer_text` + any `clarification_question`/`clarification_answer` (`mergeHistory`,
+    capped at `LIMITS.maxHistoryTurns`), re-sent to the next turn's `parse` as
+    `conversation_history` so references ("that", "the same") resolve. Reference-only —
+    the prompt forbids re-executing a past request; `current_cart` is the source of truth.
+
+  The `OrderGraph` façade exposes `start()` / `resume()` returning
   a `GraphTurnResult` (`complete` with `{output, base_version}` | `clarify`).
 - **Clarification pause/resume** (§6): the `clarify` node calls `interrupt(payload)`;
   the graph pauses (invoke returns `__interrupt__`) and, on resume via

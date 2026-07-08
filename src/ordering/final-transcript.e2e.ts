@@ -513,13 +513,14 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     emitFinal('can you add broccoli to my sweet and sour chicken', o);
     const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
 
-    // Editing a modifier on an EXISTING line depends on candidate retrieval surfacing
-    // the item's modifier_key from a transcript that names no dish — genuinely flaky, so
-    // this self-skips unless the model produced the add_modifier we're verifying.
+    // The seeded line is self-describing (Plan A): it carries its name, line_id, and
+    // available_modifiers, so the model has the broccoli modifier_key and target line_id
+    // without retrieval having to surface them. Asserted hard (was tolerant pre-Plan A).
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
     const op = proposals.at(-1)?.operations.find((o2) => o2.action === 'add_modifier');
-    if (name !== 'cart.updated' || !op) return ctx.skip(`no add_modifier this run (got ${name})`);
-    expect(op.line_id).toBe(line.line_id);
-    if (op.modifier_key !== broccoli.modifier_key) return ctx.skip(`model added "${op.modifier_key}", not broccoli`);
+    expect(op, `expected an add_modifier op, got: ${JSON.stringify(proposals.at(-1)?.operations)}`).toBeDefined();
+    expect(op!.line_id).toBe(line.line_id);
+    expect(op!.modifier_key).toBe(broccoli.modifier_key);
 
     const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
     expect(edited?.modifiers.some((m) => m.ptav_id === broccoli.ptav_id), 'broccoli ptav_id not on line').toBe(true);
@@ -537,13 +538,52 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     emitFinal('actually, take the broccoli off the sweet and sour chicken', o);
     const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
 
+    // Self-describing cart (Plan A): the line lists its CURRENT modifiers (broccoli) with the
+    // modifier_key, so the model can target line_id + modifier_key. Asserted hard.
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
     const op = proposals.at(-1)?.operations.find((o2) => o2.action === 'remove_modifier');
-    if (name !== 'cart.updated' || !op) return ctx.skip(`no remove_modifier this run (got ${name})`);
-    expect(op.line_id).toBe(line.line_id);
-    if (op.modifier_key !== seededMod.modifier_key) return ctx.skip(`model removed "${op.modifier_key}", not broccoli`);
+    expect(op, `expected a remove_modifier op, got: ${JSON.stringify(proposals.at(-1)?.operations)}`).toBeDefined();
+    expect(op!.line_id).toBe(line.line_id);
+    expect(op!.modifier_key).toBe(seededMod.modifier_key);
 
     const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
     expect(edited?.modifiers.some((m) => m.ptav_id === seededMod.ptav_id), 'broccoli ptav_id still on line').toBe(false);
+  });
+
+  // Cross-turn modifier edit by reference. Turn 1 names the dish (adds the line); turn 2 says
+  // "add broccoli to that" — a pronoun, no dish name — on the SAME cart. This works because the
+  // cart-keyed MemorySaver thread carries state across turns AND the line is self-describing:
+  // Plan A enriches the added line in current_cart with its name + available_modifiers, so the
+  // model has the broccoli modifier_key + target line_id from the cart alone — no dependence on
+  // this turn's retrieval. Real-stack + non-deterministic; asserted hard (was tolerant pre-Plan A).
+  it('cross-turn modifier edit by reference: "add broccoli to that" edits an item named earlier', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('xturn');
+    await seedEmptyCart(o.cart_id);
+    const proposals = captureProposals(o.cart_id);
+
+    // Turn 1 — name the dish; it is added and enriched into current_cart for the next turn.
+    emitFinal('I would like one sweet and sour chicken', o);
+    const t1 = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(t1.name, `turn 1 failed: ${JSON.stringify(t1.payload)}`).toBe('cart.updated');
+    const seededLine = await expectLine((t1.payload as AppEventMap['cart.updated']).cart, /sweet.*sour.*chicken/i, 1);
+
+    // Confirm the seeded item actually offers a broccoli modifier; otherwise nothing to assert.
+    const { items } = await menu.getCandidates(POS, 'sweet and sour chicken');
+    const broccoli = items[0]?.available_modifiers.find((m) => /add broccoli/i.test(m.name));
+    if (!broccoli) return ctx.skip('seeded item has no "add broccoli" modifier');
+
+    // Turn 2 — pronoun, names no dish. Resolvable only from cross-turn state (Plan A cart + Plan B).
+    emitFinal('can you add broccoli to that', o);
+    const t2 = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(t2.name, `turn 2 failed: ${JSON.stringify(t2.payload)}`).toBe('cart.updated');
+    const op = proposals.at(-1)?.operations.find((o2) => o2.action === 'add_modifier');
+    expect(op, `expected an add_modifier op, got: ${JSON.stringify(proposals.at(-1)?.operations)}`).toBeDefined();
+    expect(op!.line_id).toBe(seededLine.line_id);
+    expect(op!.modifier_key).toBe(broccoli.modifier_key);
+
+    const edited = (t2.payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === seededLine.line_id);
+    expect(edited?.modifiers.some((m) => m.ptav_id === broccoli.ptav_id), 'broccoli ptav_id not on line').toBe(true);
   });
 
   // Parse-failure (voice.session_failed / order_parse_failed) requires the LLM to
