@@ -8,8 +8,8 @@
  *   menu:meta:{pos_config_id}                    -> JSON { count, languages, embedding, source }
  *
  * Each record also carries `vectors`: its per-language names embedded with the
- * 'passage' role (mirroring MenuCache.embedNames), so the app reads items AND
- * their vectors from Redis and never re-embeds the menu at boot.
+ * 'passage' role, so the app never re-embeds the menu. Run `index:menu` afterwards
+ * to project these vectors into the RediSearch KNN index the matcher queries.
  *
  * Translations are read from Odoo jsonb columns (name/descriptions) keyed by
  * res.lang code (e.g. en_US, zh_CN). Money is stored in integer cents.
@@ -67,7 +67,7 @@ interface MenuItemRecord {
   vectors: StoredVector[]; // per-language name embeddings ('passage' role)
 }
 
-/** Embed an item's per-language names, mirroring MenuCache.embedNames. */
+/** Embed an item's per-language names for retrieval (each name a 'passage'). */
 async function embedNames(names: Translations, embedder: EmbeddingService): Promise<StoredVector[]> {
   const texts = Object.values(names);
   if (texts.length === 0) return [];

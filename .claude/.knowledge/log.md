@@ -7,6 +7,63 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-08 — Menu search hardening: hybrid retrieval, error fallback, read-time availability
+- **What:** Fixed a batch of issues in the Redis vector-search refactor.
+  (1) `knnSearch` now catches FT.SEARCH errors and degrades to an empty result, so
+  a missing/incompatible index falls back to the fuzzy scan instead of failing the
+  order turn (previously a thrown error propagated to `order_parse_failed`; a
+  half-applied fix also shadowed `reply` and broke parsing). (2) `candidate-matcher`
+  now retrieves a **union of KNN + lexical** name matches (new `MenuStore.lexicalSearch`
+  over a `name` TEXT field), restoring recall for lexically-close items the vector
+  search misses. (3) Availability is no longer indexed — the KNN query dropped its
+  `@available` filter; `rank()`'s live-blob check is the sole gate, so re-enabling an
+  item needs no reindex. (4) `ensureMenuIndex` records a schema+dim signature
+  (`menu:index:meta`) and drops+recreates the index when either drifts (dimension
+  change / schema bump). (5) `index-redis-menu.ts` skips wrong-width vectors instead
+  of writing dead docs, and writes the `name` field. (6) COSINE similarity clamped to
+  [0,1]. (7) KNN over-fetches `k·4` docs and dedupes to `k` distinct items (per-language
+  doc explosion). (8) per-phrase KNN searches run concurrently. (9) cart repricing
+  batches line lookups through `MenuLookup.getItems` (one MGET) instead of a GET per
+  line per op. (10) added tests for the FT.SEARCH request shape, `lexicalSearch`, and
+  `ensureMenuIndex`; `InMemoryMenuStore` mirrors the read-time-availability semantics.
+- **Why:** Code review of the vector-search branch: the promised fuzzy fallback never
+  fired on a missing index, retrieve-then-rerank silently dropped high-fuzzy items,
+  availability edits were invisible until reindex, and repricing did N sequential
+  round trips.
+- **Where:** `menu/menu-store.ts`, `menu/menu-index.ts`, `menu/candidate-matcher.ts`,
+  `menu/in-memory-menu-store.ts`, `menu/menu-service.ts`, `cart/cart-operation-applier.ts`,
+  `scripts/index-redis-menu.ts`, and their tests.
+- **Notes:** Schema change (added `name` TEXT, dropped `available` TAG) → `SCHEMA_VERSION`
+  bumped; the first boot / `index:menu` after deploy rebuilds `idx:menuvec` automatically.
+
+## 2026-07-07 — Menu matching: Redis KNN vector search, drop the in-memory cache
+- **What:** The menu module now runs a RediSearch KNN vector search per request
+  instead of loading the whole menu into an in-memory cache at boot. New
+  `menu-index.ts` (the `idx:menuvec` FLAT/COSINE index + `menu:vec:{pos}:{tmpl}:{i}`
+  HASH docs — one vector per (item, language), since KNN can't index a multi-vector
+  field) and `menu-store.ts` (`MenuStore` interface + `RedisMenuStore`:
+  `knnSearch`/`getItem`/`getItemByKey`/`allItems`). `candidate-matcher.ts` is now
+  retrieve-then-rerank: embed phrases → KNN per phrase → hydrate the union →
+  hybrid-rank (embed+fuzzy+modifier), with a fuzzy-scan fallback when no embeddings/
+  index exist. New `scripts/index-redis-menu.ts` (npm `index:menu`) projects the
+  index + `menu:key:*` lookups from the EXISTING item blobs (additive; never mutates
+  source data). Deleted `menu-cache.ts` and `menu-repository.ts`; added
+  `in-memory-menu-store.ts` as the test/dev `MenuStore`.
+- **Why:** The in-memory cosine scan was the documented scale-up bottleneck
+  (design §7/§13); vector search removes the RAM cache and the per-boot menu load.
+- **Where:** `src/menu/*` (matcher, service, new store/index, removed cache/repo),
+  `src/cart/cart-operation-applier.ts` + `cart-validator.ts` (now async — the menu
+  lookups they call became async Redis reads), `src/cart/cart-controller.ts`
+  (`await applyOperation`), `src/app.ts` (drop boot-load loop, `ensureIndex` at
+  start), `docker-compose.yml` (`redis/redis-stack-server` for the RediSearch
+  module), `package.json` (`index:menu`).
+- **Notes:** Requires the RediSearch module (Redis Stack / Redis 8); on plain Redis
+  the matcher falls back to a fuzzy scan. `resolveItemKey`/`findByTmplId` are now
+  `Promise`-returning (`MenuLookup`). Verified end-to-end against Redis Stack: seed
+  → `index:menu` → KNN match ranks the right items and excludes unavailable ones.
+  The `available` TAG is stamped at index time, so availability changes need an
+  `index:menu` re-run. Run order for a fresh corpus: `embed:menu` then `index:menu`.
+
 ## 2026-07-07 — Backfill: embed an already-seeded Redis menu in place
 - **What:** New `scripts/embed-redis-menu.ts` (npm `embed:menu`). Reads each
   existing `menu:item:{pos}:{id}` record straight from Redis, embeds its

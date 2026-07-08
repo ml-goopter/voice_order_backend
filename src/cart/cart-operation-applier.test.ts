@@ -3,6 +3,7 @@ import type { PosConfigId } from '../shared/types.js';
 import type { Result } from '../shared/result.js';
 import { CartRejectedError } from '../shared/errors.js';
 import { MenuService } from '../menu/menu-service.js';
+import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
 import { applyOperation } from './cart-operation-applier.js';
 import { emptyCart, type Cart } from './cart-types.js';
@@ -18,7 +19,6 @@ function makeMenu(): MenuService {
       names: { en_US: 'Chicken Burger' },
       base_price_cents: 500,
       available: true,
-      popularity: 10,
       modifiers: [
         { modifier_key: 'no_mayo', ptav_id: 900, name: 'No mayo' },
         { modifier_key: 'extra_cheese', ptav_id: 901, name: 'Extra cheese' },
@@ -30,7 +30,6 @@ function makeMenu(): MenuService {
       names: { en_US: 'Fries' },
       base_price_cents: 300,
       available: true,
-      popularity: 5,
       modifiers: [],
     },
     {
@@ -39,13 +38,10 @@ function makeMenu(): MenuService {
       names: { en_US: 'Soup' },
       base_price_cents: 400,
       available: false,
-      popularity: 1,
       modifiers: [],
     },
   ];
-  const menu = new MenuService();
-  menu.loadMenu(POS, items);
-  return menu;
+  return new MenuService(InMemoryMenuStore.of(POS, items));
 }
 
 /** Unwrap an ok Result or fail loudly. */
@@ -65,15 +61,15 @@ function expectReject<T>(r: Result<T>, reason: string): CartRejectedError {
 }
 
 /** add_item helper — returns the new cart and the line_id it assigned. */
-function addItem(
+async function addItem(
   cart: Cart,
   menu: MenuService,
   menu_item_key: string,
   quantity = 1,
   modifiers: string[] = [],
-): { cart: Cart; line_id: string } {
+): Promise<{ cart: Cart; line_id: string }> {
   const next = expectOk(
-    applyOperation(
+    await applyOperation(
       cart,
       { action: 'add_item', menu_item_key, quantity, modifiers: modifiers.map((m) => ({ modifier_key: m })) },
       menu,
@@ -94,9 +90,9 @@ describe('applyOperation', () => {
   });
 
   describe('add_item', () => {
-    it('adds a line, assigns a line_id, and prices it', () => {
+    it('adds a line, assigns a line_id, and prices it', async () => {
       const next = expectOk(
-        applyOperation(cart, { action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }, menu, POS),
+        await applyOperation(cart, { action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }, menu, POS),
       );
       expect(next.items).toHaveLength(1);
       const line = next.items[0]!;
@@ -109,9 +105,9 @@ describe('applyOperation', () => {
       expect(next.total_cents).toBe(1000);
     });
 
-    it('resolves modifier keys to ptav_ids', () => {
+    it('resolves modifier keys to ptav_ids', async () => {
       const next = expectOk(
-        applyOperation(
+        await applyOperation(
           cart,
           { action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [{ modifier_key: 'no_mayo' }] },
           menu,
@@ -121,36 +117,36 @@ describe('applyOperation', () => {
       expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 900 }]);
     });
 
-    it('does not mutate the input cart', () => {
-      addItem(cart, menu, 'chicken_burger');
+    it('does not mutate the input cart', async () => {
+      await addItem(cart, menu, 'chicken_burger');
       expect(cart.items).toHaveLength(0);
       expect(cart.subtotal_cents).toBe(0);
     });
 
-    it('assigns a fresh line_id per add — two of the same item are distinct lines', () => {
-      const one = addItem(cart, menu, 'chicken_burger');
-      const two = addItem(one.cart, menu, 'chicken_burger');
+    it('assigns a fresh line_id per add — two of the same item are distinct lines', async () => {
+      const one = await addItem(cart, menu, 'chicken_burger');
+      const two = await addItem(one.cart, menu, 'chicken_burger');
       expect(two.cart.items).toHaveLength(2);
       expect(two.cart.items[0]!.line_id).not.toBe(two.cart.items[1]!.line_id);
     });
 
-    it('rejects an unknown menu_item_key', () => {
+    it('rejects an unknown menu_item_key', async () => {
       expectReject(
-        applyOperation(cart, { action: 'add_item', menu_item_key: 'nope', quantity: 1, modifiers: [] }, menu, POS),
+        await applyOperation(cart, { action: 'add_item', menu_item_key: 'nope', quantity: 1, modifiers: [] }, menu, POS),
         'unavailable_item',
       );
     });
 
-    it('rejects an unavailable item', () => {
+    it('rejects an unavailable item', async () => {
       expectReject(
-        applyOperation(cart, { action: 'add_item', menu_item_key: 'soup', quantity: 1, modifiers: [] }, menu, POS),
+        await applyOperation(cart, { action: 'add_item', menu_item_key: 'soup', quantity: 1, modifiers: [] }, menu, POS),
         'unavailable_item',
       );
     });
 
-    it('rejects a modifier the item does not offer', () => {
+    it('rejects a modifier the item does not offer', async () => {
       expectReject(
-        applyOperation(
+        await applyOperation(
           cart,
           { action: 'add_item', menu_item_key: 'fries', quantity: 1, modifiers: [{ modifier_key: 'no_mayo' }] },
           menu,
@@ -162,80 +158,80 @@ describe('applyOperation', () => {
   });
 
   describe('remove_item', () => {
-    it('removes an existing line and reprices', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'chicken_burger');
-      const next = expectOk(applyOperation(withItem, { action: 'remove_item', line_id }, menu, POS));
+    it('removes an existing line and reprices', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger');
+      const next = expectOk(await applyOperation(withItem, { action: 'remove_item', line_id }, menu, POS));
       expect(next.items).toHaveLength(0);
       expect(next.subtotal_cents).toBe(0);
     });
 
-    it('rejects removing a line that is not in the cart', () => {
-      expectReject(applyOperation(cart, { action: 'remove_item', line_id: 'ln_missing' }, menu, POS), 'line_gone');
+    it('rejects removing a line that is not in the cart', async () => {
+      expectReject(await applyOperation(cart, { action: 'remove_item', line_id: 'ln_missing' }, menu, POS), 'line_gone');
     });
   });
 
   describe('update_quantity', () => {
-    it('updates quantity and reprices', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'chicken_burger', 1);
-      const next = expectOk(applyOperation(withItem, { action: 'update_quantity', line_id, quantity: 3 }, menu, POS));
+    it('updates quantity and reprices', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1);
+      const next = expectOk(await applyOperation(withItem, { action: 'update_quantity', line_id, quantity: 3 }, menu, POS));
       expect(next.items[0]!.quantity).toBe(3);
       expect(next.subtotal_cents).toBe(1500);
     });
 
-    it('rejects a non-positive quantity', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'chicken_burger');
-      expectReject(applyOperation(withItem, { action: 'update_quantity', line_id, quantity: 0 }, menu, POS), 'invalid_quantity');
-      expectReject(applyOperation(withItem, { action: 'update_quantity', line_id, quantity: -2 }, menu, POS), 'invalid_quantity');
+    it('rejects a non-positive quantity', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger');
+      expectReject(await applyOperation(withItem, { action: 'update_quantity', line_id, quantity: 0 }, menu, POS), 'invalid_quantity');
+      expectReject(await applyOperation(withItem, { action: 'update_quantity', line_id, quantity: -2 }, menu, POS), 'invalid_quantity');
     });
 
-    it('rejects updating a line that is gone', () => {
-      expectReject(applyOperation(cart, { action: 'update_quantity', line_id: 'ln_missing', quantity: 2 }, menu, POS), 'line_gone');
+    it('rejects updating a line that is gone', async () => {
+      expectReject(await applyOperation(cart, { action: 'update_quantity', line_id: 'ln_missing', quantity: 2 }, menu, POS), 'line_gone');
     });
   });
 
   describe('add_modifier', () => {
-    it('adds a modifier to an existing line', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'chicken_burger');
-      const next = expectOk(applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'extra_cheese' }, menu, POS));
+    it('adds a modifier to an existing line', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger');
+      const next = expectOk(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'extra_cheese' }, menu, POS));
       expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 901 }]);
     });
 
-    it('is idempotent — adding the same modifier twice does not duplicate it', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'chicken_burger', 1, ['no_mayo']);
-      const next = expectOk(applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
+    it('is idempotent — adding the same modifier twice does not duplicate it', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1, ['no_mayo']);
+      const next = expectOk(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
       expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 900 }]);
     });
 
-    it('rejects a modifier not valid for the item', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'fries');
-      expectReject(applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS), 'invalid_modifier');
+    it('rejects a modifier not valid for the item', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'fries');
+      expectReject(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS), 'invalid_modifier');
     });
 
-    it('rejects when the line is gone', () => {
-      expectReject(applyOperation(cart, { action: 'add_modifier', line_id: 'ln_missing', modifier_key: 'no_mayo' }, menu, POS), 'line_gone');
+    it('rejects when the line is gone', async () => {
+      expectReject(await applyOperation(cart, { action: 'add_modifier', line_id: 'ln_missing', modifier_key: 'no_mayo' }, menu, POS), 'line_gone');
     });
   });
 
   describe('remove_modifier', () => {
-    it('removes a present modifier', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'chicken_burger', 1, ['no_mayo', 'extra_cheese']);
-      const next = expectOk(applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
+    it('removes a present modifier', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1, ['no_mayo', 'extra_cheese']);
+      const next = expectOk(await applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
       expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 901 }]);
     });
 
-    it('is a no-op when the modifier is valid but not present', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'chicken_burger');
-      const next = expectOk(applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
+    it('is a no-op when the modifier is valid but not present', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger');
+      const next = expectOk(await applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
       expect(next.items[0]!.modifiers).toEqual([]);
     });
 
-    it('rejects a modifier not valid for the item', () => {
-      const { cart: withItem, line_id } = addItem(cart, menu, 'fries');
-      expectReject(applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS), 'invalid_modifier');
+    it('rejects a modifier not valid for the item', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'fries');
+      expectReject(await applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS), 'invalid_modifier');
     });
 
-    it('rejects when the line is gone', () => {
-      expectReject(applyOperation(cart, { action: 'remove_modifier', line_id: 'ln_missing', modifier_key: 'no_mayo' }, menu, POS), 'line_gone');
+    it('rejects when the line is gone', async () => {
+      expectReject(await applyOperation(cart, { action: 'remove_modifier', line_id: 'ln_missing', modifier_key: 'no_mayo' }, menu, POS), 'line_gone');
     });
   });
 });

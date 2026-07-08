@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MenuCache } from './menu-cache.js';
+import { InMemoryMenuStore } from './in-memory-menu-store.js';
 import { CandidateMatcher } from './candidate-matcher.js';
 import { StubEmbeddingService } from './embedding-service.js';
 import type { EmbeddingService } from './embedding-service.js';
@@ -37,9 +37,9 @@ const MENU: MenuItem[] = [
 ];
 
 async function matcherWith(embedder: EmbeddingService, menu: MenuItem[] = MENU) {
-  const cache = new MenuCache(embedder);
-  await cache.load(POS, menu);
-  return new CandidateMatcher(cache, embedder);
+  const store = new InMemoryMenuStore();
+  await store.load(POS, menu, embedder);
+  return new CandidateMatcher(store, embedder);
 }
 
 /**

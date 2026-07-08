@@ -1,9 +1,11 @@
 services:
   redis:
-    image: redis:7-alpine
+    # Redis Stack bundles the RediSearch module the menu KNN vector index needs
+    # (FT.CREATE / FT.SEARCH). Plain redis:7-alpine lacks it.
+    image: redis/redis-stack-server:latest
     ports:
       - "6379:6379"
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-stack-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
     healthcheck:
