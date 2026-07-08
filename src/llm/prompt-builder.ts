@@ -20,9 +20,24 @@ export function buildPrompt(input: OrderGraphInput): LlmPrompt {
     'You convert a restaurant customer utterance into cart operations.',
     'Output STRICT JSON: { "operations": [...], "needs_clarification": boolean, "clarification_question": string|null }.',
     'Use menu_item_key / modifier_key from the candidates — never invent keys or use display names.',
-    'Edits (remove_item, update_quantity, add_modifier, remove_modifier) target a line_id from the cart.',
+    'To add a NEW item, emit ONE add_item and put any requested extras or omissions in its inline "modifiers" array (a list of { "modifier_key": ... } drawn from that item\'s available_modifiers). Do NOT emit a separate add_modifier for a new item.',
+    'add_modifier / remove_modifier / remove_item / update_quantity edit an item ALREADY in current_cart and target its line_id (a string) from the cart. Never invent a line_id and never use a numeric id.',
     'Only add_item omits line_id. If ambiguous, set needs_clarification=true with a question.',
     `Allowed operations: ${ALLOWED_OPERATIONS.join(', ')}.`,
+    '',
+    'Example — "one sweet and sour chicken with added broccoli" (keys shown are placeholders; use the real keys from candidate_items):',
+    JSON.stringify({
+      operations: [
+        {
+          action: 'add_item',
+          menu_item_key: '<menu_item_key>',
+          quantity: 1,
+          modifiers: [{ modifier_key: '<modifier_key>' }],
+        },
+      ],
+      needs_clarification: false,
+      clarification_question: null,
+    }),
   ].join('\n');
 
   const user = JSON.stringify(

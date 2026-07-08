@@ -7,6 +7,34 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-08 — e2e coverage for edit ops + stricter clarification tests
+- **What:** Added real-stack e2e cases for the four edit operations that had no
+  coverage — `update_quantity`, `remove_item`, `add_modifier`, `remove_modifier` —
+  each seeding a real menu line via a new `seedCartWithLine` helper (resolves a real
+  product_tmpl_id + modifier keys through the live candidate matcher) and asserting
+  the proposed op targets the seeded string `line_id` and the applied cart reflects it.
+  The two clarification tests now FAIL (were: self-skip) when the model doesn't ask.
+- **Why:** Every prior e2e started from an empty cart, so only `add_item` (+ inline
+  modifiers) and the clarify branch were exercised; the edit ops were untested e2e.
+- **Where:** `src/ordering/final-transcript.e2e.ts`.
+- **Notes:** update_quantity/remove_item self-skip only if the model picks a different
+  valid op; add_modifier/remove_modifier are more tolerant (self-skip) because editing a
+  modifier on an existing line depends on candidate retrieval surfacing the item's
+  modifier_key from a transcript naming no dish — a genuine weak spot in the pipeline
+  (retrieve-candidates keys off the transcript only, not the cart's lines).
+
+## 2026-07-08 — Prompt: inline modifiers on add_item
+- **What:** Reworded the order-parse system prompt in `buildPrompt` to state that a
+  new item's extras/omissions belong in `add_item.modifiers` (inline), that
+  add_modifier/remove_modifier only edit lines already in `current_cart` via a string
+  `line_id`, and added a worked add_item-with-modifier JSON example.
+- **Why:** e2e modifier tests failed — the model split "chicken with broccoli" into
+  add_item + add_modifier, inventing a numeric `line_id` (a leaked ptav_id/tmpl_id) for
+  a line that doesn't exist yet, so schema validation/repair failed → order_parse_failed.
+- **Where:** `src/llm/prompt-builder.ts` (`buildPrompt`).
+- **Notes:** Prompt-only; the add_item schema already supported inline `modifiers`.
+  Candidate serialization still leaks numeric `ptav_id`/`product_tmpl_id` — not fixed here.
+
 ## 2026-07-08 — Realtime gateway frontend-integration doc
 - **What:** Added `docs/realtime-gateway-frontend-integration.md` — client-facing
   spec for the `/ws` WebSocket: endpoint/port, query-string auth (+`4001`), heartbeat,

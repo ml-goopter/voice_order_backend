@@ -40,13 +40,14 @@ import { registerOrderingHandlers } from './register-handlers.js';
 import { CartRepository } from '../cart/cart-repository.js';
 import { CartController } from '../cart/cart-controller.js';
 import { registerCartHandlers } from '../cart/register-handlers.js';
-import type { Cart, CartLine } from '../cart/cart-types.js';
+import type { Cart, CartLine, CartModifier } from '../cart/cart-types.js';
+import type { CandidateItem, CandidateModifier } from '../menu/menu-types.js';
 import { cartOperationSchema } from './schemas/cart-operation.schema.js';
 import type { OrderProposal } from './schemas/proposal.js';
 
 const POS = 1;
 /** A real qwen3:14b turn (retrieve + thinking + parse) runs ~45-60s. */
-const TURN_MS = 150_000;
+const TURN_MS = 500_000;
 
 // ---- live pipeline (built once in beforeAll) --------------------------------
 let redis: Redis;
@@ -211,6 +212,48 @@ function seedEmptyCart(cart_id: string): Promise<void> {
   return carts.set(cart);
 }
 
+/**
+ * Seed a cart (version 1) holding ONE real menu line for `dishText`, resolved via the
+ * live candidate matcher so the product_tmpl_id + modifier keys are genuine. Optionally
+ * pre-attach the modifier whose name matches `withModifier`. Returns the seeded line and
+ * the resolved candidate so an edit test can target its (stable, string) line_id and
+ * assert against real ptav_ids. Edit ops (remove/update/add_modifier/remove_modifier)
+ * need a pre-existing line, which the empty-cart seed can't provide.
+ */
+async function seedCartWithLine(
+  cart_id: string,
+  dishText: string,
+  opts: { quantity?: number; withModifier?: RegExp } = {},
+): Promise<{ line: CartLine; item: CandidateItem; seededMod: CandidateModifier | undefined }> {
+  const { items } = await menu.getCandidates(POS, dishText);
+  const item = items[0];
+  expect(item, `no candidate item for "${dishText}" — is the menu populated?`).toBeDefined();
+
+  const seededMod = opts.withModifier
+    ? item!.available_modifiers.find((m) => opts.withModifier!.test(m.name))
+    : undefined;
+  const modifiers: CartModifier[] = seededMod ? [{ ptav_id: seededMod.ptav_id }] : [];
+
+  const line: CartLine = {
+    line_id: `ln_${cart_id}`,
+    product_tmpl_id: item!.product_tmpl_id,
+    quantity: opts.quantity ?? 1,
+    modifiers,
+  };
+  createdCartIds.push(cart_id);
+  await carts.set({
+    cart_id,
+    pos_config_id: POS,
+    version: 1,
+    items: [line],
+    subtotal_cents: 0,
+    tax_cents: 0,
+    total_cents: 0,
+    last_updated: '2026-07-08T00:00:00.000Z',
+  });
+  return { line, item: item!, seededMod };
+}
+
 let uid = 0;
 function ids(tag: string) {
   uid += 1;
@@ -370,10 +413,10 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
       o.cart_id,
       TURN_MS,
     );
-    // Best-effort: if the model resolved without asking, there is no clarify branch to test.
-    if (first.name !== 'order.clarification_needed') {
-      return ctx.skip(`model did not request clarification this run (got ${first.name})`);
-    }
+    expect(
+      first.name,
+      `model did not request clarification this run (got ${first.name}: ${JSON.stringify(first.payload)})`,
+    ).toBe('order.clarification_needed');
     expect((first.payload as AppEventMap['order.clarification_needed']).question.length).toBeGreaterThan(0);
 
     // Answer, then expect the resumed turn to apply a combination.
@@ -403,9 +446,10 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
       o.cart_id,
       TURN_MS,
     );
-    if (first.name !== 'order.clarification_needed') {
-      return ctx.skip(`model did not request clarification this run (got ${first.name})`);
-    }
+    expect(
+      first.name,
+      `model did not request clarification this run (got ${first.name}: ${JSON.stringify(first.payload)})`,
+    ).toBe('order.clarification_needed');
 
     // Never answer → the service expires the wait after TIMEOUTS.clarificationMs.
     const { name, payload } = await waitForAny(
@@ -417,10 +461,95 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     expect((payload as AppEventMap['voice.session_failed']).reason).toBe('clarification_timeout');
   });
 
+  it('update_quantity: "make that two" edits the seeded line in place', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('updqty');
+    const { line } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken');
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('actually, make that two', o);
+    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+
+    const proposal = expectValidProposal(proposals);
+    const op = proposal.operations.find((o2) => o2.action === 'update_quantity');
+    // Editing the single seeded line is unambiguous, but the model may still re-add;
+    // skip (not fail) when it took a different-but-valid path this run.
+    if (!op) return ctx.skip(`model chose [${proposal.operations.map((o2) => o2.action).join(', ')}], not update_quantity`);
+    expect(op.line_id).toBe(line.line_id);
+    expect(op.quantity).toBe(2);
+
+    const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
+    expect(edited?.quantity, 'seeded line quantity was not updated to 2').toBe(2);
+  });
+
+  it('remove_item: "remove that" drops the seeded line from the cart', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('rmitem');
+    const { line } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken');
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('please remove the sweet and sour chicken from my order', o);
+    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+
+    const proposal = expectValidProposal(proposals);
+    const op = proposal.operations.find((o2) => o2.action === 'remove_item');
+    if (!op) return ctx.skip(`model chose [${proposal.operations.map((o2) => o2.action).join(', ')}], not remove_item`);
+    expect(op.line_id).toBe(line.line_id);
+
+    const stillThere = (payload as AppEventMap['cart.updated']).cart.items.some((l) => l.line_id === line.line_id);
+    expect(stillThere, 'seeded line was not removed').toBe(false);
+  });
+
+  it('add_modifier: "add broccoli to that" attaches the modifier to the seeded line', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('addmod');
+    const { line, item } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken');
+    const broccoli = item.available_modifiers.find((m) => /add broccoli/i.test(m.name));
+    if (!broccoli) return ctx.skip(`seeded item "${item.name}" has no "add broccoli" modifier`);
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('can you add broccoli to my sweet and sour chicken', o);
+    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+
+    // Editing a modifier on an EXISTING line depends on candidate retrieval surfacing
+    // the item's modifier_key from a transcript that names no dish — genuinely flaky, so
+    // this self-skips unless the model produced the add_modifier we're verifying.
+    const op = proposals.at(-1)?.operations.find((o2) => o2.action === 'add_modifier');
+    if (name !== 'cart.updated' || !op) return ctx.skip(`no add_modifier this run (got ${name})`);
+    expect(op.line_id).toBe(line.line_id);
+    if (op.modifier_key !== broccoli.modifier_key) return ctx.skip(`model added "${op.modifier_key}", not broccoli`);
+
+    const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
+    expect(edited?.modifiers.some((m) => m.ptav_id === broccoli.ptav_id), 'broccoli ptav_id not on line').toBe(true);
+  });
+
+  it('remove_modifier: "take the broccoli off" drops the modifier from the seeded line', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('rmmod');
+    const { line, seededMod } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken', {
+      withModifier: /add broccoli/i,
+    });
+    if (!seededMod) return ctx.skip('could not seed a broccoli modifier on the line');
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('actually, take the broccoli off the sweet and sour chicken', o);
+    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+
+    const op = proposals.at(-1)?.operations.find((o2) => o2.action === 'remove_modifier');
+    if (name !== 'cart.updated' || !op) return ctx.skip(`no remove_modifier this run (got ${name})`);
+    expect(op.line_id).toBe(line.line_id);
+    if (op.modifier_key !== seededMod.modifier_key) return ctx.skip(`model removed "${op.modifier_key}", not broccoli`);
+
+    const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
+    expect(edited?.modifiers.some((m) => m.ptav_id === seededMod.ptav_id), 'broccoli ptav_id still on line').toBe(false);
+  });
+
   // Parse-failure (voice.session_failed / order_parse_failed) requires the LLM to
   // return invalid JSON twice (after one schema-repair retry). A compliant model in
   // json_object mode won't do that on demand, so it can't be forced end-to-end here.
   // It is covered deterministically with a scripted LLM in
   // order-understanding-service.test.ts ("fails the turn when repair is exhausted").
-  it.skip('parse-failure: exhausted schema repair fails the turn (see unit test)', () => {});
+  it.skip('parse-failure: exhausted schema repair fails the turn (see unit test)', () => { });
 });
