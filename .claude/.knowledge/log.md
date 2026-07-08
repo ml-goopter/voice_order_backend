@@ -7,6 +7,27 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-08 — Real-stack e2e for the final-transcript pipeline
+- **What:** New `src/ordering/final-transcript.e2e.ts` — an opt-in e2e that emits
+  `stt.final_transcript.received` on a real `EventBus` and drives the full pipeline
+  against LIVE Redis Stack (real menu + `idx:menuvec`), LIVE Jina query embeddings,
+  and a LIVE Ollama LLM (default `qwen3:14b`), asserting the applied cart plus the
+  proposed operations (schema-valid; add_item resolves to the ordered dish; modifiers
+  resolve key→ptav_id and land on the cart line). Covers happy add, quantity, add- and
+  omit-modifiers, and clarify→resume / clarify→timeout (best-effort: the clarify tests
+  self-skip when the model doesn't ask; parse-failure is skipped — can't be forced with
+  a compliant LLM, covered by `order-understanding-service.test.ts`). Ships
+  `vitest.e2e.config.ts` (loads `.env`, forces `LLM_PROVIDER=ollama`, `LLM_TIMEOUT_MS`,
+  240s test timeout) and a `test:e2e` script. Named `*.e2e.ts` so `npm test` never runs
+  it. Made the LLM per-request timeout configurable via `LLM_TIMEOUT_MS` (env.ts +
+  openai-compatible-provider.ts), default 30s — qwen3:14b thinks well past 30s.
+- **Why:** Verify the whole trigger→propose→apply flow end-to-end on the real stack,
+  not just service-level fakes.
+- **Where:** `ordering` (e2e), `llm`/`config` (configurable timeout), `vitest.e2e.config.ts`, `package.json`.
+- **Notes:** Requires Redis Stack (RediSearch) with the menu populated + `npm run index:menu`,
+  a `JINA_API_KEY` (EMBEDDING_PROVIDER=jina) for real KNN retrieval, and Ollama serving the
+  model. The suite self-skips if any is unreachable.
+
 ## 2026-07-08 — LLM: OpenAI-compatible provider (Ollama by default)
 - **What:** New `src/llm/openai-compatible-provider.ts` —
   `OpenAiCompatibleLlmProvider` uses the OpenAI SDK against a configurable

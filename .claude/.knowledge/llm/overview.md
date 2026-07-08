@@ -18,8 +18,10 @@ deterministic source of truth. Output is strict JSON, schema-validated before us
   `createLlmProvider` selects by `config.llmProvider` (`stub` | `ollama` | `openai`).
 - `OpenAiCompatibleLlmProvider` (real): OpenAI SDK against a configurable base URL,
   so one client serves Ollama (default `http://localhost:11434/v1`), OpenAI, Groq.
-  Env-driven (`LLM_MODEL`/`LLM_BASE_URL`/`LLM_API_KEY`). Sends system+user messages
-  with `response_format: json_object`, `temperature: 0`; SDK handles transient retries.
+  Env-driven (`LLM_MODEL`/`LLM_BASE_URL`/`LLM_API_KEY`, and `LLM_TIMEOUT_MS` for the
+  per-request timeout — default 30s, raise for slow local thinking models like
+  qwen3). Sends system+user messages with `response_format: json_object`,
+  `temperature: 0`; SDK handles transient retries.
 - `prompt-builder.ts` assembles the prompt from `OrderGraphInput`: a system message
   fixing the output contract and rules (use candidate keys, edits target `line_id`,
   only `add_item` omits it, clarify when ambiguous) and a user message with the
