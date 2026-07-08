@@ -41,5 +41,13 @@ It owns **no cart logic** — it only delivers what the Cart Module produces.
 - `client-registry.ts` — `ClientConnection` interface + session/cart indexes
   (carries `pos_config_id` resolved at auth).
 - `realtime-message-types.ts` — inbound/outbound unions + `parseInbound`.
-- `websocket-server.ts` — **stub**; TODO wire `ws` (adapt sockets to
-  `ClientConnection`, heartbeat per `TIMEOUTS`).
+- `websocket-server.ts` — the `ws` transport. A `WebSocketServer` on path `/ws`
+  is attached to an `http.Server` that also answers `GET /health`
+  (`api/health.routes.ts`). Each socket: auth via URL query params
+  (`authenticate`, `auth/session-auth.ts`) — failure closes with code `4001`;
+  a `ClientConnection` adapts `send`/`close`/`isAlive` over the socket;
+  `onConnect`/`onRawMessage`/`onDisconnect` wire to the gateway. Heartbeat is one
+  interval (`TIMEOUTS.heartbeatIntervalMs`): miss one ping → `terminate()`. The
+  handle exposes the `http.Server` and a `close()` (clears the interval, drops
+  sockets, closes both servers). Auth is still the query-param **stub** — signed
+  tokens remain a TODO.
