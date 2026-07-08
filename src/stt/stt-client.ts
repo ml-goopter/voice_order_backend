@@ -1,12 +1,12 @@
 import type { SttProvider } from './stt-provider.js';
 import type { SttStream, SttStreamHandlers } from './stt-types.js';
+import { AssemblyAiSttProvider } from './assemblyai-stt-provider.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 
 /**
- * Placeholder provider that accepts audio but emits nothing. Keeps the pipeline
- * type-safe until a real streaming client is wired.
- * TODO: implement AssemblyAI / Deepgram clients (design §14) behind SttProvider.
+ * Placeholder provider that accepts audio but emits nothing. Kept as the fallback
+ * for unknown providers and for a keyless dev boot.
  */
 class NoopSttProvider implements SttProvider {
   readonly name = 'noop';
@@ -26,8 +26,13 @@ class NoopSttProvider implements SttProvider {
 
 export function createSttProvider(): SttProvider {
   switch (config.sttProvider) {
-    // case 'assemblyai': return new AssemblyAiProvider();
-    // case 'deepgram':   return new DeepgramProvider();
+    case 'assemblyai':
+      if (!config.assemblyAiApiKey) {
+        logger.warn('stt.assemblyai_no_key', { hint: 'set ASSEMBLYAI_API_KEY; using noop provider' });
+        return new NoopSttProvider();
+      }
+      return new AssemblyAiSttProvider();
+    // case 'deepgram': return new DeepgramProvider();
     default:
       return new NoopSttProvider();
   }

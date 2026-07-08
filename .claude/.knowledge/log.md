@@ -79,6 +79,75 @@ timestamp: 2026-07-07
   → `index:menu` → KNN match ranks the right items and excludes unavailable ones.
   The `available` TAG is stamped at index time, so availability changes need an
   `index:menu` re-run. Run order for a fresh corpus: `embed:menu` then `index:menu`.
+## 2026-07-08 — Close two gaps in the voice.stop / STT-open flow
+- **What:** Two correctness fixes surfaced in review. (1) `handleStop`'s idempotency
+  guard now also checks `session.stopping`, not just `finalTimer`/terminal status.
+  Because `stopping` is set synchronously before the `await session.stream.stop()`
+  yields, a second `voice.stop` that interleaves *during* the flush (messages are
+  dispatched without awaiting in `socket.on('message', …)`) no longer calls
+  `stream.stop()` — and thus `forceEndpoint()`/`close(true)` — a second time on an
+  already-closing socket. (2) `handleStart` now wraps `stt.openStream()` in
+  try/catch: an AssemblyAI auth/handshake rejection (§11.2 A, newly reachable now
+  that the real provider connects) removes the orphaned `idle` session, sends a
+  `voice.error` (stt_failed), and emits `voice.session_failed` instead of leaking an
+  unhandled promise rejection and leaving a dead session in the manager.
+- **Why:** A double/concurrent stop double-flushed the STT socket; a failed stream
+  open silently orphaned the session with no client notification.
+- **Where:** `voice/voice-message-handler.ts` (+ test).
+
+## 2026-07-08 — Suppress stray finals and late audio after voice.stop
+- **What:** Two correctness fixes around the post-`voice.stop` window. (1) `onFinal`
+  now bails when the session is already terminal (`ended`/`failed`/`interrupted`),
+  so a final that lands after the §11.2 C timeout has failed the session no longer
+  emits `stt.final_transcript.received` — previously it still reached the cart after
+  the customer was told to repeat, risking a double order. (2) `VoiceSession` gains a
+  `stopping` flag set at the start of `handleStop`; `handleAudioChunk` drops audio
+  while stopping, so trailing chunks are no longer fed into the flushing/closed STT
+  stream (status stays `listening` for the grace window, so the old
+  `status !== 'listening'` gate no longer covered this).
+- **Why:** A late final could mutate the cart for an utterance the user was asked to
+  repeat; late audio chunks were forwarded into an already-flushed AssemblyAI socket.
+- **Where:** `voice/voice-message-handler.ts` (+ test), `voice/voice-session.ts`.
+
+## 2026-07-08 — Fix duplicate session failure on the stop-without-final path
+- **What:** Two correctness fixes to the §11.2 C flow. (1) `AssemblyAiSttProvider`
+  now tracks a `selfClosing` flag set by `stop()`/`close()`, and its `'close'`
+  handler only raises `onError` for an *unexpected* close before a final — a close
+  we initiated is expected, leaving the handler's finalTranscript timeout as the
+  single authority for the no-final case. Previously a graceful stop with no speech
+  fired `onError` (stt_failed) *and* the 4s timeout (final_transcript_timeout),
+  double-failing the session and preempting the grace window. (2) `handleStop`
+  ignores a repeat `voice.stop` while a grace window is pending or the session is
+  terminal (was re-flushing a closing socket and orphaning the first timer). The
+  timeout callback also bails if the session already failed.
+- **Why:** One stop could emit two `voice.session_failed` events and two
+  `voice.error` messages to the client, and the intended 4s grace window was
+  bypassed for graceful closes.
+- **Where:** `stt/assemblyai-stt-provider.ts` (+ test),
+  `voice/voice-message-handler.ts` (+ test).
+
+## 2026-07-08 — Wire real AssemblyAI STT behind the swappable provider seam
+- **What:** New `AssemblyAiSttProvider` (`src/stt/assemblyai-stt-provider.ts`)
+  implements `SttProvider` using AssemblyAI universal-streaming: maps `turn` events
+  to `onPartial` (non-final) / `onFinal` (formatted end-of-turn, deduped by
+  `turn_order`) / `onError` (provider error or a close before any final — §11.2 B).
+  A transcriber factory is injectable for hermetic tests. `createSttProvider`
+  selects `assemblyai` (falls back to `NoopSttProvider` with a warning when
+  `ASSEMBLYAI_API_KEY` is unset). Implemented the §11.2 C final-transcript timeout
+  in `VoiceMessageHandler.handleStop` (arms `TIMEOUTS.finalTranscriptMs`; a late
+  final cancels it and ends the session, else `voice.session_failed` +
+  `voice.error` reason `final_transcript_timeout`). Added `finalReceived` /
+  `finalTimer` to `VoiceSession`; timer is cleared on disconnect.
+- **Why:** The pipeline had only `NoopSttProvider`, so no transcript ever flowed;
+  and the stop-without-final path was a TODO. Keeps STT trivially swappable — a new
+  provider is one file + one `case`.
+- **Where:** `stt/assemblyai-stt-provider.ts` (new) + test, `stt/stt-client.ts`,
+  `voice/voice-message-handler.ts` (+ test), `voice/voice-session.ts`,
+  `config/env.ts`, `.env.example`.
+- **Notes:** Audio contract is PCM16 mono @ `STT_SAMPLE_RATE` (default 16000);
+  `sendAudio` slices the Buffer's backing `ArrayBuffer` for the SDK. `stop()` calls
+  `forceEndpoint()` then `close(true)` to flush a pending final. Failure reasons
+  reuse the existing `voice.session_failed` event (no new event-map entries).
 
 ## 2026-07-07 — Backfill: embed an already-seeded Redis menu in place
 - **What:** New `scripts/embed-redis-menu.ts` (npm `embed:menu`). Reads each

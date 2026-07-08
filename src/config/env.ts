@@ -23,6 +23,8 @@ export interface AppConfig {
   readonly redisUrl: string;
 
   readonly sttProvider: string; // 'assemblyai' | 'deepgram' | ...
+  readonly sttSampleRate: number; // Hz of the client PCM16 stream (design §5)
+  readonly assemblyAiApiKey: string;
   readonly llmProvider: string; // 'stub' | 'ollama' | 'openai' | ...
   readonly llmModel: string;
   readonly llmBaseUrl: string; // OpenAI-compatible base URL (Ollama by default)
@@ -42,6 +44,8 @@ export const config: AppConfig = {
   redisUrl: str('REDIS_URL', 'redis://localhost:6379'),
 
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
+  sttSampleRate: int('STT_SAMPLE_RATE', 16_000),
+  assemblyAiApiKey: str('ASSEMBLYAI_API_KEY', ''),
   llmProvider: str('LLM_PROVIDER', 'stub'),
   llmModel: str('LLM_MODEL', 'llama3.1'),
   llmBaseUrl: str('LLM_BASE_URL', 'http://localhost:11434/v1'),

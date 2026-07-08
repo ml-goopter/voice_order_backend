@@ -7,6 +7,12 @@ export type VoiceSessionStatus = 'idle' | 'listening' | 'interrupted' | 'ended' 
 export class VoiceSession {
   status: VoiceSessionStatus = 'idle';
   stream: SttStream | null = null;
+  /** True once any final transcript arrived — gates the §11.2 C stop timeout. */
+  finalReceived = false;
+  /** Set the moment voice.stop is committed; stops forwarding audio into a flushing stream. */
+  stopping = false;
+  /** Armed after voice.stop while awaiting a final (§11.2 C); cleared on final/disconnect. */
+  finalTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     readonly session_id: SessionId,

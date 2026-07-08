@@ -18,15 +18,29 @@ that may eventually touch the cart (§11 invariant).
 - `handleStart` creates a `VoiceSession` and opens an STT stream with handlers:
   `onPartial` → sends `voice.partial_transcript` straight to the client (display
   only, never re-enters the backend flow); `onFinal` → mints a `request_id` and
-  emits `stt.final_transcript.received`; `onError` → sends `voice.error` and emits
-  `voice.session_failed`.
-- `handleAudioChunk` forwards base64 audio to the stream (only while `listening`).
-- `handleStop` flushes the stream and emits `voice.session_ended`. TODO: final-
-  transcript timeout (`TIMEOUTS.finalTranscriptMs`, §11.2 C).
-- `handleDisconnect` marks an in-flight session `interrupted` and drops partials
-  (§5/§11.1) — cart is untouched; the client is asked to repeat on reconnect.
+  emits `stt.final_transcript.received` (skipped once the session is terminal, so a
+  final arriving after a timeout/failure never reaches the cart); `onError` → sends
+  `voice.error` and emits `voice.session_failed`. If `openStream` itself rejects
+  (STT auth/handshake failure, §11.2 A), the orphaned session is removed and the
+  same `voice.error`/`voice.session_failed` (reason `stt_failed`) is emitted.
+- `handleAudioChunk` forwards base64 audio to the stream (only while `listening` and
+  not yet `stopping` — `voice.stop` sets `stopping` so trailing chunks aren't fed
+  into the flushing stream).
+- `handleStop` ignores a repeat/concurrent `voice.stop` (guarded on `stopping`,
+  which is set before the flush await, plus a pending timer / terminal status) so an
+  overlapping stop never double-flushes the socket, then flushes the stream. If a
+  final already arrived → `voice.session_ended`;
+  otherwise it arms the final-transcript timeout (`TIMEOUTS.finalTranscriptMs`,
+  §11.2 C): a late final cancels it and ends the session, else the session is marked
+  `failed` with `voice.error`/`voice.session_failed` reason `final_transcript_timeout`.
+- `handleDisconnect` clears any pending timeout, marks an in-flight session
+  `interrupted`, and drops partials (§5/§11.1) — cart is untouched; the client is
+  asked to repeat on reconnect.
 - **STT provider** is an interface (`SttProvider` → `SttStream`); `createSttProvider`
-  selects by config. Only a `NoopSttProvider` exists today.
+  selects by `config.sttProvider`. `AssemblyAiSttProvider` (universal-streaming) is
+  the real client; `NoopSttProvider` is the fallback for unknown providers or a
+  keyless boot. Adding a provider = one new file + one `case`. Audio contract:
+  PCM16 mono @ `STT_SAMPLE_RATE` (default 16000).
 
 ## Dependencies
 - `stt` provider abstraction.
@@ -38,4 +52,5 @@ that may eventually touch the cart (§11 invariant).
 - `voice/voice-session-manager.ts` — session registry.
 - `voice/voice-message-handler.ts` — start/audio/stop/disconnect handling.
 - `stt/stt-provider.ts`, `stt/stt-types.ts` — provider + stream interfaces.
-- `stt/stt-client.ts` — **stub** `NoopSttProvider`; TODO AssemblyAI/Deepgram (§14).
+- `stt/stt-client.ts` — `createSttProvider` factory (`assemblyai` → real, else noop).
+- `stt/assemblyai-stt-provider.ts` — real AssemblyAI streaming client (§14).
