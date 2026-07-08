@@ -3,8 +3,8 @@
  *
  * Unlike `populate-redis-menu.ts` (which sources rows from Odoo Postgres), this
  * touches ONLY Redis: it reads each existing `menu:item:{pos}:{id}` record,
- * embeds its per-language names ('passage' role, mirroring `MenuCache.embedNames`),
- * writes the `vectors` back into the record, and stamps
+ * embeds its per-language names ('passage' role), writes the `vectors` back into
+ * the record, and stamps
  * `menu:meta:{pos}.embedding = { model, dimensions }`. Re-runnable (idempotent).
  *
  * Env:

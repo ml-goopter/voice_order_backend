@@ -3,6 +3,7 @@ import { EventBus } from '../events/event-bus.js';
 import type { AppEventMap, AppEventName } from '../events/event-types.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
 import { MenuService } from '../menu/menu-service.js';
+import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
 import type { Cart } from '../cart/cart-types.js';
 import type { LlmPrompt, LlmProvider } from '../llm/llm-provider.js';
@@ -47,8 +48,7 @@ class ScriptedLlm implements LlmProvider {
 }
 
 async function makeService(responses: string[], seedCart?: Cart) {
-  const menu = new MenuService();
-  await menu.loadMenu(POS, MENU);
+  const menu = new MenuService(InMemoryMenuStore.of(POS, MENU));
   const carts = new InMemoryCartCache();
   if (seedCart) await carts.set(seedCart);
   const llm = new ScriptedLlm(responses);

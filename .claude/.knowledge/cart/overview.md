@@ -32,6 +32,8 @@ bumps the version, persists, and broadcasts `cart.updated`. Rejected ops surface
     `cart.updated`; emits `cart.operation_rejected` per failed op.
   - `confirm()` writes the cart to Odoo `pos_order` (stub).
 - **Pricing** currently sums item base prices only (TODO modifier deltas + tax).
+  The applier is async and reads prices from the Redis-backed `MenuLookup`; repricing
+  batches every line through one `getItems` (MGET) rather than a lookup per line.
 
 ## Dependencies
 - `persistence` (CartCache, CartRepository), `menu` (resolution + prices),

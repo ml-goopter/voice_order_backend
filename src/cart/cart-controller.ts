@@ -44,7 +44,7 @@ export class CartController {
       let applied = 0;
 
       for (const op of proposal.operations) {
-        const r = applyOperation(cart, op, this.menu, proposal.pos_config_id);
+        const r = await applyOperation(cart, op, this.menu, proposal.pos_config_id);
         if (r.ok) {
           cart = r.value;
           applied += 1;

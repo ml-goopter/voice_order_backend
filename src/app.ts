@@ -5,7 +5,7 @@ import { eventBus } from './events/event-bus.js';
 import { createRedisClient, closeRedisClient } from './redis/redis-client.js';
 import { RedisCartCache } from './redis/cart-cache.js';
 import { MenuService } from './menu/menu-service.js';
-import { RedisMenuRepository } from './menu/menu-repository.js';
+import { RedisMenuStore } from './menu/menu-store.js';
 import { createSttProvider } from './stt/stt-client.js';
 import { createLlmProvider } from './llm/llm-client.js';
 
@@ -38,8 +38,7 @@ export function createApp(): App {
   // Infrastructure.
   const redis = createRedisClient();
   const carts = new RedisCartCache(redis);
-  const menu = new MenuService();
-  const menuRepo = new RedisMenuRepository(redis);
+  const menu = new MenuService(new RedisMenuStore(redis));
   const stt = createSttProvider();
   const llm = createLlmProvider();
 
@@ -63,12 +62,15 @@ export function createApp(): App {
   return {
     gateway,
     async start() {
-      // Load every seeded restaurant's menu (+ precomputed vectors) from Redis.
-      const posConfigIds = await menuRepo.listPosConfigIds();
-      for (const pos of posConfigIds) {
-        menu.loadIndexedMenu(pos, await menuRepo.load(pos));
+      // Ensure the RediSearch vector index exists; matching queries it per request
+      // (no menu is loaded into memory). Requires the RediSearch module (Redis
+      // Stack); on plain Redis this warns and the matcher falls back to fuzzy scan.
+      try {
+        await menu.ensureIndex();
+        logger.info('menu.index_ready');
+      } catch (err) {
+        logger.warn('menu.index_unavailable', { message: (err as Error).message });
       }
-      logger.info('menu.boot_loaded', { pos_config_ids: posConfigIds });
 
       ws = startWebSocketServer(gateway, config.port);
       logger.info('app.started', { port: config.port, env: config.nodeEnv });

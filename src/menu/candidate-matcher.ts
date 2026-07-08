@@ -1,48 +1,35 @@
-import type { PosConfigId } from '../shared/types.js';
-import type { MenuCache } from './menu-cache.js';
+import type { PosConfigId, ProductTmplId } from '../shared/types.js';
+import type { MenuStore } from './menu-store.js';
 import type { EmbeddingService } from './embedding-service.js';
-import type { CandidateItem, CandidateSet } from './menu-types.js';
+import type { CandidateItem, CandidateSet, MenuItem } from './menu-types.js';
 import { LIMITS } from '../config/constants.js';
 import { similarity } from './fuzzy-matcher.js';
 import { modifierMatchScore } from './modifier-matcher.js';
 
 /**
  * Hybrid ranking weights (design §7). Embedding dominates when available; fuzzy
- * and modifier signals keep the matcher useful when the embedder is a stub
- * (zero vectors → emb term contributes 0 uniformly, so ranking still works).
+ * and modifier signals rerank the retrieved set (and carry the whole match when
+ * no embeddings exist).
  */
 const W_EMBED = 0.55;
 const W_FUZZY = 0.35;
 const W_MODIFIER = 0.1;
 /** Combined relevance below this is treated as no match. */
 const SCORE_THRESHOLD = 0.15;
-
-/** Cosine similarity in [0, 1]; 0 for empty/mismatched-length vectors. */
-function cosine(a: number[], b: number[]): number {
-  if (a.length === 0 || b.length === 0 || a.length !== b.length) return 0;
-  let dot = 0;
-  let na = 0;
-  let nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i] ?? 0;
-    const y = b[i] ?? 0;
-    dot += x * y;
-    na += x * x;
-    nb += y * y;
-  }
-  if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
-}
+/** How many neighbours to retrieve per phrase before reranking (> the final N). */
+const KNN_K = 24;
 
 /**
  * Finds likely items before the LLM call (design §7) so the whole menu is never
- * sent: chunk transcript → embed each phrase once → hybrid-rank every available
- * item (embedding + fuzzy + modifier) across its multi-language name vectors →
- * return the top-N.
+ * sent. Retrieve-then-rerank: chunk transcript → embed each phrase once → retrieve
+ * a candidate union (Redis KNN ∪ lexical name search, so items the vector recall
+ * misses but that lexically match are still surfaced) → hybrid-rank (embedding +
+ * fuzzy + modifier) → top-N. With no embeddings (stub embedder or an unbuilt index)
+ * it falls back to a fuzzy/modifier scan over the full menu.
  */
 export class CandidateMatcher {
   constructor(
-    private readonly cache: MenuCache,
+    private readonly store: MenuStore,
     private readonly embedder: EmbeddingService,
   ) {}
 
@@ -58,11 +45,38 @@ export class CandidateMatcher {
     const phrases = this.chunk(text.toLowerCase());
     if (phrases.length === 0) return { items: [] };
 
-    // Customer transcript phrases are the search side → 'query' (design §7).
-    const phraseVectors = await this.embedder.embedBatch(phrases, 'query');
-    const scored: Array<{ item: CandidateItem; score: number }> = [];
+    // No embeddings available → fuzzy/modifier scan over the whole menu.
+    if (this.embedder.dimensions === 0) return this.fuzzyScan(pos_config_id, phrases);
 
-    for (const { item, vectors } of this.cache.indexed(pos_config_id)) {
+    // Customer transcript phrases are the search side → 'query' (design §7).
+    const phraseVectors = (await this.embedder.embedBatch(phrases, 'query')).filter(
+      (v) => v.length > 0,
+    );
+    if (phraseVectors.length === 0) return this.fuzzyScan(pos_config_id, phrases);
+
+    // Retrieve by BOTH vector similarity and lexical name match, then union — a
+    // high-fuzzy item the KNN recall misses is still surfaced via lexicalSearch.
+    const [sims, lexIds] = await Promise.all([
+      this.store.knnSearch(pos_config_id, phraseVectors, KNN_K),
+      this.store.lexicalSearch(pos_config_id, phrases),
+    ]);
+    const retrieveIds = new Set<ProductTmplId>([...sims.keys(), ...lexIds]);
+    // Nothing retrieved (index missing/empty) → fuzzy fallback rather than fail.
+    if (retrieveIds.size === 0) return this.fuzzyScan(pos_config_id, phrases);
+
+    const items = await this.store.getItems(pos_config_id, [...retrieveIds]);
+    return this.rank(items, phrases, (item) => sims.get(item.product_tmpl_id) ?? 0);
+  }
+
+  /** Rank hydrated candidates by W_EMBED·emb + W_FUZZY·fuzzy + W_MODIFIER·mod. */
+  private async fuzzyScan(pos_config_id: PosConfigId, phrases: string[]): Promise<CandidateSet> {
+    const items = await this.store.allItems(pos_config_id);
+    return this.rank(items, phrases, () => 0);
+  }
+
+  private rank(items: MenuItem[], phrases: string[], embOf: (item: MenuItem) => number): CandidateSet {
+    const scored: Array<{ item: CandidateItem; score: number }> = [];
+    for (const item of items) {
       if (!item.available) continue;
       const names = Object.values(item.names).map((n) => n.toLowerCase());
 
@@ -74,14 +88,7 @@ export class CandidateMatcher {
         }
       }
 
-      let emb = 0;
-      for (const pv of phraseVectors) {
-        for (const iv of vectors) {
-          const s = cosine(pv, iv.vector);
-          if (s > emb) emb = s;
-        }
-      }
-
+      const emb = embOf(item);
       const mod = modifierMatchScore(phrases, item.modifiers);
       const score = W_EMBED * emb + W_FUZZY * fuzzy + W_MODIFIER * mod;
       if (score < SCORE_THRESHOLD) continue;

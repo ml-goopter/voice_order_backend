@@ -5,6 +5,7 @@ import { EventBus } from '../events/event-bus.js';
 import type { CartOperationRejected, CartUpdated } from '../events/event-types.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
 import { MenuService } from '../menu/menu-service.js';
+import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
 import type { OrderProposal } from '../ordering/schemas/proposal.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
@@ -25,7 +26,6 @@ function makeMenu(): MenuService {
       names: { en_US: 'Chicken Burger' },
       base_price_cents: 500,
       available: true,
-      popularity: 10,
       modifiers: [{ modifier_key: 'no_mayo', ptav_id: 900, name: 'No mayo' }],
     },
     {
@@ -34,13 +34,10 @@ function makeMenu(): MenuService {
       names: { en_US: 'Fries' },
       base_price_cents: 300,
       available: true,
-      popularity: 5,
       modifiers: [],
     },
   ];
-  const menu = new MenuService();
-  menu.loadMenu(POS, items);
-  return menu;
+  return new MenuService(InMemoryMenuStore.of(POS, items));
 }
 
 interface Harness {
