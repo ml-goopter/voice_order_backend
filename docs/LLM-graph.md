@@ -26,7 +26,7 @@ OrderGraph.start()  ──►  graph.invoke(input, threadConfig)
         │                         │
         │                         ▼
         │              ┌──────────────────────┐
-        │              │  LangGraph StateGraph │  ← this document
+        │              │ LangGraph StateGraph │  ← this document
         │              └──────────────────────┘
         ▼
 GraphTurnResult: { status: 'complete', output, base_version }
