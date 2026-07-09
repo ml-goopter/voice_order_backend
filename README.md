@@ -47,20 +47,4 @@ ws voice.audio_chunk → Voice/STT → (partial → client)
   → cart.updated → gateway broadcasts to every socket on the cart
 ```
 
-## What is real vs stubbed
 
-**Real:** typed event bus & contracts, WS message parsing, cart operation
-validate/apply (line_id assignment, modifier resolution, rejection reasons),
-per-cart FIFO + apply lock + optimistic version/rebase (design §9), idempotency
-guard, candidate matching (naive), reconnect/resume snapshot response.
-
-**Stubbed (search `TODO`):** STT clients (§14), LLM clients (§8/§14), LangGraph
-pause/resume checkpointer (§6), Redis (`ioredis`), Postgres (`pg`), the `ws` server,
-embeddings, and Odoo menu loading (`seed-menu`).
-
-## Planned dependencies (not yet installed)
-
-Runtime: `ws`, `ioredis`, `pg`, `zod` (replace hand-written validators),
-`@langchain/langgraph`, provider SDKs. Dev: `tsx`, `vitest`.
-Data schema: [`src/db/schema/`](./src/db/schema/README.md) (Odoo POS + our tables).
-```
