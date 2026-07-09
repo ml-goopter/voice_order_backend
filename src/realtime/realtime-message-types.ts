@@ -48,6 +48,12 @@ export interface PartialTranscriptMsg {
   session_id: SessionId;
   text: string;
 }
+export interface FinalTranscriptMsg {
+  type: 'voice.final_transcript';
+  session_id: SessionId;
+  text: string;
+  language?: string;
+}
 export interface ClarificationNeededMsg {
   type: 'order.clarification_needed';
   cart_id: CartId;
@@ -85,6 +91,7 @@ export interface ConnectionResumedMsg {
 
 export type OutboundMessage =
   | PartialTranscriptMsg
+  | FinalTranscriptMsg
   | ClarificationNeededMsg
   | CartUpdatedMsg
   | CartOperationRejectedMsg

@@ -2,8 +2,9 @@
 
 How the mobile/web client talks to the backend. **One WebSocket per app carries
 both voice and cart traffic.** The client streams microphone audio up, receives
-live partial transcripts + cart state down. All messages are JSON text frames
-(there are **no** binary frames — audio is base64 inside JSON).
+live partial transcripts, the settled final transcript, and cart state down. All
+messages are JSON text frames (there are **no** binary frames — audio is base64
+inside JSON).
 
 Source of truth for the contracts below:
 - Transport / connection — `src/realtime/websocket-server.ts`
@@ -149,6 +150,18 @@ Defined in `src/realtime/realtime-message-types.ts` (`OutboundMessage` union).
 Live interim transcript for on-screen display. **Never** re-enters the backend
 order flow — do not act on it beyond showing it. Sent directly by the Voice module.
 
+### `voice.final_transcript` — settled utterance, display-only
+```ts
+{ type: 'voice.final_transcript', session_id: string, text: string, language?: string }
+```
+The finalized transcript for the utterance — replace the on-screen partial with this.
+Like the partial, it is **display-only**: the backend acts on its own internal copy
+(feeding order understanding), never on anything the client echoes back. Sent directly
+by the Voice module once STT settles the turn (typically right after `voice.stop`).
+A final that arrives after the session already went terminal (see
+`final_transcript_timeout`) is suppressed and never sent. `language` is the detected
+BCP-47-ish language tag when the STT provider reports one.
+
 ### `cart.updated` — authoritative cart state
 ```ts
 { type: 'cart.updated', cart_id: string, version: number, cart: Cart }
@@ -254,6 +267,7 @@ Client                         Gateway / Voice
   │  ── voice.audio_chunk × N ───▶  feed audio
   │  ◀── voice.partial_transcript ─  (live display, repeated)
   │  ── voice.stop ──────────────▶  flush stream, start 4s grace
+  │  ◀── voice.final_transcript ──  settled utterance (replace the partial)
   │                                 final transcript → order understanding → cart write
   │  ◀── cart.updated ────────────  new authoritative cart
 ```
@@ -284,8 +298,9 @@ If understanding needs a decision:
 
 - **Render cart only from `cart.updated` / `connection.resumed`.** Treat `version`
   as a fence: apply an update only if its `version` is greater than what you hold.
-- **Partial transcripts are cosmetic.** Show them, discard them; the backend acts
-  only on its own internal final transcript, never on partials.
+- **Transcripts are cosmetic.** Both `voice.partial_transcript` and
+  `voice.final_transcript` are display-only — show them, discard them. The backend
+  acts only on its own internal final transcript, never on anything the client holds.
 - **Echo `request_id`** unchanged when answering `order.clarification_needed` and
   when correlating `cart.operation_rejected`.
 - **Money is integer cents** — divide by 100 for display; never send prices.

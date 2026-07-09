@@ -17,9 +17,10 @@ that may eventually touch the cart (§11 invariant).
 ## Mechanics
 - `handleStart` creates a `VoiceSession` and opens an STT stream with handlers:
   `onPartial` → sends `voice.partial_transcript` straight to the client (display
-  only, never re-enters the backend flow); `onFinal` → mints a `request_id` and
-  emits `stt.final_transcript.received` (skipped once the session is terminal, so a
-  final arriving after a timeout/failure never reaches the cart); `onError` → sends
+  only, never re-enters the backend flow); `onFinal` → sends `voice.final_transcript`
+  to the client (display twin of the partial — replaces it, display-only) and mints a
+  `request_id` to emit `stt.final_transcript.received` (both skipped once the session is
+  terminal, so a final arriving after a timeout/failure never reaches the client or cart); `onError` → sends
   `voice.error` and emits `voice.session_failed`. If `openStream` itself rejects
   (STT auth/handshake failure, §11.2 A), the orphaned session is removed and the
   same `voice.error`/`voice.session_failed` (reason `stt_failed`) is emitted.

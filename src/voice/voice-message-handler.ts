@@ -43,6 +43,14 @@ export class VoiceMessageHandler {
           // asked to repeat (§11.2 C).
           if (session.status === 'ended' || session.status === 'failed' || session.status === 'interrupted') return;
           session.finalReceived = true;
+          // Display twin of the partial: show the customer what we heard. Display-only —
+          // the backend acts on its own internal copy (the bus event below), never this.
+          conn.send({
+            type: 'voice.final_transcript',
+            session_id: session.session_id,
+            text,
+            ...(language !== undefined ? { language } : {}),
+          });
           this.bus.emit('stt.final_transcript.received', {
             request_id: newRequestId(),
             session_id: session.session_id,

@@ -7,6 +7,22 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-09 — Send the final transcript back to the mobile app
+- **What:** Added a `voice.final_transcript` outbound message (`{ type, session_id, text,
+  language? }`) to `realtime-message-types.ts` (`FinalTranscriptMsg` + `OutboundMessage`
+  union). The Voice handler's `onFinal` now `conn.send`s it to the client — directly, the
+  same way partials are sent — right before emitting the internal
+  `stt.final_transcript.received` bus event. It sits inside the existing terminal-session
+  guard, so a final that lands after the §11.2 C timeout (or an ended/interrupted session)
+  is suppressed for the client too, not just the cart.
+- **Why:** The app received live `voice.partial_transcript`s but never the settled final —
+  the finalized text was only emitted internally and vanished from the UI, replaced by a
+  cart update. The client now gets an authoritative "here's what we heard" to replace the
+  partial. Display-only: the backend still acts on its own internal copy, never the client's.
+- **Where:** `src/realtime/realtime-message-types.ts`, `src/voice/voice-message-handler.ts`
+  (+ `voice-message-handler.test.ts`), `docs/realtime-gateway-frontend-integration.md`,
+  `.claude/.knowledge/voice/overview.md`.
+
 ## 2026-07-09 — Add display `name` to CartLine and CartModifier
 - **What:** `CartLine` and `CartModifier` (`cart-types.ts`) each gain a required `name: string`.
   Both are populated in `applyOperation` (`cart-operation-applier.ts`) from already-resolved menu

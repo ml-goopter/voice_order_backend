@@ -76,6 +76,13 @@ describe('VoiceMessageHandler', () => {
     expect(typeof final['request_id']).toBe('string');
   });
 
+  it('sends the final transcript to the client for display on a final', async () => {
+    const { handler, conn, stt, sent } = setup();
+    await handler.handleStart(conn, startMsg);
+    stt.handlers.onFinal('two burgers', 'en');
+    expect(sent).toContainEqual({ type: 'voice.final_transcript', session_id: 's1', text: 'two burgers', language: 'en' });
+  });
+
   it('forwards audio only while listening', async () => {
     const { handler, conn, stt, manager } = setup();
     await handler.handleStart(conn, startMsg);
@@ -153,13 +160,14 @@ describe('VoiceMessageHandler', () => {
   it('ignores a final that lands after the §11.2 C timeout already failed the session', async () => {
     vi.useFakeTimers();
     try {
-      const { handler, conn, stt, events } = setup();
+      const { handler, conn, stt, sent, events } = setup();
       await handler.handleStart(conn, startMsg);
       await handler.handleStop(conn, stopMsg);
       vi.advanceTimersByTime(TIMEOUTS.finalTranscriptMs); // session fails
 
       stt.handlers.onFinal('two burgers', 'en'); // stray late final
       expect(events['stt.final_transcript.received']).toBeUndefined(); // never reaches the cart
+      expect(sent.some((m) => m.type === 'voice.final_transcript')).toBe(false); // nor the client display
       expect(events['voice.session_ended']).toBeUndefined();
       expect(events['voice.session_failed']).toHaveLength(1);
     } finally {
