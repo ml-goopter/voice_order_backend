@@ -50,4 +50,18 @@ describe('RedisCartCache', () => {
     redis.store.set('cart:bad', '{not json');
     expect(await cache.get('bad')).toBeUndefined();
   });
+
+  it('propagates a transport error from redis.get — only corrupt JSON is swallowed', async () => {
+    // Only JSON.parse is inside the try (cart-cache.ts:28-33); a thrown get (connection
+    // drop) propagates uncaught, and the controller's own try/catch maps it to internal_error.
+    const redis = {
+      get: async (): Promise<string> => {
+        throw new Error('connection reset');
+      },
+      set: async (): Promise<void> => {},
+      del: async (): Promise<void> => {},
+    };
+    const cache = new RedisCartCache(redis as unknown as Redis);
+    await expect(cache.get('cart_1')).rejects.toThrow('connection reset');
+  });
 });

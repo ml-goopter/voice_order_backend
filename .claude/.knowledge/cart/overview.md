@@ -57,5 +57,4 @@ bumps the version, persists, and broadcasts `cart.updated`. Rejected ops surface
 ## Not done yet
 - `CartRepository` is Redis-backed: the idempotency ledger lives at `cart:req:{request_id}`
   with a TTL (`CART_IDEMPOTENCY_TTL_SECONDS`, default 24h) so it stays bounded.
-  `saveSnapshot` (versioned recovery snapshot), `confirmOrder` (Odoo pos_order), and
-  modifier/tax pricing are still stubs.
+  `confirmOrder` (Odoo pos_order) and modifier/tax pricing are still stubs.
