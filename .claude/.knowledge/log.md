@@ -7,6 +7,17 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-09 — Fix prompt/schema drift: derive ALLOWED_OPERATIONS from the validator
+- **What:** `ALLOWED_OPERATIONS` in `src/llm/prompt-builder.ts` was a hand-maintained
+  literal list that included `'clarify'`, an action the output schema
+  (`cart-operation.schema.ts`) never defines. The prompt therefore advertised an operation
+  that would fail Zod validation if the model emitted it. Replaced the literal with a list
+  derived from the schema: `cartOperationSchema.options.map((o) => o.shape.action.value)`.
+- **Why:** Clarification is signalled via the top-level `needs_clarification` /
+  `clarification_question` fields, not as a member of the `operations` discriminated union.
+  Deriving the advertised list from the validator makes drift structurally impossible.
+- **Where:** `src/llm/prompt-builder.ts`.
+
 ## 2026-07-09 — Send the final transcript back to the mobile app
 - **What:** Added a `voice.final_transcript` outbound message (`{ type, session_id, text,
   language? }`) to `realtime-message-types.ts` (`FinalTranscriptMsg` + `OutboundMessage`

@@ -1,14 +1,11 @@
 import type { LlmPrompt } from './llm-provider.js';
 import type { OrderGraphInput } from '../ordering/schemas/order-graph-input.schema.js';
+import { cartOperationSchema } from '../ordering/schemas/cart-operation.schema.js';
 
-const ALLOWED_OPERATIONS = [
-  'add_item',
-  'remove_item',
-  'update_quantity',
-  'add_modifier',
-  'remove_modifier',
-  'clarify',
-] as const;
+// Derived from the output schema so the prompt's advertised operations can never
+// drift from what validation accepts. Clarification is NOT an operation — it is
+// signalled via needs_clarification / clarification_question (see below).
+const ALLOWED_OPERATIONS = cartOperationSchema.options.map((o) => o.shape.action.value);
 
 /**
  * Builds the LLM prompt from graph input (design §8). The model sees the transcript,
