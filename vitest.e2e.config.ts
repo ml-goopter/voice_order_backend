@@ -25,7 +25,7 @@ const pick = (name: string, fallback: string) => process.env[name] || fallback;
 
 const env = {
   REDIS_URL: pick('REDIS_URL', 'redis://localhost:6379'),
-  LLM_PROVIDER: 'ollama', // force real Ollama regardless of the .env default
+  LLM_PROVIDER: pick('LLM_PROVIDER', 'openai'),
   LLM_MODEL: pick('LLM_MODEL', 'qwen3:14b'),
   LLM_BASE_URL: pick('LLM_BASE_URL', 'http://localhost:11434/v1'),
   LLM_API_KEY: pick('LLM_API_KEY', 'ollama'),
@@ -40,7 +40,7 @@ const env = {
 
 export default defineConfig({
   test: {
-    include: ['src/**/*.e2e.ts'],
+    include: ['E2E/*.e2e.ts'],
     environment: 'node',
     // A real qwen3 turn takes ~45-60s; the clarify→resume test does two, and the
     // clarify→timeout test waits out TIMEOUTS.clarificationMs (30s) on top.
