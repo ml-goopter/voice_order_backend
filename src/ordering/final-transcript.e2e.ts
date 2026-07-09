@@ -57,6 +57,7 @@ let bus: EventBus;
 let infraReady = false;
 let infraSkipReason = '';
 const createdCartIds: string[] = [];
+const createdRequestIds: string[] = [];
 const subs: Array<() => void> = [];
 
 // ---- helpers ----------------------------------------------------------------
@@ -254,17 +255,26 @@ async function seedCartWithLine(
   return { line, item: item!, seededMod };
 }
 
+// The idempotency ledger (cart:req:{request_id}) is now Redis-backed and TTL-bounded
+// (CART_IDEMPOTENCY_TTL_SECONDS, default 24h), so it SURVIVES across test runs. A
+// per-run salt keeps request_ids unique per run: a re-run within the TTL that reused a
+// prior id would be dropped as cart.duplicate_request and hang the turn to its timeout.
+const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
+
 let uid = 0;
 function ids(tag: string) {
   uid += 1;
   return {
     cart_id: `e2e_${tag}_${uid}`,
     session_id: `e2e_sess_${uid}`,
-    request_id: `e2e_req_${uid}`,
+    request_id: `e2e_req_${RUN}_${uid}`,
   };
 }
 
 function emitFinal(text: string, o: { cart_id: string; session_id: string; request_id: string }): void {
+  // Every ledger-writing request_id flows through here (including the cross-turn
+  // `_edit` variant), so recording it lets afterEach clear the ledger key it leaves.
+  createdRequestIds.push(o.request_id);
   bus.emit('stt.final_transcript.received', {
     request_id: o.request_id,
     session_id: o.session_id,
@@ -321,7 +331,10 @@ beforeAll(async () => {
 afterEach(async () => {
   subs.splice(0).forEach((off) => off());
   if (!infraReady) return;
-  await Promise.all(createdCartIds.splice(0).map((id) => redis.del(`cart:${id}`)));
+  await Promise.all([
+    ...createdCartIds.splice(0).map((id) => redis.del(`cart:${id}`)),
+    ...createdRequestIds.splice(0).map((id) => redis.del(`cart:req:${id}`)),
+  ]);
 });
 
 afterAll(async () => {

@@ -7,6 +7,26 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-08 — Fix Redis persistence + e2e re-run collision from the idempotency ledger
+- **What:** Two fixes exposed while running the final-transcript e2e. (1) `docker-compose.yml`:
+  mount the redis volume at redis-stack-server's native data dir (`/var/lib/redis-stack`,
+  its default `dir`) instead of `/data`. The old mount left the real data dir on the
+  ephemeral container layer, so the menu + KNN index were lost on every container recreate.
+  (2) `final-transcript.e2e.ts`: the now Redis-backed idempotency ledger
+  (`cart:req:{request_id}`, 24h TTL) survives across runs, but the test used deterministic
+  request_ids that reset each run — a re-run within the TTL was dropped as
+  `cart.duplicate_request` and hung the turn to timeout. Added a per-run salt to
+  `request_id`, tracked emitted request_ids via `emitFinal`, and extended `afterEach` to
+  delete `cart:req:{id}` alongside the cart key.
+- **Why:** After a container recreate the e2e preflight reported "Redis has no menu" (empty
+  DB); after restoring the menu, re-runs then hung on the persistent ledger. Neither was a
+  code regression — both are consequences of the ledger going Redis-backed (see below).
+- **Where:** `docker-compose.yml`, `src/ordering/final-transcript.e2e.ts`.
+- **Notes:** Restoring the lost data: the menu survived in the older `populate_redis_redis-data`
+  docker volume (351 items, embeddings live in the JSON blobs), copied into `backend_redis-data`;
+  the KNN index was rebuilt locally with `npm run index:menu` (no Jina call). The graph
+  checkpointer is in-memory, so no other cross-run state needed cleanup.
+
 ## 2026-07-08 — Redis-backed cart idempotency ledger + infra-failure handling
 - **What:** (F3) Turned `CartRepository` into an interface with `RedisCartRepository`
   (idempotency ledger at `cart:req:{request_id}`, TTL-bounded via new
