@@ -65,3 +65,5 @@ structure (internal bug fixes, small tweaks) — those only go in `log.md`.
 
 When in doubt, add a short `log.md` entry — an over-recorded log is cheaper than
 a missing one.
+
+### DO NOT READ .env under any circumstances
