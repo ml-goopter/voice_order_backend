@@ -13,6 +13,8 @@ export class VoiceSession {
   stopping = false;
   /** Armed after voice.stop while awaiting a final (§11.2 C); cleared on final/disconnect. */
   finalTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Audio that arrived before the STT stream finished connecting; flushed in order once it opens. */
+  pendingAudio: Buffer[] = [];
 
   constructor(
     readonly session_id: SessionId,

@@ -12,6 +12,9 @@ import { newRequestId } from '../shared/ids.js';
 import { TIMEOUTS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 
+/** Cap on audio chunks buffered during STT connect, so a stalled connect can't grow memory unbounded. */
+const MAX_PENDING_AUDIO_CHUNKS = 200;
+
 /**
  * Voice Module inbound handler (design §5). Owns STT streaming: relays partials to
  * the client for live display and emits the FINAL transcript to the event bus. It
@@ -94,13 +97,26 @@ export class VoiceMessageHandler {
       });
       return;
     }
+    // Flush audio that arrived during the connect round-trip so the onset of speech
+    // reaches STT in order, then go live for subsequent chunks.
+    for (const chunk of session.pendingAudio) session.stream?.sendAudio(chunk);
+    session.pendingAudio = [];
     session.status = 'listening';
   }
 
   handleAudioChunk(conn: ClientConnection, msg: VoiceAudioChunkMsg): void {
     const session = this.manager.get(conn.session_id);
-    if (!session?.stream || session.status !== 'listening' || session.stopping) return;
-    session.stream.sendAudio(Buffer.from(msg.audio, 'base64'));
+    if (!session || session.stopping) return;
+    // Terminal sessions get nothing more (a late chunk must never revive a flushed/failed turn).
+    if (session.status === 'ended' || session.status === 'failed' || session.status === 'interrupted') return;
+    const audio = Buffer.from(msg.audio, 'base64');
+    if (!session.stream || session.status !== 'listening') {
+      // Stream still connecting: retain the onset of speech (bounded) instead of
+      // dropping it, so nothing is lost to the connect round-trip.
+      if (session.pendingAudio.length < MAX_PENDING_AUDIO_CHUNKS) session.pendingAudio.push(audio);
+      return;
+    }
+    session.stream.sendAudio(audio);
   }
 
   async handleStop(conn: ClientConnection, _msg: VoiceStopMsg): Promise<void> {

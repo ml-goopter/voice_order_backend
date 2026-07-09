@@ -122,6 +122,34 @@ describe('VoiceMessageHandler', () => {
     expect(stt.stream.sendAudio).not.toHaveBeenCalled();
   });
 
+  it('buffers audio streamed while the STT stream is still connecting and flushes it on connect', async () => {
+    const { manager, stt, bus, conn } = setup();
+    // Hold openStream pending to model the connect round-trip during which the
+    // device already streams the onset of its utterance; resolve to the shared
+    // stream mock so sendAudio is spied.
+    let release!: () => void;
+    stt.openStream = (h) => {
+      stt.handlers = h;
+      return new Promise<SttStream>((r) => (release = () => r(stt.stream)));
+    };
+    const handler = new VoiceMessageHandler(manager, stt, bus);
+
+    const started = handler.handleStart(conn, startMsg); // suspends at `await openStream`
+    for (let seq = 0; seq < 5; seq++) {
+      handler.handleAudioChunk(conn, { type: 'voice.audio_chunk', session_id: 's1', seq, audio: Buffer.from([seq]).toString('base64') });
+    }
+    expect(stt.stream.sendAudio).not.toHaveBeenCalled(); // stream not open yet — retained, not sent
+
+    release();
+    await started;
+
+    // The onset that arrived mid-connect must be flushed to STT in order — none dropped.
+    expect(stt.stream.sendAudio).toHaveBeenCalledTimes(5);
+    expect(stt.stream.sendAudio).toHaveBeenNthCalledWith(1, Buffer.from([0]));
+    expect(stt.stream.sendAudio).toHaveBeenNthCalledWith(5, Buffer.from([4]));
+    expect(manager.get('s1')?.status).toBe('listening');
+  });
+
   it('ignores a final that lands after the §11.2 C timeout already failed the session', async () => {
     vi.useFakeTimers();
     try {
