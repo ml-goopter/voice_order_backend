@@ -47,7 +47,9 @@ export function buildPrompt(input: OrderGraphInput): LlmPrompt {
       current_cart: input.current_cart,
       candidate_items: input.candidate_items,
       conversation_history: input.history,
-      clarification_answer: input.clarification_answer,
+      clarification: input.clarification_answer !== undefined
+        ? { question: input.clarification_question, answer: input.clarification_answer }
+        : undefined,
     },
     null,
     2,

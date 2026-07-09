@@ -38,6 +38,7 @@ function toInput(s: OrderStateType): OrderGraphInput {
     supported_languages: s.supported_languages,
     ...(s.language !== undefined ? { language: s.language } : {}),
     ...(s.clarification_answer !== undefined ? { clarification_answer: s.clarification_answer } : {}),
+    ...(s.clarification_question !== undefined ? { clarification_question: s.clarification_question } : {}),
   };
 }
 

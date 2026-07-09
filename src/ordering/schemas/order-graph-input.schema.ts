@@ -54,4 +54,6 @@ export interface OrderGraphInput {
   supported_languages: LangCode[];
   /** Present when resuming after a clarification (design §6 clarification loop). */
   clarification_answer?: string;
+  /** The question posed on the previous clarify, sent back with the answer for context. */
+  clarification_question?: string;
 }
