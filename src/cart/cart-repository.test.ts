@@ -28,7 +28,7 @@ describe('InMemoryCartRepository', () => {
   });
 });
 
-/** Fake ioredis capturing MULTI writes and EX TTLs — the surface RedisCartRepository uses. */
+/** Fake ioredis capturing the cart+ledger EVAL writes and EX TTLs — the surface RedisCartRepository uses. */
 class FakeRedis {
   readonly store = new Map<string, string>();
   readonly ttl = new Map<string, number>();
@@ -41,19 +41,11 @@ class FakeRedis {
     this.write(key, value, seconds);
   }
 
-  multi() {
-    const pending: Array<[string, string, number | undefined]> = [];
-    const chain = {
-      set: (key: string, value: string, _ex?: string, seconds?: number) => {
-        pending.push([key, value, seconds]);
-        return chain;
-      },
-      exec: async () => {
-        for (const [key, value, seconds] of pending) this.write(key, value, seconds);
-        return [];
-      },
-    };
-    return chain;
+  /** Mirrors COMMIT_APPLIED_LUA: KEYS[1]=ARGV[1], KEYS[2]=ARGV[2] EX ARGV[3], atomically. */
+  async eval(_script: string, _numKeys: number, ...args: string[]): Promise<void> {
+    const [cartK, reqK, cartVal, mark, seconds] = args;
+    this.write(cartK, cartVal);
+    this.write(reqK, mark, Number(seconds));
   }
 
   private write(key: string, value: string, seconds?: number): void {
@@ -96,43 +88,27 @@ describe('RedisCartRepository', () => {
 });
 
 /**
- * A FakeRedis whose MULTI/EXEC reports a per-command failure the ioredis way: exec()
- * RESOLVES to an array of [error, reply] tuples rather than rejecting, and writes nothing.
+ * A FakeRedis whose EVAL rejects, standing in for a Lua script error (or Redis being
+ * unreachable mid-commit). Because the whole call rejects, nothing is committed — the
+ * atomicity MULTI/EXEC could not guarantee, since it does not roll back a per-command
+ * failure (H4). The controller leaves the request un-marked, so the commit is retriable.
  */
-class PartialFailRedis {
+class ThrowingEvalRedis {
   readonly store = new Map<string, string>();
   async exists(key: string): Promise<number> {
     return this.store.has(key) ? 1 : 0;
   }
   async set(): Promise<void> {}
-  multi() {
-    const chain = {
-      set: () => chain,
-      // First queued command "failed" (e.g. WRONGTYPE); nothing is committed.
-      exec: async (): Promise<Array<[Error | null, unknown]>> => [
-        [new Error('WRONGTYPE'), null],
-        [null, 'OK'],
-      ],
-    };
-    return chain;
+  async eval(): Promise<never> {
+    throw new Error('script error');
   }
 }
 
-describe('RedisCartRepository — MULTI/EXEC failure handling', () => {
-  it('KNOWN GAP (H4): a per-command EXEC error is ignored, so the write is silently lost', async () => {
-    const redis = new PartialFailRedis();
+describe('RedisCartRepository — EVAL failure handling', () => {
+  it('commitApplied rejects and writes nothing when the script errors', async () => {
+    const redis = new ThrowingEvalRedis();
     const repo = new RedisCartRepository(redis as unknown as Redis, 3600);
-    // commitApplied never inspects exec()'s result (cart-repository.ts:56), so it resolves
-    // as if all is well...
-    await expect(repo.commitApplied(emptyCart('cart_h4', 1), 'req_h4')).resolves.toBeUndefined();
-    // ...even though nothing was actually written.
+    await expect(repo.commitApplied(emptyCart('cart_h4', 1), 'req_h4')).rejects.toThrow();
     expect(redis.store.size).toBe(0);
-  });
-
-  // FAILING: commitApplied should detect the [error, _] tuple and throw so the controller
-  // treats it as an infra failure (request left unmarked → retriable). Stays RED until fixed.
-  it('commitApplied should reject when EXEC reports a per-command error', async () => {
-    const repo = new RedisCartRepository(new PartialFailRedis() as unknown as Redis, 3600);
-    await expect(repo.commitApplied(emptyCart('cart_h4b', 1), 'req_h4b')).rejects.toThrow();
   });
 });

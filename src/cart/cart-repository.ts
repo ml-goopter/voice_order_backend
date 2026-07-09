@@ -28,10 +28,25 @@ function reqKey(request_id: RequestId): string {
 }
 
 /**
+ * Atomically write the cart blob (KEYS[1]=ARGV[1]) and the ledger mark
+ * (KEYS[2]=ARGV[2], expiring after ARGV[3] seconds). Redis runs a Lua script as
+ * one indivisible unit: either both SETs land or neither does. MULTI/EXEC can't
+ * promise this — it does not roll back a per-command failure, so a partial commit
+ * could persist the cart without marking the request (double-apply on retry) or
+ * mark the request without the cart (silent loss). A script error rejects the
+ * whole call and commits nothing.
+ */
+const COMMIT_APPLIED_LUA = `
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[2], ARGV[2], 'EX', ARGV[3])
+`;
+
+/**
  * CartRepository backed by Redis. Ledger keys expire after `ttlSeconds` so the
  * idempotency ledger stays bounded. `commitApplied` writes the cart blob and the
- * ledger mark in a single MULTI so a crash can't leave the cart persisted but the
- * request un-marked (which would double-apply a non-idempotent add_item on retry).
+ * ledger mark in a single Lua script (see COMMIT_APPLIED_LUA) so a crash or error
+ * can't leave the cart persisted but the request un-marked (which would
+ * double-apply a non-idempotent add_item on retry).
  */
 export class RedisCartRepository implements CartRepository {
   constructor(
@@ -48,11 +63,15 @@ export class RedisCartRepository implements CartRepository {
   }
 
   async commitApplied(cart: Cart, request_id: RequestId): Promise<void> {
-    await this.redis
-      .multi()
-      .set(cartKey(cart.cart_id), JSON.stringify(cart))
-      .set(reqKey(request_id), 'applied', 'EX', this.ttlSeconds)
-      .exec();
+    await this.redis.eval(
+      COMMIT_APPLIED_LUA,
+      2,
+      cartKey(cart.cart_id),
+      reqKey(request_id),
+      JSON.stringify(cart),
+      'applied',
+      String(this.ttlSeconds),
+    );
   }
 
   /** Confirm: write the cart as an Odoo pos_order (design §9, step 11). */
