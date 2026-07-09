@@ -44,11 +44,12 @@ export async function applyOperation(
       for (const ref of op.modifiers) {
         const mod = item.modifiers.find((m) => m.modifier_key === ref.modifier_key);
         if (!mod) return reject('invalid_modifier', `${item.names['en_US'] ?? item.menu_item_key} does not support that option.`);
-        modifiers.push({ ptav_id: mod.ptav_id });
+        modifiers.push({ ptav_id: mod.ptav_id, name: mod.name });
       }
       const line: CartLine = {
         line_id: newLineId(),
         product_tmpl_id: item.product_tmpl_id,
+        name: item.names['en_US'] ?? Object.values(item.names)[0] ?? item.menu_item_key,
         quantity: op.quantity,
         modifiers,
       };
@@ -78,7 +79,7 @@ export async function applyOperation(
         op.action === 'add_modifier'
           ? line.modifiers.some((m) => m.ptav_id === mod.ptav_id)
             ? line.modifiers
-            : [...line.modifiers, { ptav_id: mod.ptav_id }]
+            : [...line.modifiers, { ptav_id: mod.ptav_id, name: mod.name }]
           : line.modifiers.filter((m) => m.ptav_id !== mod.ptav_id);
       const items = cart.items.map((l) => (l.line_id === op.line_id ? { ...l, modifiers } : l));
       return ok(await priced(cart, items, menu, pos));

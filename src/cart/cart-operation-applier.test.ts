@@ -98,6 +98,7 @@ describe('applyOperation', () => {
       const line = next.items[0]!;
       expect(line.line_id).toMatch(/^ln_/);
       expect(line.product_tmpl_id).toBe(100);
+      expect(line.name).toBe('Chicken Burger');
       expect(line.quantity).toBe(2);
       expect(line.modifiers).toEqual([]);
       // 2 × 500 = 1000
@@ -114,7 +115,7 @@ describe('applyOperation', () => {
           POS,
         ),
       );
-      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 900 }]);
+      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 900, name: 'No mayo' }]);
     });
 
     it('does not mutate the input cart', async () => {
@@ -193,13 +194,13 @@ describe('applyOperation', () => {
     it('adds a modifier to an existing line', async () => {
       const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger');
       const next = expectOk(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'extra_cheese' }, menu, POS));
-      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 901 }]);
+      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 901, name: 'Extra cheese' }]);
     });
 
     it('is idempotent — adding the same modifier twice does not duplicate it', async () => {
       const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1, ['no_mayo']);
       const next = expectOk(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
-      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 900 }]);
+      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 900, name: 'No mayo' }]);
     });
 
     it('rejects a modifier not valid for the item', async () => {
@@ -216,7 +217,7 @@ describe('applyOperation', () => {
     it('removes a present modifier', async () => {
       const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1, ['no_mayo', 'extra_cheese']);
       const next = expectOk(await applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
-      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 901 }]);
+      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 901, name: 'Extra cheese' }]);
     });
 
     it('is a no-op when the modifier is valid but not present', async () => {
