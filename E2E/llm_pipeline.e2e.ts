@@ -30,21 +30,21 @@
  */
 import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
 import { Redis } from 'ioredis';
-import { config } from '../config/env.js';
-import { TIMEOUTS } from '../config/constants.js';
-import { EventBus } from '../events/event-bus.js';
-import type { AppEventMap, AppEventName } from '../events/event-types.js';
-import { RedisCartCache } from '../redis/cart-cache.js';
-import { MenuService } from '../menu/menu-service.js';
-import { RedisMenuStore } from '../menu/menu-store.js';
-import { createLlmProvider } from '../llm/llm-client.js';
-import { OrderGraph } from './order-graph.js';
-import { OrderUnderstandingService } from './order-understanding-service.js';
-import { registerOrderingHandlers } from './register-handlers.js';
-import type { Cart, CartLine, CartModifier } from '../cart/cart-types.js';
-import type { CandidateItem, CandidateModifier } from '../menu/menu-types.js';
-import { cartOperationSchema } from './schemas/cart-operation.schema.js';
-import type { OrderProposal } from './schemas/proposal.js';
+import { config } from '../src/config/env.js';
+import { TIMEOUTS } from '../src/config/constants.js';
+import { EventBus } from '../src/events/event-bus.js';
+import type { AppEventMap, AppEventName } from '../src/events/event-types.js';
+import { RedisCartCache } from '../src/redis/cart-cache.js';
+import { MenuService } from '../src/menu/menu-service.js';
+import { RedisMenuStore } from '../src/menu/menu-store.js';
+import { createLlmProvider } from '../src/llm/llm-client.js';
+import { OrderGraph } from '../src/ordering/order-graph.js';
+import { OrderUnderstandingService } from '../src/ordering/order-understanding-service.js';
+import { registerOrderingHandlers } from '../src/ordering/register-handlers.js';
+import type { Cart, CartLine, CartModifier } from '../src/cart/cart-types.js';
+import type { CandidateItem, CandidateModifier } from '../src/menu/menu-types.js';
+import { cartOperationSchema } from '../src/ordering/schemas/cart-operation.schema.js';
+import type { OrderProposal } from '../src/ordering/schemas/proposal.js';
 
 const POS = 1;
 /** A real qwen3:14b turn (retrieve + thinking + parse) runs ~45-60s. */
@@ -282,11 +282,7 @@ beforeAll(async () => {
       infraSkipReason = 'EMBEDDING_PROVIDER=jina but JINA_API_KEY is empty';
       return;
     }
-    const tags = await fetch(`${config.llmBaseUrl.replace(/\/v1\/?$/, '')}/api/tags`).catch(() => null);
-    if (!tags || !tags.ok) {
-      infraSkipReason = `Ollama not reachable at ${config.llmBaseUrl}`;
-      return;
-    }
+
   } catch (err) {
     infraSkipReason = `Redis not reachable at ${config.redisUrl}: ${(err as Error).message}`;
     return;
