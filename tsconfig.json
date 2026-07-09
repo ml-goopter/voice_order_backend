@@ -4,22 +4,22 @@
     // File Layout
     "rootDir": "./src",
     "outDir": "./dist",
-
     // Environment Settings
     "module": "nodenext",
     "target": "ES2022",
-    "lib": ["ES2022"],
-    "types": ["node"],
-
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ],
     // Other Outputs
     "sourceMap": true,
     "declaration": true,
     "declarationMap": true,
-
     // Stricter Typechecking Options
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
-
     // Recommended Options
     "strict": true,
     "verbatimModuleSyntax": true,
@@ -28,6 +28,13 @@
     "moduleDetection": "force",
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+  "include": [
+    "src/**/*.ts",
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/*.test.ts",
+    "E2E/*.e2e.ts"
+  ]
 }
