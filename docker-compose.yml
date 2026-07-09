@@ -7,7 +7,10 @@ services:
       - "6379:6379"
     command: ["redis-stack-server", "--appendonly", "yes"]
     volumes:
-      - redis-data:/data
+      # Mount at redis-stack-server's native data dir (its default `dir`), so the
+      # menu + KNN index actually persist. Mounting elsewhere (e.g. /data) leaves
+      # the real data dir on the ephemeral container layer, lost on recreate.
+      - redis-data:/var/lib/redis-stack
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
