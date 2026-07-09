@@ -7,6 +7,48 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-09 — Send clarification question with the answer on resume
+- **What:** Thread the prior `clarification_question` through to the resumed parse
+  prompt. Added `clarification_question?` to `OrderGraphInput`; `toInput` now copies it
+  from state (already set by the `clarify` node); `buildPrompt` renders the answer +
+  question together as a nested `clarification: { question, answer }` object (replacing
+  the flat `clarification_answer` field).
+- **Why:** On resume the model received the answer with no record of the question it
+  answered, so it re-emitted the same `clarification_question` — the observed
+  `clarification_needed → answered → clarification_needed` loop.
+- **Where:** `ordering/schemas/order-graph-input.schema.ts`, `ordering/graph/build-graph.ts`
+  (`toInput`), `llm/prompt-builder.ts`. Doc: `docs/ordering-langgraph.md` §6.
+- **Notes:** Plumbing only. The complementary system-prompt instruction telling the
+  model to resolve from `clarification` and not re-ask is NOT yet added — see
+  `docs/ordering-langgraph.md` §6.4 (item 2, still open).
+
+## 2026-07-09 — Switch LLM to Gemini; expand real-stack e2e coverage
+- **What:** (1) Pointed the LLM at Google's OpenAI-compatible Gemini endpoint via env
+  (`.env`: `LLM_PROVIDER=openai`, `LLM_BASE_URL=.../v1beta/openai/`, `LLM_MODEL=gemini-flash-lite-latest`).
+  (2) Moved/authored the real-stack pipeline e2e as `E2E/llm_pipeline.e2e.ts` (replaces the
+  old `src/ordering/final-transcript.e2e.ts`); added a per-test timing summary printed in
+  `afterAll` (model name from env + average ms). (3) Added 8 new e2e cases: multi-item,
+  multi-modifier, quantity+omission, no-op menu question, off-menu item, in-turn
+  self-correction, add-to-non-empty-cart, and cooking-style modifier. (4) Made the
+  `parses quantity` test tolerant of a clarification round (answers it, then asserts qty 2).
+- **Why:** No local Ollama in this environment; Gemini's OpenAI-compat layer runs the same
+  `OpenAiCompatibleLlmProvider` unchanged. Broaden e2e coverage of multi-op output and
+  robustness (no fabricated adds), and de-flake the quantity test under the smaller model,
+  which asks which wonton more often (the menu has several wonton dishes).
+- **Where:** `.env`, `E2E/llm_pipeline.e2e.ts`.
+- **Notes:** The configured Gemini key only serves the `-latest` alias models — pinned
+  versions (`gemini-2.5-*`, `gemini-2.0-*`) 404 ("not available to new users") or 429
+  (`limit: 0`, no free-tier quota). `vitest.e2e.config.ts:12-15`'s "FORCE the LLM to Ollama"
+  comment is stale — `pick()` honours `.env` and only falls back to Ollama when unset.
+
+## 2026-07-09 — Add Order Understanding LangGraph internals doc
+- **What:** New `docs/ordering-langgraph.md` — deep reference for the ordering graph:
+  topology, every state channel + reducer, the interrupt/resume mechanism, the
+  checkpointer thread model, the schema-repair loop, failure modes, and invariants.
+- **Why:** The module `overview.md` summarizes the graph; this captures the mechanics
+  in depth for contributors touching pause/resume or state channels.
+- **Where:** `docs/` (documentation only — no code change to `src/ordering`).
+
 ## 2026-07-09 — Logging hardening: level gating, correlation, safe error meta
 - **What:** (1) `emit()` in `config/logger.ts` now honours `LOG_LEVEL` (was read into
   config but ignored — every level always printed). (2) `EventBus.emit` tags the

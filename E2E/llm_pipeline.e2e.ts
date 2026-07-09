@@ -28,7 +28,7 @@
  *   - JINA_API_KEY for query embeddings (EMBEDDING_PROVIDER=jina).
  * Run with: npm run test:e2e   (see vitest.e2e.config.ts)
  */
-import { describe, it, expect, beforeAll, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import { Redis } from 'ioredis';
 import { config } from '../src/config/env.js';
 import { TIMEOUTS } from '../src/config/constants.js';
@@ -59,6 +59,12 @@ let infraReady = false;
 let infraSkipReason = '';
 const createdCartIds: string[] = [];
 const subs: Array<() => void> = [];
+
+// ---- per-test timing (reported in afterAll with the model name) -------------
+// Only tests that actually ran the live pipeline are timed; when infra is absent
+// every test skips instantly, so there is nothing meaningful to average.
+const durations: Array<{ name: string; ms: number }> = [];
+let testStart = 0;
 
 // ---- helpers ----------------------------------------------------------------
 
@@ -186,6 +192,15 @@ async function expectAddItemModifier(
   return match!.ptav_id;
 }
 
+/** Assert the proposal adds nothing new — no add_item op (empty ops or edits only). */
+function expectNoAddItem(proposal: OrderProposal): void {
+  const adds = proposal.operations.filter((op) => op.action === 'add_item');
+  expect(
+    adds.length,
+    `expected no add_item, but the model fabricated: ${adds.map((a) => a.menu_item_key).join(', ')}`,
+  ).toBe(0);
+}
+
 function seedEmptyCart(cart_id: string): Promise<void> {
   createdCartIds.push(cart_id);
   const cart: Cart = {
@@ -303,13 +318,29 @@ beforeAll(async () => {
   infraReady = true;
 });
 
-afterEach(async () => {
+beforeEach(() => {
+  testStart = Date.now();
+});
+
+afterEach(async (ctx) => {
+  if (infraReady) durations.push({ name: ctx.task.name, ms: Date.now() - testStart });
   subs.splice(0).forEach((off) => off());
   if (!infraReady) return;
   await Promise.all(createdCartIds.splice(0).map((id) => redis.del(`cart:${id}`)));
 });
 
 afterAll(async () => {
+  if (durations.length > 0) {
+    const total = durations.reduce((sum, d) => sum + d.ms, 0);
+    const avg = Math.round(total / durations.length);
+    const lines = [
+      `\n[llm_pipeline.e2e] model=${config.llmModel} provider=${config.llmProvider}`,
+      ...durations.map((d) => `  ${String(d.ms).padStart(7)} ms  ${d.name}`),
+      `  average: ${avg} ms over ${durations.length} test(s)\n`,
+    ];
+    // Write straight to stdout: the vitest reporter does not surface console.* from afterAll.
+    process.stdout.write(lines.join('\n') + '\n');
+  }
   if (redis) await redis.quit();
 });
 
@@ -340,9 +371,27 @@ describe('final-transcript → proposal pipeline (real stack: Redis + Jina + Oll
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('can I get two orders of deep fried wonton', o);
-    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    let outcome = await waitForAny(
+      ['order.operations_proposed', 'order.clarification_needed', 'voice.session_failed'],
+      o.cart_id,
+      TURN_MS,
+    );
 
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+    // The menu has several wonton dishes (soup, noodle, spicy-garlic), so the model sometimes
+    // asks which one. Answer it — pointing back at the deep fried wonton appetizer — and wait
+    // for the resumed proposal, so the quantity assertion still runs.
+    if (outcome.name === 'order.clarification_needed') {
+      const resumed = waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+      bus.emit('order.clarification_answered', {
+        cart_id: o.cart_id,
+        session_id: o.session_id,
+        request_id: o.request_id,
+        answer: 'the A3 deep fried wonton appetizer',
+      });
+      outcome = await resumed;
+    }
+
+    expect(outcome.name, `pipeline failed: ${JSON.stringify(outcome.payload)}`).toBe('order.operations_proposed');
     await expectAddItem(expectValidProposal(proposals), /deep.?fried.*wonton/i, 2);
   });
 
@@ -530,6 +579,140 @@ describe('final-transcript → proposal pipeline (real stack: Redis + Jina + Oll
     expect(op, `expected an add_modifier op, got: ${JSON.stringify(proposals.at(-1)?.operations)}`).toBeDefined();
     expect(op!.line_id).toBe(line.line_id);
     expect(op!.modifier_key).toBe(broccoli.modifier_key);
+  });
+
+  // ---- multi-operation output (a single utterance → several ops) ------------
+
+  it('multi-item: one utterance with two dishes proposes an add for each', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('multi');
+    await seedEmptyCart(o.cart_id);
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('one sweet and sour chicken and two deep fried wontons', o);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+
+    const proposal = expectValidProposal(proposals, 2);
+    await expectAddItem(proposal, /sweet.*sour.*chicken/i, 1);
+    await expectAddItem(proposal, /deep.?fried.*wonton/i, 2);
+  });
+
+  it('multi-modifier: one add_item carries two requested extras', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('multimod');
+    await seedEmptyCart(o.cart_id);
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('a sweet and sour chicken, add broccoli and add onion', o);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+
+    // Both extras must ride on the single add_item's inline modifiers array.
+    const proposal = expectValidProposal(proposals);
+    await expectAddItemModifier(proposal, /sweet.*sour.*chicken/i, 1, /add broccoli/i);
+    await expectAddItemModifier(proposal, /sweet.*sour.*chicken/i, 1, /add onion/i);
+  });
+
+  it('quantity + omission: "two ..., no broccoli" adds qty 2 with the omit modifier', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('qtyomit');
+    await seedEmptyCart(o.cart_id);
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('two sweet and sour chicken, no broccoli', o);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+
+    await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 2, /no broccoli/i);
+  });
+
+  // ---- negative / robustness (must not fabricate an order) -------------------
+
+  it('no-op: a menu question does not propose adding anything', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('question');
+    await seedEmptyCart(o.cart_id);
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('what kinds of soup do you have', o);
+    const { name, payload } = await waitForAny(
+      ['order.operations_proposed', 'order.clarification_needed', 'voice.session_failed'],
+      o.cart_id,
+      TURN_MS,
+    );
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).not.toBe('voice.session_failed');
+    // Asking, or answering with no cart change, are both fine; inventing an add is not.
+    if (name === 'order.clarification_needed') return;
+    const proposal = proposals.at(-1);
+    expect(proposal, 'expected a proposal for the answered turn').toBeDefined();
+    expectNoAddItem(proposal!);
+  });
+
+  it('off-menu: an item not on the menu is not fabricated as an add', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('offmenu');
+    await seedEmptyCart(o.cart_id);
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('can I get a cheeseburger please', o);
+    const { name, payload } = await waitForAny(
+      ['order.operations_proposed', 'order.clarification_needed', 'voice.session_failed'],
+      o.cart_id,
+      TURN_MS,
+    );
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).not.toBe('voice.session_failed');
+    // Clarifying is the right move for an off-menu ask; if it proposes anyway it must not fabricate an add.
+    if (name === 'order.clarification_needed') return;
+    const proposal = proposals.at(-1);
+    expect(proposal, 'expected a proposal').toBeDefined();
+    expectNoAddItem(proposal!);
+  });
+
+  // ---- conversational nuance -------------------------------------------------
+
+  it('self-correction: "actually make that two" in one turn collapses to a single add qty 2', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('selfcorrect');
+    await seedEmptyCart(o.cart_id);
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('I will take a deep fried wonton, actually make that two', o);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+
+    // Empty cart, so the corrected quantity must land as the add's quantity (2), not 1.
+    await expectAddItem(expectValidProposal(proposals), /deep.?fried.*wonton/i, 2);
+  });
+
+  it('add to non-empty cart: a new dish is added without disturbing the seeded line', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('addcoexist');
+    const { line } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken');
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('can I also get an order of deep fried wonton', o);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+
+    const proposal = expectValidProposal(proposals);
+    await expectAddItem(proposal, /deep.?fried.*wonton/i, 1);
+    // The seeded chicken line must be left alone — no edit op may target its line_id.
+    const touches = proposal.operations.filter((op) => 'line_id' in op && op.line_id === line.line_id);
+    expect(touches, `did not expect an edit of the seeded line: ${JSON.stringify(touches)}`).toHaveLength(0);
+  });
+
+  it('cooking-style modifier: a stir-fry style lands as a modifier on the add_item', async (ctx) => {
+    if (!infraReady) return ctx.skip(infraSkipReason);
+    const o = ids('style');
+    await seedEmptyCart(o.cart_id);
+    const proposals = captureProposals(o.cart_id);
+
+    emitFinal('sweet and sour chicken, stir fried with ginger and scallion', o);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+
+    await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /ginger and scallion/i);
   });
 
   // Parse-failure (voice.session_failed / order_parse_failed) requires the LLM to
