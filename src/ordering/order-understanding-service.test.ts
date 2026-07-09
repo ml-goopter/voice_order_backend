@@ -240,7 +240,7 @@ describe('OrderUnderstandingService', () => {
     expect(versions).toEqual([5, 6]); // turn 2 saw turn 1's bump → FIFO held
   });
 
-  it('does not leak a prior turn clarification answer into the next turn prompt', async () => {
+  it('treats a fresh turn as fresh: prior answer rides in history, not as the current answer', async () => {
     const clarifyOut = JSON.stringify({
       operations: [],
       needs_clarification: true,
@@ -272,9 +272,66 @@ describe('OrderUnderstandingService', () => {
     // Turn 2: a fresh, unrelated transcript on the same cart.
     await service.handleFinalTranscript(transcript('a coke', { request_id: 'req_2' }));
 
-    // Turn 2's prompt (the 3rd LLM call) must not carry turn 1's clarification answer.
-    expect(llm.prompts[2]!.user).not.toContain('clarification_answer');
-    expect(llm.prompts[2]!.user).not.toContain('both');
+    const p2 = JSON.parse(llm.prompts[2]!.user) as {
+      clarification_answer?: string | null;
+      conversation_history: Array<{ customer_text: string; clarification_question?: string; clarification_answer?: string }>;
+    };
+    // The one-shot top-level clarification_answer is cleared: turn 2 is NOT told it is
+    // answering a clarification (the original leak guard).
+    expect(p2.clarification_answer ?? null).toBeNull();
+    // But turn 1's utterance + clarification (question + answer) persist as conversation
+    // context so the answer 'both' is not stranded without the question it resolved.
+    expect(p2.conversation_history).toEqual([
+      { customer_text: 'two burgers no mayo', clarification_question: 'one or both?', clarification_answer: 'both' },
+    ]);
+  });
+
+  it('persists each turn to conversation history and sends it to the next turn', async () => {
+    const out = (key: string) =>
+      JSON.stringify({
+        operations: [{ action: 'add_item', menu_item_key: key, quantity: 1, modifiers: [] }],
+        needs_clarification: false,
+        clarification_question: null,
+      });
+    const { service, llm } = await makeService([out('chicken_burger'), out('coke')], cartWith(0));
+
+    await service.handleFinalTranscript(transcript('a chicken burger', { request_id: 'req_1' }));
+    await service.handleFinalTranscript(transcript('and a coke', { request_id: 'req_2' }));
+
+    // Turn 1 saw no history; turn 2 sees turn 1's utterance (no clarification answer).
+    expect((JSON.parse(llm.prompts[0]!.user) as { conversation_history: unknown[] }).conversation_history).toEqual([]);
+    expect(
+      (JSON.parse(llm.prompts[1]!.user) as { conversation_history: unknown[] }).conversation_history,
+    ).toEqual([{ customer_text: 'a chicken burger' }]);
+  });
+
+  it('renders a self-describing cart line (name + keys + modifiers, no numeric ids)', async () => {
+    const seeded = cartWith(2, [
+      { line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [{ ptav_id: 1 }] },
+    ]);
+    const out = JSON.stringify({
+      operations: [{ action: 'update_quantity', line_id: 'ln_1', quantity: 2 }],
+      needs_clarification: false,
+      clarification_question: null,
+    });
+    const { service, llm } = await makeService([out], seeded);
+
+    await service.handleFinalTranscript(transcript('make the chicken burger two'));
+
+    const cart = (JSON.parse(llm.prompts[0]!.user) as { current_cart: { items: unknown[] } }).current_cart;
+    expect(cart.items).toEqual([
+      {
+        line_id: 'ln_1',
+        menu_item_key: 'chicken_burger',
+        name: 'Chicken Burger',
+        quantity: 1,
+        modifiers: [{ modifier_key: 'no_mayo', name: 'No mayo' }],
+        available_modifiers: [{ modifier_key: 'no_mayo', name: 'No mayo' }],
+      },
+    ]);
+    // Numeric product_tmpl_id / ptav_id must not reach the prompt.
+    expect(JSON.stringify(cart)).not.toContain('product_tmpl_id');
+    expect(JSON.stringify(cart)).not.toContain('ptav_id');
   });
 
   it('does not report a parse failure when a proposal subscriber throws', async () => {

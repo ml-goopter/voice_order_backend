@@ -63,6 +63,89 @@ timestamp: 2026-07-07
   vitest strips types), so the dangling import + wrong arity slipped through both gates.
   With "persist only to Redis for now," `CartRepository` stays in-memory.
 - **Where:** `src/cart/cart-controller.test.ts`.
+## 2026-07-08 — Remove Plan B (candidate accumulation); carry clarification question in history
+- **What:** (1) Reverted the `candidates` graph channel from the accumulating merge back to
+  last-write-wins — each turn's `retrieve` again fully replaces the prompt's candidate set.
+  Deleted `mergeCandidateLists`/`mergeCandidates` and `LIMITS.maxAccumulatedCandidates`, and
+  the Plan B reducer unit test. (2) `HistoryTurn` now also carries `clarification_question`; the
+  `clarify` node stashes the question, `normalize` clears it per turn, and `finalize` records it
+  next to the answer so a history entry like `answer: "both"` keeps the question that produced it.
+- **Why:** Plan A's self-describing `cart_view` supplies `line_id` + `available_modifiers` for any
+  cart-resident item deterministically, which is exactly what Plan B's accumulation was for — so
+  Plan B no longer earned its cost: it injected earlier turns' items into `candidate_items` as
+  stale `add_item` distractors (and a failed/abandoned turn's retrieved candidates persisted with
+  no eviction). The cross-turn edit e2e still passes on Plan A alone. Separately, a clarification
+  answer stored without its question was ambiguous context for later reference resolution.
+- **Where:** `src/ordering/graph/state.ts`, `src/config/constants.ts`,
+  `src/ordering/graph/build-graph.ts`, `src/ordering/schemas/order-graph-input.schema.ts`,
+  `src/ordering/graph/state.test.ts`, `src/ordering/order-understanding-service.test.ts`,
+  `src/ordering/final-transcript.e2e.ts` (comment only).
+- **Notes:** Supersedes the "Plan B: candidates accumulate across turns" entry below — that
+  channel is gone. `cart_view` and `history` remain the two cross-turn channels.
+
+## 2026-07-08 — Fix: CartView name resolution for non-English menus
+- **What:** `buildCartView` (`load-cart.node.ts`) now resolves a line's display name as
+  `names.en_US ?? Object.values(names)[0] ?? menu_item_key ?? String(product_tmpl_id)`,
+  matching the fallback chain already used in `candidate-matcher.ts` and `menu-store.ts`.
+  Added a unit test for the non-en_US case.
+- **Why:** The name previously fell back straight from `names.en_US` to the numeric
+  `product_tmpl_id`, so a menu stored only under `zh_CN`/`fr_FR` gave every cart line the
+  numeric id as its name — breaking Plan A's "match the reference to a line by name" and
+  leaking a numeric id into the prompt.
+- **Where:** `src/ordering/nodes/load-cart.node.ts`, `src/ordering/nodes/load-cart.node.test.ts`.
+
+## 2026-07-08 — Plan A: self-describing cart + persisted conversation context
+- **What:** (1) `load_cart` now projects the stored cart into a self-describing `CartView`
+  (`buildCartView` in `load-cart.node.ts`, one batched `menu.getItems`): each line carries
+  `line_id`, `name`, `menu_item_key`, its current modifiers, and the item's
+  `available_modifiers` — keys/names only, numeric `product_tmpl_id`/`ptav_id` omitted. (2) A
+  new `history` state channel + `finalize` graph node record each completed turn's
+  `customer_text` + any `clarification_answer` and re-send them to the next turn's prompt as
+  `conversation_history` (capped at `LIMITS.maxHistoryTurns = 6`). Graph is now
+  `normalize → load_cart → retrieve → parse → decide{clarify | finalize}`. Prompt updated to
+  describe the self-describing lines and a guardrail that history is reference-only (never
+  re-execute). New unit tests (`buildCartView`, `mergeHistory`, two-turn history + cart-view
+  prompt assertions); the e2e `add_modifier`/`remove_modifier`/cross-turn edit tests tightened
+  from self-skip to hard assertions.
+- **Why:** Make multi-turn cart edits deterministic. `current_cart` was numeric-only, so the
+  model couldn't map "the chicken" → `line_id` or know a line's `modifier_key` vocabulary; and
+  nothing about prior utterances reached the next turn, so references ("that", "the same")
+  had nothing to resolve against. Plan B (candidate accumulation) only heuristically helped
+  edits — a surviving candidate isn't linked to a `line_id`. Plan A fixes both at the source.
+- **Where:** `src/ordering/nodes/load-cart.node.ts`, `src/ordering/graph/state.ts`,
+  `src/ordering/graph/build-graph.ts`, `src/llm/prompt-builder.ts`,
+  `src/ordering/schemas/order-graph-input.schema.ts`, `src/config/constants.ts`; tests in
+  `src/ordering/nodes/load-cart.node.test.ts`, `src/ordering/graph/state.test.ts`,
+  `src/ordering/order-understanding-service.test.ts`, `src/ordering/final-transcript.e2e.ts`.
+- **Notes:** Layered on Plan B (candidates still accumulate; they supply modifiers for NEW
+  `add_item`s and discussed-but-not-added items). Stored `Cart`/`CartLine` shape and the Redis
+  contract are UNTOUCHED — `CartView` is a prompt-only projection. Replaced the raw `cart`
+  state channel with `cart_view` (`base_version` still derives from the loaded cart in-node).
+  `finalize` runs once per turn (direct + post-resume) before END; `normalize` clears the
+  one-shot `clarification_answer` at the next turn's START, so the top-level field stays empty
+  while the answer persists in history. The old "does not leak clarification answer" test was
+  reframed: the top-level field must be empty, but the answer intentionally rides in history.
+
+## 2026-07-08 — Plan B: candidates accumulate across turns
+- **What:** Changed the `candidates` graph state channel from last-write-wins to a
+  de-duplicating, size-capped merge (`mergeCandidateLists` + `mergeCandidates` reducer
+  in `graph/state.ts`, bounded by new `LIMITS.maxAccumulatedCandidates = 24`). Each
+  turn's `retrieve` now merges its matches into the persisted set (newest first, deduped
+  by `menu_item_key`) instead of overwriting it. Added a deterministic reducer unit test
+  (`graph/state.test.ts`) and a real-stack cross-turn e2e case in `final-transcript.e2e.ts`.
+- **Why:** Closes the cross-turn modifier-edit gap: a turn like "add broccoli to that"
+  (pronoun, no dish name) didn't surface the already-ordered item, so the model had no
+  valid `modifier_key` for the existing line and the edit failed/clarified. The cart-keyed
+  MemorySaver checkpointer already persists graph state across turns, so merging keeps the
+  earlier turn's candidate (with its `available_modifiers`) alive for a later turn's `parse`.
+- **Where:** `src/ordering/graph/state.ts`, `src/config/constants.ts`,
+  `src/ordering/graph/state.test.ts` (new), `src/ordering/final-transcript.e2e.ts`.
+- **Notes:** Plan B chosen over Plan A (cart enrichment) — a heuristic bounded by the cap +
+  recency, not a guarantee: edit an item surfaced many turns/items ago and its candidate may
+  have been evicted. `retrieve` node unchanged (its return is now the reducer's `next`).
+  Resume path re-enters at `clarify`→`parse` and skips `retrieve`, so no mid-turn double-merge.
+  Trade-off: later turns carry earlier turns' items as `add_item` distractors — lower the cap
+  if it biases matches. Plan A (deterministic, also fixes line identification) remains an escalation.
 
 ## 2026-07-08 — e2e coverage for edit ops + stricter clarification tests
 - **What:** Added real-stack e2e cases for the four edit operations that had no

@@ -7,7 +7,7 @@ import type { CartCache } from '../../redis/cart-cache.js';
 import type { OrderGraphInput } from '../schemas/order-graph-input.schema.js';
 import { LIMITS } from '../../config/constants.js';
 import { normalizeTranscript } from '../nodes/normalize-transcript.node.js';
-import { loadCart } from '../nodes/load-cart.node.js';
+import { loadCart, buildCartView } from '../nodes/load-cart.node.js';
 import { retrieveCandidates } from '../nodes/retrieve-candidates.node.js';
 import { parseAndValidate } from '../nodes/parse-and-validate.node.js';
 
@@ -31,8 +31,9 @@ function toInput(s: OrderStateType): OrderGraphInput {
     cart_id: s.cart_id,
     pos_config_id: s.pos_config_id,
     customer_text: s.customer_text,
-    current_cart: s.cart!,
+    current_cart: s.cart_view!,
     candidate_items: s.candidates,
+    history: s.history,
     supported_languages: s.supported_languages,
     ...(s.language !== undefined ? { language: s.language } : {}),
     ...(s.clarification_answer !== undefined ? { clarification_answer: s.clarification_answer } : {}),
@@ -54,10 +55,12 @@ export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
     .addNode('normalize', (s) => ({
       customer_text: normalizeTranscript(s.customer_text),
       clarification_answer: undefined,
+      clarification_question: undefined,
     }))
     .addNode('load_cart', async (s) => {
       const cart = await loadCart(carts, s.cart_id, s.pos_config_id);
-      return { cart, base_version: cart.version };
+      const cart_view = await buildCartView(menu, cart);
+      return { cart_view, base_version: cart.version };
     })
     .addNode('retrieve', async (s) => {
       const candidates = await retrieveCandidates(menu, s.pos_config_id, s.customer_text);
@@ -74,18 +77,32 @@ export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
         ...(out.clarification_options !== undefined ? { options: out.clarification_options } : {}),
       };
       const answer = interrupt(payload) as string;
-      // Loop back to parse with the answer; clear the stale clarification output.
-      return { clarification_answer: answer, output: null };
+      // Loop back to parse with the answer; clear the stale clarification output. Keep the
+      // question alongside the answer so `finalize` can record it as context in history.
+      return { clarification_answer: answer, clarification_question: payload.question, output: null };
     })
+    // Record the completed turn (utterance + any clarification answer) so the next turn's
+    // parse re-sends it as conversation context. Runs once, at the true end of the turn —
+    // both the direct-propose path and the post-resume path arrive here (design §6).
+    .addNode('finalize', (s) => ({
+      history: [
+        {
+          customer_text: s.customer_text,
+          ...(s.clarification_question !== undefined ? { clarification_question: s.clarification_question } : {}),
+          ...(s.clarification_answer !== undefined ? { clarification_answer: s.clarification_answer } : {}),
+        },
+      ],
+    }))
     .addEdge(START, 'normalize')
     .addEdge('normalize', 'load_cart')
     .addEdge('load_cart', 'retrieve')
     .addEdge('retrieve', 'parse')
     .addConditionalEdges(
       'parse',
-      (s) => (s.output?.needs_clarification ? 'clarify' : 'done'),
-      { clarify: 'clarify', done: END },
+      (s) => (s.output?.needs_clarification ? 'clarify' : 'finalize'),
+      { clarify: 'clarify', finalize: 'finalize' },
     )
     .addEdge('clarify', 'parse')
+    .addEdge('finalize', END)
     .compile({ checkpointer: new MemorySaver() });
 }
