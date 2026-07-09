@@ -1,17 +1,21 @@
 /**
- * Real-stack e2e for the pipeline triggered on `stt.final_transcript.received`.
+ * Real-stack e2e for the pipeline triggered on `stt.final_transcript.received`,
+ * scoped to the Order Understanding module only — up to the LLM output.
  *
  * Trigger:  emit the event on a real EventBus (the true pipeline entry — where STT
  *           hands off; see voice/voice-message-handler.ts).
  * Stack:    LIVE Redis Stack (real Jade Garden menu + idx:menuvec KNN index), LIVE
  *           Jina query embeddings (real vector retrieval), and a LIVE Ollama LLM.
- *           Nothing is mocked; the wiring mirrors app.ts minus voice/realtime/WS.
- * Assert:   the cart state written to Redis by the Cart module (via cart.updated).
+ *           Nothing is mocked; the wiring mirrors app.ts minus the Cart module,
+ *           voice/realtime/WS.
+ * Assert:   the operations proposed by Order Understanding (via `order.operations_proposed`)
+ *           — i.e. the LLM output. Cart application (applying the proposal to Redis) is out
+ *           of scope here; it is covered by the Cart module's own tests.
  *
  * The LLM is real and non-deterministic, and the menu has many near-duplicate items
  * (lunch/dinner variants, 3 "Combination For One", etc.), so:
  *   - assertions are tolerant — the added item's NAME must match the ordered dish
- *     (any variant) with the right quantity, not a specific product_tmpl_id;
+ *     (any variant) with the right quantity, not a specific menu_item_key;
  *   - the clarification tests use input that maps to several distinct items and
  *     SELF-SKIP (not fail) when the model happens to resolve without asking;
  *   - the parse-failure branch cannot be forced with a compliant JSON-returning
@@ -37,9 +41,6 @@ import { createLlmProvider } from '../llm/llm-client.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
 import { registerOrderingHandlers } from './register-handlers.js';
-import { RedisCartRepository } from '../cart/cart-repository.js';
-import { CartController } from '../cart/cart-controller.js';
-import { registerCartHandlers } from '../cart/register-handlers.js';
 import type { Cart, CartLine, CartModifier } from '../cart/cart-types.js';
 import type { CandidateItem, CandidateModifier } from '../menu/menu-types.js';
 import { cartOperationSchema } from './schemas/cart-operation.schema.js';
@@ -57,10 +58,16 @@ let bus: EventBus;
 let infraReady = false;
 let infraSkipReason = '';
 const createdCartIds: string[] = [];
-const createdRequestIds: string[] = [];
 const subs: Array<() => void> = [];
 
 // ---- helpers ----------------------------------------------------------------
+
+/** cart_id for an event: it lives on the payload, except `order.operations_proposed`
+ * carries it nested in `proposal.cart_id`. */
+function cartIdOf(payload: unknown): string | undefined {
+  const p = payload as { cart_id?: string; proposal?: { cart_id?: string } };
+  return p.cart_id ?? p.proposal?.cart_id;
+}
 
 /**
  * Resolve with the first of `names` to fire FOR THIS CART, or reject after
@@ -84,7 +91,7 @@ function waitForAny<K extends AppEventName>(
     }, timeoutMs);
     for (const n of names) {
       const h = (payload: AppEventMap[K]) => {
-        if ((payload as { cart_id?: string }).cart_id !== cartId) return; // not our turn
+        if (cartIdOf(payload) !== cartId) return; // not our turn
         cleanup();
         resolve({ name: n, payload });
       };
@@ -96,7 +103,7 @@ function waitForAny<K extends AppEventName>(
 
 /**
  * Start capturing the proposals emitted for this cart. The Order Understanding
- * module emits `order.operations_proposed` BEFORE the Cart module applies it, so
+ * module emits `order.operations_proposed` as its terminal output for a turn;
  * registering before emitFinal captures the turn's proposal.
  */
 function captureProposals(cartId: string): OrderProposal[] {
@@ -149,9 +156,8 @@ async function expectAddItem(proposal: OrderProposal, pattern: RegExp, quantity:
 
 /**
  * Assert the proposal's add_item for `dishPattern` carries a modifier whose resolved
- * name matches `modPattern`, and return that modifier's ptav_id so the caller can
- * confirm it landed on the cart line. Validates the whole key→ptav_id resolution the
- * modifier path depends on.
+ * name matches `modPattern`, and return that modifier's ptav_id. Validates the whole
+ * key→ptav_id resolution the modifier path depends on.
  */
 async function expectAddItemModifier(
   proposal: OrderProposal,
@@ -178,24 +184,6 @@ async function expectAddItemModifier(
   const match = named.find((im) => modPattern.test(im!.name));
   expect(match, `no add_item modifier matches ${modPattern} — got: ${named.map((im) => im!.name).join(', ')}`).toBeDefined();
   return match!.ptav_id;
-}
-
-/** English display name of a menu item, read straight from Redis. */
-async function nameOfTmpl(tmpl: number): Promise<string> {
-  const raw = await redis.get(`menu:item:${POS}:${tmpl}`);
-  if (!raw) return '';
-  return (JSON.parse(raw).names?.en_US as string) ?? '';
-}
-
-/** Assert exactly one line matches the dish name pattern, with the expected quantity. */
-async function expectLine(cart: Cart, pattern: RegExp, quantity: number): Promise<CartLine> {
-  const named = await Promise.all(
-    cart.items.map(async (i) => ({ line: i, name: await nameOfTmpl(i.product_tmpl_id) })),
-  );
-  const hit = named.find((x) => pattern.test(x.name));
-  expect(hit, `no cart line matches ${pattern} — cart had: ${named.map((x) => x.name).join(' | ')}`).toBeDefined();
-  expect(hit!.line.quantity).toBe(quantity);
-  return hit!.line;
 }
 
 function seedEmptyCart(cart_id: string): Promise<void> {
@@ -233,11 +221,12 @@ async function seedCartWithLine(
   const seededMod = opts.withModifier
     ? item!.available_modifiers.find((m) => opts.withModifier!.test(m.name))
     : undefined;
-  const modifiers: CartModifier[] = seededMod ? [{ ptav_id: seededMod.ptav_id }] : [];
+  const modifiers: CartModifier[] = seededMod ? [{ ptav_id: seededMod.ptav_id, name: seededMod.name }] : [];
 
   const line: CartLine = {
     line_id: `ln_${cart_id}`,
     product_tmpl_id: item!.product_tmpl_id,
+    name: item!.name,
     quantity: opts.quantity ?? 1,
     modifiers,
   };
@@ -255,26 +244,17 @@ async function seedCartWithLine(
   return { line, item: item!, seededMod };
 }
 
-// The idempotency ledger (cart:req:{request_id}) is now Redis-backed and TTL-bounded
-// (CART_IDEMPOTENCY_TTL_SECONDS, default 24h), so it SURVIVES across test runs. A
-// per-run salt keeps request_ids unique per run: a re-run within the TTL that reused a
-// prior id would be dropped as cart.duplicate_request and hang the turn to its timeout.
-const RUN = `${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
-
 let uid = 0;
 function ids(tag: string) {
   uid += 1;
   return {
     cart_id: `e2e_${tag}_${uid}`,
     session_id: `e2e_sess_${uid}`,
-    request_id: `e2e_req_${RUN}_${uid}`,
+    request_id: `e2e_req_${uid}`,
   };
 }
 
 function emitFinal(text: string, o: { cart_id: string; session_id: string; request_id: string }): void {
-  // Every ledger-writing request_id flows through here (including the cross-turn
-  // `_edit` variant), so recording it lets afterEach clear the ledger key it leaves.
-  createdRequestIds.push(o.request_id);
   bus.emit('stt.final_transcript.received', {
     request_id: o.request_id,
     session_id: o.session_id,
@@ -312,7 +292,9 @@ beforeAll(async () => {
     return;
   }
 
-  // Build the live pipeline (mirrors app.ts, minus voice/realtime/WS).
+  // Build the Order Understanding pipeline (mirrors app.ts, minus the Cart module and
+  // voice/realtime/WS). The Cart module is intentionally NOT wired: this suite asserts
+  // the LLM output (order.operations_proposed), not the applied cart.
   carts = new RedisCartCache(redis);
   menu = new MenuService(new RedisMenuStore(redis));
   const llm = createLlmProvider();
@@ -322,19 +304,13 @@ beforeAll(async () => {
   const ordering = new OrderUnderstandingService(graph, bus);
   registerOrderingHandlers(bus, ordering);
 
-  const cartController = new CartController(carts, menu, new RedisCartRepository(redis, config.cartIdempotencyTtlSeconds), bus);
-  registerCartHandlers(bus, cartController);
-
   infraReady = true;
 });
 
 afterEach(async () => {
   subs.splice(0).forEach((off) => off());
   if (!infraReady) return;
-  await Promise.all([
-    ...createdCartIds.splice(0).map((id) => redis.del(`cart:${id}`)),
-    ...createdRequestIds.splice(0).map((id) => redis.del(`cart:req:${id}`)),
-  ]);
+  await Promise.all(createdCartIds.splice(0).map((id) => redis.del(`cart:${id}`)));
 });
 
 afterAll(async () => {
@@ -343,78 +319,64 @@ afterAll(async () => {
 
 // ---- tests ------------------------------------------------------------------
 
-describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => {
-  it('happy path: an order adds the matching item to the cart', async (ctx) => {
+describe('final-transcript → proposal pipeline (real stack: Redis + Jina + Ollama)', () => {
+  it('happy path: an order proposes an add for the matching item', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('add');
     await seedEmptyCart(o.cart_id);
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('I would like one order of sweet and sour chicken please', o);
-    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
 
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
 
     // The proposed operations are valid and add the ordered dish.
     const proposal = expectValidProposal(proposals);
     expect(proposal.base_version).toBe(0); // loaded from the seeded cart
     await expectAddItem(proposal, /sweet.*sour.*chicken/i, 1);
-
-    // ...and the Cart module applied them to the cart in Redis.
-    const { cart } = payload as AppEventMap['cart.updated'];
-    expect(cart.version).toBe(1);
-    await expectLine(cart, /sweet.*sour.*chicken/i, 1);
-    expect(cart.total_cents).toBeGreaterThan(0);
   });
 
-  it('parses quantity: "two ..." adds the item with quantity 2', async (ctx) => {
+  it('parses quantity: "two ..." proposes the item with quantity 2', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('qty');
     await seedEmptyCart(o.cart_id);
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('can I get two orders of deep fried wonton', o);
-    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
 
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
     await expectAddItem(expectValidProposal(proposals), /deep.?fried.*wonton/i, 2);
-    await expectLine((payload as AppEventMap['cart.updated']).cart, /deep.?fried.*wonton/i, 2);
   });
 
-  it('modifier (add): an add_item carries the requested extra onto the cart line', async (ctx) => {
+  it('modifier (add): an add_item proposal carries the requested extra', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('modadd');
     await seedEmptyCart(o.cart_id);
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('one sweet and sour chicken with added broccoli please', o);
-    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
 
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
-    const ptav = await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /add broccoli/i);
-
-    // The modifier is present on the applied cart line (as a ptav_id).
-    const line = await expectLine((payload as AppEventMap['cart.updated']).cart, /sweet.*sour.*chicken/i, 1);
-    expect(line.modifiers.some((m) => m.ptav_id === ptav), `cart line missing modifier ptav_id ${ptav}`).toBe(true);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+    await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /add broccoli/i);
   });
 
-  it('modifier (omit): a "no <ingredient>" request lands as a modifier on the cart line', async (ctx) => {
+  it('modifier (omit): a "no <ingredient>" request lands as a modifier on the add_item', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('modno');
     await seedEmptyCart(o.cart_id);
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('a sweet and sour chicken, no broccoli please', o);
-    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
 
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
-    const ptav = await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /no broccoli/i);
-
-    const line = await expectLine((payload as AppEventMap['cart.updated']).cart, /sweet.*sour.*chicken/i, 1);
-    expect(line.modifiers.some((m) => m.ptav_id === ptav), `cart line missing modifier ptav_id ${ptav}`).toBe(true);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+    await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /no broccoli/i);
   });
 
-  it('clarification → resume: an ambiguous order asks, then applies the answer', async (ctx) => {
+  it('clarification → resume: an ambiguous order asks, then proposes the answer', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('clarify');
     await seedEmptyCart(o.cart_id);
@@ -422,7 +384,7 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
 
     emitFinal('let me get a combination for one', o);
     const first = await waitForAny(
-      ['order.clarification_needed', 'cart.updated', 'voice.session_failed'],
+      ['order.clarification_needed', 'order.operations_proposed', 'voice.session_failed'],
       o.cart_id,
       TURN_MS,
     );
@@ -432,20 +394,19 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     ).toBe('order.clarification_needed');
     expect((first.payload as AppEventMap['order.clarification_needed']).question.length).toBeGreaterThan(0);
 
-    // Answer, then expect the resumed turn to apply a combination.
-    const applied = waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    // Answer, then expect the resumed turn to propose a combination.
+    const resumed = waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
     bus.emit('order.clarification_answered', {
       cart_id: o.cart_id,
       session_id: o.session_id,
       request_id: o.request_id,
       answer: 'the B combination, Combination For One B',
     });
-    const { name, payload } = await applied;
+    const { name, payload } = await resumed;
 
-    expect(name, `resume failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+    expect(name, `resume failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
     // The resumed turn proposed valid operations that add a combination.
     await expectAddItem(expectValidProposal(proposals), /combination for one/i, 1);
-    await expectLine((payload as AppEventMap['cart.updated']).cart, /combination for one/i, 1);
   });
 
   it('clarification → timeout: an unanswered clarification fails the turn', async (ctx) => {
@@ -455,7 +416,7 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
 
     emitFinal('let me get a combination for one', o);
     const first = await waitForAny(
-      ['order.clarification_needed', 'cart.updated', 'voice.session_failed'],
+      ['order.clarification_needed', 'order.operations_proposed', 'voice.session_failed'],
       o.cart_id,
       TURN_MS,
     );
@@ -466,7 +427,7 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
 
     // Never answer → the service expires the wait after TIMEOUTS.clarificationMs.
     const { name, payload } = await waitForAny(
-      ['voice.session_failed', 'cart.updated'],
+      ['voice.session_failed', 'order.operations_proposed'],
       o.cart_id,
       TIMEOUTS.clarificationMs + 60_000,
     );
@@ -474,15 +435,15 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     expect((payload as AppEventMap['voice.session_failed']).reason).toBe('clarification_timeout');
   });
 
-  it('update_quantity: "make that two" edits the seeded line in place', async (ctx) => {
+  it('update_quantity: "make that two" proposes an in-place edit of the seeded line', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('updqty');
     const { line } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken');
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('actually, make that two', o);
-    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
 
     const proposal = expectValidProposal(proposals);
     const op = proposal.operations.find((o2) => o2.action === 'update_quantity');
@@ -491,31 +452,25 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     if (!op) return ctx.skip(`model chose [${proposal.operations.map((o2) => o2.action).join(', ')}], not update_quantity`);
     expect(op.line_id).toBe(line.line_id);
     expect(op.quantity).toBe(2);
-
-    const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
-    expect(edited?.quantity, 'seeded line quantity was not updated to 2').toBe(2);
   });
 
-  it('remove_item: "remove that" drops the seeded line from the cart', async (ctx) => {
+  it('remove_item: "remove that" proposes dropping the seeded line', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('rmitem');
     const { line } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken');
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('please remove the sweet and sour chicken from my order', o);
-    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
 
     const proposal = expectValidProposal(proposals);
     const op = proposal.operations.find((o2) => o2.action === 'remove_item');
     if (!op) return ctx.skip(`model chose [${proposal.operations.map((o2) => o2.action).join(', ')}], not remove_item`);
     expect(op.line_id).toBe(line.line_id);
-
-    const stillThere = (payload as AppEventMap['cart.updated']).cart.items.some((l) => l.line_id === line.line_id);
-    expect(stillThere, 'seeded line was not removed').toBe(false);
   });
 
-  it('add_modifier: "add broccoli to that" attaches the modifier to the seeded line', async (ctx) => {
+  it('add_modifier: "add broccoli to that" proposes attaching the modifier to the seeded line', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('addmod');
     const { line, item } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken');
@@ -524,22 +479,19 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('can you add broccoli to my sweet and sour chicken', o);
-    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
 
     // The seeded line is self-describing (Plan A): it carries its name, line_id, and
     // available_modifiers, so the model has the broccoli modifier_key and target line_id
     // without retrieval having to surface them. Asserted hard (was tolerant pre-Plan A).
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
     const op = proposals.at(-1)?.operations.find((o2) => o2.action === 'add_modifier');
     expect(op, `expected an add_modifier op, got: ${JSON.stringify(proposals.at(-1)?.operations)}`).toBeDefined();
     expect(op!.line_id).toBe(line.line_id);
     expect(op!.modifier_key).toBe(broccoli.modifier_key);
-
-    const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
-    expect(edited?.modifiers.some((m) => m.ptav_id === broccoli.ptav_id), 'broccoli ptav_id not on line').toBe(true);
   });
 
-  it('remove_modifier: "take the broccoli off" drops the modifier from the seeded line', async (ctx) => {
+  it('remove_modifier: "take the broccoli off" proposes dropping the modifier from the seeded line', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('rmmod');
     const { line, seededMod } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken', {
@@ -549,54 +501,39 @@ describe('final-transcript pipeline (real stack: Redis + Jina + Ollama)', () => 
     const proposals = captureProposals(o.cart_id);
 
     emitFinal('actually, take the broccoli off the sweet and sour chicken', o);
-    const { name, payload } = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
 
     // Self-describing cart (Plan A): the line lists its CURRENT modifiers (broccoli) with the
     // modifier_key, so the model can target line_id + modifier_key. Asserted hard.
-    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('cart.updated');
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
     const op = proposals.at(-1)?.operations.find((o2) => o2.action === 'remove_modifier');
     expect(op, `expected a remove_modifier op, got: ${JSON.stringify(proposals.at(-1)?.operations)}`).toBeDefined();
     expect(op!.line_id).toBe(line.line_id);
     expect(op!.modifier_key).toBe(seededMod.modifier_key);
-
-    const edited = (payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === line.line_id);
-    expect(edited?.modifiers.some((m) => m.ptav_id === seededMod.ptav_id), 'broccoli ptav_id still on line').toBe(false);
   });
 
-  // Cross-turn modifier edit by reference. Turn 1 names the dish (adds the line); turn 2 says
-  // "add broccoli to that" — a pronoun, no dish name — on the SAME cart. This works because the
-  // cart-keyed MemorySaver thread carries state across turns AND the line is self-describing:
-  // Plan A enriches the added line in current_cart with its name + available_modifiers, so the
-  // model has the broccoli modifier_key + target line_id from the cart alone — no dependence on
-  // this turn's retrieval. Real-stack + non-deterministic; asserted hard (was tolerant pre-Plan A).
-  it('cross-turn modifier edit by reference: "add broccoli to that" edits an item named earlier', async (ctx) => {
+  // Pronoun reference within a single turn: the customer says "add broccoli to that" — no dish
+  // name — against a pre-seeded line. Resolvable only because the line is self-describing (Plan A):
+  // current_cart carries the line's name, line_id, and available_modifiers, so the model has the
+  // broccoli modifier_key + target line_id from the cart alone, with no dish named this turn.
+  // (Cross-turn application — turn 1's add persisting into turn 2 — is the Cart module's job, out
+  // of scope here; the cart is loaded fresh from Redis each turn, so it must be pre-seeded.)
+  it('pronoun reference: "add broccoli to that" targets the self-describing seeded line', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
-    const o = ids('xturn');
-    await seedEmptyCart(o.cart_id);
+    const o = ids('pronoun');
+    const { line, item } = await seedCartWithLine(o.cart_id, 'sweet and sour chicken');
+    const broccoli = item.available_modifiers.find((m) => /add broccoli/i.test(m.name));
+    if (!broccoli) return ctx.skip(`seeded item "${item.name}" has no "add broccoli" modifier`);
     const proposals = captureProposals(o.cart_id);
 
-    // Turn 1 — name the dish; it is added and enriched into current_cart for the next turn.
-    emitFinal('I would like one sweet and sour chicken', o);
-    const t1 = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
-    expect(t1.name, `turn 1 failed: ${JSON.stringify(t1.payload)}`).toBe('cart.updated');
-    const seededLine = await expectLine((t1.payload as AppEventMap['cart.updated']).cart, /sweet.*sour.*chicken/i, 1);
-
-    // Confirm the seeded item actually offers a broccoli modifier; otherwise nothing to assert.
-    const { items } = await menu.getCandidates(POS, 'sweet and sour chicken');
-    const broccoli = items[0]?.available_modifiers.find((m) => /add broccoli/i.test(m.name));
-    if (!broccoli) return ctx.skip('seeded item has no "add broccoli" modifier');
-
-    // Turn 2 — pronoun, names no dish. Resolvable only from cross-turn state (Plan A cart + Plan B).
     emitFinal('can you add broccoli to that', o);
-    const t2 = await waitForAny(['cart.updated', 'voice.session_failed'], o.cart_id, TURN_MS);
-    expect(t2.name, `turn 2 failed: ${JSON.stringify(t2.payload)}`).toBe('cart.updated');
+    const { name, payload } = await waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    expect(name, `pipeline failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+
     const op = proposals.at(-1)?.operations.find((o2) => o2.action === 'add_modifier');
     expect(op, `expected an add_modifier op, got: ${JSON.stringify(proposals.at(-1)?.operations)}`).toBeDefined();
-    expect(op!.line_id).toBe(seededLine.line_id);
+    expect(op!.line_id).toBe(line.line_id);
     expect(op!.modifier_key).toBe(broccoli.modifier_key);
-
-    const edited = (t2.payload as AppEventMap['cart.updated']).cart.items.find((l) => l.line_id === seededLine.line_id);
-    expect(edited?.modifiers.some((m) => m.ptav_id === broccoli.ptav_id), 'broccoli ptav_id not on line').toBe(true);
   });
 
   // Parse-failure (voice.session_failed / order_parse_failed) requires the LLM to

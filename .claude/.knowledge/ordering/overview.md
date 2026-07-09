@@ -72,6 +72,8 @@ proposer**; the Cart Module validates and applies.
 - `order-understanding-service.ts`, `order-graph.ts` (façade), `cart-turn-queue.ts`,
   `register-handlers.ts`.
 - `graph/state.ts`, `graph/build-graph.ts` — LangGraph state + graph wiring.
+- `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` (with node name +
+  correlation ids) on any node throw, passing through LangGraph control-flow bubbles.
 - `nodes/*.node.ts` — `normalize`, `load-cart`, `retrieve-candidates`, `parse-order`,
   `validate-operations`, and `parse-and-validate` (parse + repair loop).
 - `schemas/*.ts` — operation/input/output/clarification/proposal types + zod validators.

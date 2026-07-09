@@ -7,6 +7,52 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-09 — Add display `name` to CartLine and CartModifier
+- **What:** `CartLine` and `CartModifier` (`cart-types.ts`) each gain a required `name: string`.
+  Both are populated in `applyOperation` (`cart-operation-applier.ts`) from already-resolved menu
+  data — the line name from the `MenuItem` (`item.names['en_US'] ?? Object.values(item.names)[0] ??
+  item.menu_item_key`), the modifier name from the matched `CandidateModifier` (`mod.name`) in the
+  `add_item` and `add_modifier` branches — so no extra menu round trip. All other ops spread-copy,
+  preserving both names. The fields round-trip through the whole-blob Redis serialization
+  automatically and now ride on the `cart.updated` wire payload (the gateway sends the full `cart`).
+- **Why:** The persisted cart was id-only; the client had no human-readable item/modifier names
+  without re-resolving the menu. `buildCartView` still re-resolves names live for the LLM view, so
+  the stored names are snapshots captured at add time (can go stale if the menu is later renamed).
+- **Where:** `src/cart/cart-types.ts`, `src/cart/cart-operation-applier.ts`; test fixtures updated
+  in `cart-operation-applier.test.ts` and `final-transcript.e2e.ts`.
+
+## 2026-07-09 — Per-node error logging in the order graph
+- **What:** Added `src/ordering/graph/instrument.ts` exporting a `node(name, fn)` wrapper, and
+  wrapped all six order-graph nodes (`normalize`, `load_cart`, `retrieve`, `parse`, `clarify`,
+  `finalize`) with it in `build-graph.ts`. The wrapper logs `order.node_failed` (level `error`)
+  with the node name + `request_id`/`cart_id`/`pos_config_id` on any throw, then re-throws
+  unchanged; LangGraph control-flow throws (`interrupt()` pause, Command bubbling) are detected
+  via `isGraphBubbleUp` and re-thrown WITHOUT logging. Relabeled the turn-level catch in
+  `OrderUnderstandingService.runTurn` from `order.parse_failed` → `order.turn_failed` (it is now
+  a fallback; the failing node already reports which state threw). The `voice.session_failed`
+  reason string (`order_parse_failed`) is unchanged — it is an external event contract.
+- **Why:** The single catch in the service flattened every node error (Redis in `load_cart`,
+  MenuService in `retrieve`, ValidationError in `parse`) into one misleading `order.parse_failed`
+  label, discarding which of the six states actually failed.
+- **Where:** `src/ordering/graph/instrument.ts` (new), `src/ordering/graph/build-graph.ts`,
+  `src/ordering/order-understanding-service.ts`.
+
+## 2026-07-09 — Scope final-transcript e2e to the LLM output (drop the Cart module)
+- **What:** `final-transcript.e2e.ts` now exercises the Order Understanding pipeline only,
+  up to its terminal output (`order.operations_proposed` / `order.clarification_needed` /
+  `voice.session_failed`) — it no longer wires the `CartController`/cart handlers and asserts
+  nothing about the applied `cart.updated`. Assertions moved onto the proposal (schema-valid
+  ops, resolved menu_item_key names/quantities, modifier key→ptav_id). `waitForAny` now reads
+  cart_id from `proposal.cart_id` for `order.operations_proposed` (it has no top-level
+  cart_id). The cross-turn test was converted to a single-turn *pronoun* test ("add broccoli
+  to that" against a pre-seeded self-describing line), since cross-turn behavior depends on the
+  cart being applied between turns (the graph re-loads the cart from Redis each turn). Removed
+  the now-dead idempotency-ledger machinery (per-run request_id salt, `createdRequestIds`,
+  `cart:req:{id}` cleanup) and the cart-state helpers (`expectLine`, `nameOfTmpl`).
+- **Why:** The suite should test the pipeline up to the LLM output, isolating Order
+  Understanding from the Cart module (which has its own tests).
+- **Where:** `src/ordering/final-transcript.e2e.ts`.
+
 ## 2026-07-08 — Fix Redis persistence + e2e re-run collision from the idempotency ledger
 - **What:** Two fixes exposed while running the final-transcript e2e. (1) `docker-compose.yml`:
   mount the redis volume at redis-stack-server's native data dir (`/var/lib/redis-stack`,

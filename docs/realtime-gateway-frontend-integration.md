@@ -226,6 +226,7 @@ interface CartLine {
   line_id: string;              // stable, assigned by the Cart Module (e.g. "ln_1")
   product_tmpl_id: number;      // Odoo product_template.id (menu item)
   product_id?: number;          // resolved sellable variant, if known
+  name: string;                 // display name (e.g. "Chicken Burger") — render this
   quantity: number;
   modifiers: CartModifier[];
   combo_id?: number;
@@ -234,8 +235,13 @@ interface CartLine {
 
 interface CartModifier {
   ptav_id: number;              // product_template_attribute_value.id
+  name: string;                 // display name (e.g. "No mayo") — render this
 }
 ```
+
+> **Names are a snapshot at add time.** `CartLine.name` / `CartModifier.name` are captured
+> from the menu when the line/modifier is added and stored on the cart. They are safe to render
+> directly (no separate menu lookup needed) but will not change if a menu item is later renamed.
 
 ---
 

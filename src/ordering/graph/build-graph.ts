@@ -1,6 +1,7 @@
 import { StateGraph, MemorySaver, interrupt, START, END } from '@langchain/langgraph';
 import { OrderState } from './state.js';
 import type { OrderStateType } from './state.js';
+import { node } from './instrument.js';
 import type { MenuService } from '../../menu/menu-service.js';
 import type { LlmProvider } from '../../llm/llm-provider.js';
 import type { CartCache } from '../../redis/cart-cache.js';
@@ -52,25 +53,25 @@ export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
     // this turn's parse prompt. normalize runs only on a fresh turn (START); a resume
     // re-enters at `clarify`, so a within-turn answer still survives to parse. Durable
     // cart/session context persists across turns via the cart-keyed checkpointer thread.
-    .addNode('normalize', (s) => ({
+    .addNode('normalize', node('normalize', (s) => ({
       customer_text: normalizeTranscript(s.customer_text),
       clarification_answer: undefined,
       clarification_question: undefined,
-    }))
-    .addNode('load_cart', async (s) => {
+    })))
+    .addNode('load_cart', node('load_cart', async (s) => {
       const cart = await loadCart(carts, s.cart_id, s.pos_config_id);
       const cart_view = await buildCartView(menu, cart);
       return { cart_view, base_version: cart.version };
-    })
-    .addNode('retrieve', async (s) => {
+    }))
+    .addNode('retrieve', node('retrieve', async (s) => {
       const candidates = await retrieveCandidates(menu, s.pos_config_id, s.customer_text);
       return { candidates: candidates.items };
-    })
-    .addNode('parse', async (s) => {
+    }))
+    .addNode('parse', node('parse', async (s) => {
       const output = await parseAndValidate(llm, toInput(s), LIMITS.llmMaxRetries);
       return { output };
-    })
-    .addNode('clarify', (s) => {
+    }))
+    .addNode('clarify', node('clarify', (s) => {
       const out = s.output!;
       const payload: ClarificationInterrupt = {
         question: out.clarification_question!,
@@ -80,11 +81,11 @@ export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
       // Loop back to parse with the answer; clear the stale clarification output. Keep the
       // question alongside the answer so `finalize` can record it as context in history.
       return { clarification_answer: answer, clarification_question: payload.question, output: null };
-    })
+    }))
     // Record the completed turn (utterance + any clarification answer) so the next turn's
     // parse re-sends it as conversation context. Runs once, at the true end of the turn —
     // both the direct-propose path and the post-resume path arrive here (design §6).
-    .addNode('finalize', (s) => ({
+    .addNode('finalize', node('finalize', (s) => ({
       history: [
         {
           customer_text: s.customer_text,
@@ -92,7 +93,7 @@ export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
           ...(s.clarification_answer !== undefined ? { clarification_answer: s.clarification_answer } : {}),
         },
       ],
-    }))
+    })))
     .addEdge(START, 'normalize')
     .addEdge('normalize', 'load_cart')
     .addEdge('load_cart', 'retrieve')

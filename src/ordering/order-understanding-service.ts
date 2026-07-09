@@ -81,7 +81,9 @@ export class OrderUnderstandingService {
 
       return result;
     } catch (error) {
-      logger.warn('order.parse_failed', {
+      // The failing node already logged order.node_failed with which state threw; this is the
+      // turn-level fallback that fails the session.
+      logger.warn('order.turn_failed', {
         request_id: e.request_id,
         error: error instanceof Error ? error.message : String(error),
       });
