@@ -11,6 +11,7 @@ import type { VoiceSessionManager } from './voice-session-manager.js';
 import { newRequestId } from '../shared/ids.js';
 import { TIMEOUTS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
+import { messageOf } from '../shared/errors.js';
 
 /** Cap on audio chunks buffered during STT connect, so a stalled connect can't grow memory unbounded. */
 const MAX_PENDING_AUDIO_CHUNKS = 200;
@@ -90,7 +91,7 @@ export class VoiceMessageHandler {
       this.manager.remove(session.session_id);
       logger.warn('voice.stt_open_failed', {
         session_id: session.session_id,
-        error: (error as Error).message,
+        error: messageOf(error),
       });
       conn.send({
         type: 'voice.error',

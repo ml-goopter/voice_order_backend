@@ -2,6 +2,7 @@ import type { Redis } from 'ioredis';
 import type { CartId } from '../shared/types.js';
 import type { Cart } from '../cart/cart-types.js';
 import { logger } from '../config/logger.js';
+import { errorMeta } from '../shared/errors.js';
 
 /**
  * Hot store for active carts (design §9). Redis is the real backing store;
@@ -28,7 +29,7 @@ export class RedisCartCache implements CartCache {
     try {
       return JSON.parse(raw) as Cart;
     } catch (err) {
-      logger.error('cart.parse_failed', { cart_id, message: (err as Error).message });
+      logger.error('cart.parse_failed', { cart_id, ...errorMeta(err) });
       return undefined;
     }
   }

@@ -1,3 +1,15 @@
+/** Safe message extraction — a thrown non-Error (string, object) has no `.message`. */
+export function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Structured error meta for `logger.error` sites: message plus stack when available. */
+export function errorMeta(err: unknown): { message: string; stack?: string } {
+  return err instanceof Error
+    ? { message: err.message, ...(err.stack !== undefined ? { stack: err.stack } : {}) }
+    : { message: String(err) };
+}
+
 /** Typed application errors. */
 export class AppError extends Error {
   constructor(

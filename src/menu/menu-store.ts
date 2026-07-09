@@ -4,6 +4,7 @@ import type { PosConfigId, ProductTmplId } from '../shared/types.js';
 import type { CandidateModifier, MenuItem, MenuVector } from './menu-types.js';
 import { MENU_VEC_INDEX, encodeVector, ensureMenuIndex, keyIndexKey } from './menu-index.js';
 import { logger } from '../config/logger.js';
+import { messageOf } from '../shared/errors.js';
 
 /**
  * Over-fetch factor for KNN: each item explodes into one HASH doc per language
@@ -186,7 +187,7 @@ export class RedisMenuStore implements MenuStore {
         String(limit),
       )) as unknown[];
     } catch (err) {
-      logger.warn('menu.knn_unavailable', { message: (err as Error).message });
+      logger.warn('menu.knn_unavailable', { message: messageOf(err) });
       return [];
     }
 
@@ -225,7 +226,7 @@ export class RedisMenuStore implements MenuStore {
         String(LEXICAL_LIMIT),
       )) as unknown[];
     } catch (err) {
-      logger.warn('menu.lexical_unavailable', { message: (err as Error).message });
+      logger.warn('menu.lexical_unavailable', { message: messageOf(err) });
       return new Set();
     }
 

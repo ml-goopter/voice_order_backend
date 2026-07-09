@@ -10,6 +10,7 @@ import { OrderGraph } from './order-graph.js';
 import { CartTurnQueue } from './cart-turn-queue.js';
 import { TIMEOUTS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
+import { messageOf } from '../shared/errors.js';
 
 /** Safety valve: cap clarification rounds so a looping model can't freeze a cart. */
 const MAX_CLARIFICATION_ROUNDS = 3;
@@ -44,6 +45,7 @@ export class OrderUnderstandingService {
   private async runTurn(
     e: SttFinalTranscriptReceived,
   ): Promise<Extract<GraphTurnResult, { status: 'complete' }> | null> {
+    const log = logger.child({ request_id: e.request_id, cart_id: e.cart_id });
     try {
       // TODO: source supported_languages from voice_restaurant_settings.
       let result = await this.graph.start({
@@ -58,7 +60,7 @@ export class OrderUnderstandingService {
 
       for (let round = 0; result.status === 'clarify'; round += 1) {
         if (round >= MAX_CLARIFICATION_ROUNDS) {
-          logger.warn('order.clarification_rounds_exceeded', { cart_id: e.cart_id, request_id: e.request_id });
+          log.warn('order.clarification_rounds_exceeded');
           this.fail(e, 'clarification_unresolved');
           return null;
         }
@@ -72,7 +74,7 @@ export class OrderUnderstandingService {
 
         const answer = await this.awaitClarification(e.cart_id);
         if (answer === null) {
-          logger.warn('order.clarification_timeout', { cart_id: e.cart_id, request_id: e.request_id });
+          log.warn('order.clarification_timeout');
           this.fail(e, 'clarification_timeout');
           return null;
         }
@@ -83,10 +85,7 @@ export class OrderUnderstandingService {
     } catch (error) {
       // The failing node already logged order.node_failed with which state threw; this is the
       // turn-level fallback that fails the session.
-      logger.warn('order.turn_failed', {
-        request_id: e.request_id,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      log.warn('order.turn_failed', { error: messageOf(error) });
       this.fail(e, 'order_parse_failed');
       return null;
     }

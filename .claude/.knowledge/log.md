@@ -7,6 +7,29 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-09 — Logging hardening: level gating, correlation, safe error meta
+- **What:** (1) `emit()` in `config/logger.ts` now honours `LOG_LEVEL` (was read into
+  config but ignored — every level always printed). (2) `EventBus.emit` tags the
+  `event.emit` debug trace with `request_id`/`cart_id`/`session_id` pulled off the payload,
+  so the bus — which sees every event — is traceable per turn. (3) Adopted `logger.child()`
+  (previously defined but unused) to bind turn ids once in `OrderUnderstandingService.runTurn`
+  and `CartController.applyProposal`. (4) Both ordering bus handlers now `.catch` rejections
+  and log them (mirrors the cart handler) instead of dropping turns as unhandled rejections.
+  (5) New `messageOf()` / `errorMeta()` helpers in `shared/errors.ts` replace unsafe
+  `(err as Error).message` at 7 log sites; `logger.error` sites now include `stack`.
+- **Why:** Close observability gaps in the event-driven flow — an ignored log level, an
+  un-correlated bus, a silent rejection path in ordering, inconsistent/unsafe error
+  extraction, and stackless error logs.
+- **Where:** `config/logger.ts`, `events/event-bus.ts`, `shared/errors.ts`,
+  `ordering/register-handlers.ts`, `ordering/order-understanding-service.ts`,
+  `ordering/graph/instrument.ts`, `cart/cart-controller.ts`, `cart/register-handlers.ts`,
+  `redis/cart-cache.ts`, `redis/redis-client.ts`, `menu/menu-store.ts`, `app.ts`, `server.ts`,
+  `voice/voice-message-handler.ts`.
+- **Notes:** Provider-level logs (`llm.*`, `embedding.*`, `menu.*_unavailable`) remain
+  un-correlated — full turn-context propagation (AsyncLocalStorage / graph-state logger)
+  was deliberately deferred as a larger follow-up. Pre-existing failing test
+  `cart-repository.test.ts` (MULTI/EXEC per-command error) is unrelated to this change.
+
 ## 2026-07-09 — Fix prompt/schema drift: derive ALLOWED_OPERATIONS from the validator
 - **What:** `ALLOWED_OPERATIONS` in `src/llm/prompt-builder.ts` was a hand-maintained
   literal list that included `'clarify'`, an action the output schema

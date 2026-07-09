@@ -1,3 +1,5 @@
+import { config } from './env.js';
+
 /**
  * Minimal structured logger. Console-backed so the scaffold has zero runtime deps.
  * TODO: swap for pino (`npm i pino`) — keep this interface.
@@ -10,7 +12,14 @@ export interface Logger {
   child(bindings: Record<string, unknown>): Logger;
 }
 
-function emit(level: string, bindings: Record<string, unknown>, msg: string, meta?: Record<string, unknown>): void {
+type Level = 'debug' | 'info' | 'warn' | 'error';
+
+/** Severity ranks; anything below the configured LOG_LEVEL is dropped. */
+const RANK: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+const threshold = RANK[config.logLevel as Level] ?? RANK.info;
+
+function emit(level: Level, bindings: Record<string, unknown>, msg: string, meta?: Record<string, unknown>): void {
+  if (RANK[level] < threshold) return;
   const line = { level, time: new Date().toISOString(), msg, ...bindings, ...(meta ?? {}) };
   // eslint-disable-next-line no-console
   console.log(JSON.stringify(line));

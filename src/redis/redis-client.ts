@@ -1,5 +1,6 @@
 import { Redis } from 'ioredis';
 import { logger } from '../config/logger.js';
+import { errorMeta } from '../shared/errors.js';
 import { config } from '../config/env.js';
 
 let client: Redis | undefined;
@@ -13,7 +14,7 @@ export function createRedisClient(): Redis {
   if (client) return client;
   const redis = new Redis(config.redisUrl);
   redis.on('connect', () => logger.info('redis.connected', { url: config.redisUrl }));
-  redis.on('error', (err) => logger.error('redis.error', { message: err.message }));
+  redis.on('error', (err) => logger.error('redis.error', errorMeta(err)));
   client = redis;
   return client;
 }

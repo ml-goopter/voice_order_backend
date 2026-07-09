@@ -6,7 +6,7 @@ import type { OrderProposal } from '../ordering/schemas/proposal.js';
 import type { SessionId } from '../shared/types.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 import { KeyedAsyncLock } from '../shared/async-lock.js';
-import { CartRejectedError } from '../shared/errors.js';
+import { CartRejectedError, errorMeta } from '../shared/errors.js';
 import { emptyCart } from './cart-types.js';
 import type { Cart } from './cart-types.js';
 import { applyOperation } from './cart-operation-applier.js';
@@ -30,19 +30,20 @@ export class CartController {
 
   async applyProposal(proposal: OrderProposal, session_id?: SessionId): Promise<void> {
     await this.applyLock.run(proposal.cart_id, async () => {
+      const log = logger.child({ cart_id: proposal.cart_id, request_id: proposal.request_id });
       const rejected: Array<{ op: CartOperation; error: CartRejectedError }> = [];
       let updatedCart: Cart | undefined;
 
       try {
         // Idempotency — never apply the same request twice (§9/§11).
         if (await this.repo.wasProcessed(proposal.request_id)) {
-          logger.info('cart.duplicate_request', { request_id: proposal.request_id });
+          log.info('cart.duplicate_request');
           return;
         }
 
         let cart = (await this.carts.get(proposal.cart_id)) ?? emptyCart(proposal.cart_id, proposal.pos_config_id);
         if (proposal.base_version !== cart.version) {
-          logger.info('cart.rebase', { cart_id: proposal.cart_id, base: proposal.base_version, current: cart.version });
+          log.info('cart.rebase', { base: proposal.base_version, current: cart.version });
         }
 
         let applied = 0;
@@ -69,11 +70,7 @@ export class CartController {
         // — commitApplied runs only after the loop — and the request was NOT marked
         // processed, so a retry can reprocess cleanly. Surface it to the client over
         // the existing rejection channel rather than dropping the turn silently.
-        logger.error('cart.apply_failed', {
-          cart_id: proposal.cart_id,
-          request_id: proposal.request_id,
-          message: (err as Error).message,
-        });
+        log.error('cart.apply_failed', errorMeta(err));
         this.bus.emit('cart.operation_rejected', {
           cart_id: proposal.cart_id,
           request_id: proposal.request_id,

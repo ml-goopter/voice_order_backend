@@ -1,5 +1,6 @@
 import { config } from './config/env.js';
 import { logger } from './config/logger.js';
+import { messageOf } from './shared/errors.js';
 import { eventBus } from './events/event-bus.js';
 
 import { createRedisClient, closeRedisClient } from './redis/redis-client.js';
@@ -69,7 +70,7 @@ export function createApp(): App {
         await menu.ensureIndex();
         logger.info('menu.index_ready');
       } catch (err) {
-        logger.warn('menu.index_unavailable', { message: (err as Error).message });
+        logger.warn('menu.index_unavailable', { message: messageOf(err) });
       }
 
       ws = startWebSocketServer(gateway, config.port);

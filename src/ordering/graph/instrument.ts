@@ -1,5 +1,6 @@
 import { isGraphBubbleUp } from '@langchain/langgraph';
 import { logger } from '../../config/logger.js';
+import { errorMeta } from '../../shared/errors.js';
 import type { OrderStateType } from './state.js';
 
 /**
@@ -24,7 +25,7 @@ export function node<T>(name: string, fn: (s: OrderStateType) => T | Promise<T>)
         request_id: s.request_id,
         cart_id: s.cart_id,
         pos_config_id: s.pos_config_id,
-        error: error instanceof Error ? error.message : String(error),
+        ...errorMeta(error),
       });
       throw error;
     }
