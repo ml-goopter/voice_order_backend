@@ -19,7 +19,6 @@ export interface CartRepository {
   markProcessed(request_id: RequestId, outcome: Outcome): Promise<void>;
   /** Persist the applied cart AND mark the request processed in one atomic step. */
   commitApplied(cart: Cart, request_id: RequestId): Promise<void>;
-  saveSnapshot(cart: Cart): Promise<void>;
   confirmOrder(cart: Cart): Promise<PosOrderId>;
 }
 
@@ -56,12 +55,6 @@ export class RedisCartRepository implements CartRepository {
       .exec();
   }
 
-  async saveSnapshot(cart: Cart): Promise<void> {
-    // The live cart already persists at cartKey (via commitApplied). TODO: a
-    // versioned recovery snapshot keyed by cart_id + version for rollback.
-    logger.debug('cart.snapshot', { cart_id: cart.cart_id, version: cart.version });
-  }
-
   /** Confirm: write the cart as an Odoo pos_order (design §9, step 11). */
   async confirmOrder(cart: Cart): Promise<PosOrderId> {
     // TODO: create pos_order / pos_order_line via an Odoo client; record the confirmation.
@@ -91,10 +84,6 @@ export class InMemoryCartRepository implements CartRepository {
   async commitApplied(cart: Cart, request_id: RequestId): Promise<void> {
     await this.cache.set(cart);
     this.processed.set(request_id, 'applied');
-  }
-
-  async saveSnapshot(cart: Cart): Promise<void> {
-    logger.debug('cart.snapshot', { cart_id: cart.cart_id, version: cart.version });
   }
 
   async confirmOrder(cart: Cart): Promise<PosOrderId> {

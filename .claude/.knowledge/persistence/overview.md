@@ -44,6 +44,6 @@ state lives in Redis. Two stores:
 - `db/schema/01_external_odoo.sql` + `db/schema/README.md` (Odoo reference).
 
 ## Not done yet
-- `CartRepository` still keeps in-memory Maps (idempotency ledger + `saveSnapshot`);
-  the LangGraph checkpointer is still `MemorySaver`. An Odoo client for reads +
+- `CartRepository`'s `confirmOrder` (writing confirmed carts to Odoo `pos_order`) is still
+  a stub, and the LangGraph checkpointer is still `MemorySaver`. An Odoo client for reads +
   writing confirmed carts to `pos_order` is also pending.

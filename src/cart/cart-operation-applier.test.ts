@@ -7,6 +7,8 @@ import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
 import { applyOperation } from './cart-operation-applier.js';
 import { emptyCart, type Cart } from './cart-types.js';
+import type { MenuLookup } from '../menu/menu-service.js';
+import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 
 const POS: PosConfigId = 1;
 
@@ -234,5 +236,58 @@ describe('applyOperation', () => {
     it('rejects when the line is gone', async () => {
       expectReject(await applyOperation(cart, { action: 'remove_modifier', line_id: 'ln_missing', modifier_key: 'no_mayo' }, menu, POS), 'line_gone');
     });
+  });
+});
+
+describe('applyOperation — pricing and menu edge cases', () => {
+  /** A menu that has forgotten every item (as if the products were delisted). */
+  const emptyMenu: MenuLookup = {
+    resolveItemKey: async () => undefined,
+    findByTmplId: async () => undefined,
+    getItems: async () => [],
+  };
+
+  /** A cart already holding one line for product_tmpl_id 100, priced at 2 × 500 = 1000. */
+  function cartWithLine(): Cart {
+    return {
+      cart_id: 'cart_x',
+      pos_config_id: POS,
+      version: 1,
+      items: [{ line_id: 'ln_1', product_tmpl_id: 100, quantity: 2, modifiers: [] }],
+      subtotal_cents: 1000,
+      tax_cents: 0,
+      total_cents: 1000,
+      last_updated: '2026-01-01T00:00:00.000Z',
+    };
+  }
+
+  it('KNOWN GAP (H3): a line whose product left the menu silently reprices to 0', async () => {
+    // There is no per-line price snapshot, so priced() falls back to `?? 0`
+    // (cart-operation-applier.ts:22): the subtotal deflates with NO rejection. Pinning
+    // current behavior — revisit when line-level price snapshots land.
+    const next = expectOk(
+      await applyOperation(cartWithLine(), { action: 'update_quantity', line_id: 'ln_1', quantity: 3 }, emptyMenu, POS),
+    );
+    expect(next.items[0]!.quantity).toBe(3);
+    expect(next.subtotal_cents).toBe(0);
+    expect(next.total_cents).toBe(0);
+  });
+
+  it('KNOWN GAP (H5): a delisted item is reported as invalid_modifier, not as unavailable', async () => {
+    // findByTmplId → undefined means the line's product vanished from the menu, but the
+    // applier collapses that into the same 'invalid_modifier' reason as a genuinely wrong
+    // key (cart-operation-applier.ts:74-76), giving a misleading customer message.
+    expectReject(
+      await applyOperation(cartWithLine(), { action: 'add_modifier', line_id: 'ln_1', modifier_key: 'no_mayo' }, emptyMenu, POS),
+      'invalid_modifier',
+    );
+  });
+
+  it('KNOWN GAP (C2): an unknown action falls through the switch and resolves to undefined', async () => {
+    // applyOperation has no `default` branch (cart-operation-applier.ts:39-86). An action
+    // that skips schema validation returns undefined, which the controller reads as
+    // `undefined.ok` → TypeError → surfaced as internal_error. Pinning the fall-through.
+    const r = await applyOperation(cartWithLine(), { action: 'frobnicate', line_id: 'ln_1' } as unknown as CartOperation, emptyMenu, POS);
+    expect(r).toBeUndefined();
   });
 });

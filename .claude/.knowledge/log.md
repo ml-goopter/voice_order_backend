@@ -79,6 +79,39 @@ timestamp: 2026-07-07
 - **Why:** The suite should test the pipeline up to the LLM output, isolating Order
   Understanding from the Cart module (which has its own tests).
 - **Where:** `src/ordering/final-transcript.e2e.ts`.
+## 2026-07-09 — Remove the `saveSnapshot` stub
+- **What:** Dropped `CartRepository.saveSnapshot` — the interface method, both impls
+  (Redis + in-memory, each a no-op that only logged `cart.snapshot`), and the
+  `cart-controller.ts` call that ran it right after `commitApplied`.
+- **Why:** The live cart already persists durably at `cart:{cart_id}` via `commitApplied`,
+  and conversation history is persisted separately, so a second (never-implemented) versioned
+  snapshot was speculative (YAGNI). Removing it also erases the latent bug where a throwing
+  `saveSnapshot` after a successful commit would mis-report the apply as `internal_error`.
+- **Where:** `src/cart/cart-controller.ts`, `src/cart/cart-repository.ts`,
+  `src/cart/cart-types.ts` (comment), `src/cart/cart-controller.test.ts` (removed the
+  now-moot test). Bundles: `cart/overview.md`, `persistence/overview.md`.
+
+## 2026-07-09 — Close cart-subsystem test gaps (edge cases)
+- **What:** Added tests covering previously-untested edge cases across the cart subsystem.
+  New test files: `src/shared/async-lock.test.ts` (`KeyedAsyncLock` — same-key
+  serialization, cross-key concurrency, throwing-callback isolation, map-entry cleanup),
+  `src/ordering/cart-turn-queue.test.ts` (FIFO ordering, throwing-turn isolation),
+  `src/ordering/schemas/cart-operation.schema.test.ts` (`parseCartOperation` — the sole
+  guard on `add_item` quantity, unknown action, empty/missing fields). Extended existing
+  suites: applier (delisted line reprices to 0, delisted-item→invalid_modifier conflation,
+  unknown-action switch fall-through), controller (empty batch no-op, reused request_id
+  across carts, `confirm()` present/absent), repository (unchecked MULTI/EXEC per-command
+  error + a currently-failing test asserting it should reject), cache (transport error from
+  `redis.get` propagates).
+- **Why:** A coverage audit surfaced real gaps — a delisted line silently pricing to 0, the
+  schema being the only quantity guard, and an unchecked EXEC result. Most tests pin current
+  behavior; the H4 test asserts the correct behavior for a genuine bug and is RED so it
+  catches the bug.
+- **Where:** `src/shared`, `src/ordering`, `src/ordering/schemas`, `src/cart`, `src/redis`
+  (tests only — no source changed).
+- **Notes:** One test fails on purpose against the current code (H4: unchecked MULTI/EXEC
+  result in cart-repository). It goes green once that bug is fixed — do not delete or skip it
+  to make the suite pass.
 
 ## 2026-07-08 — Fix Redis persistence + e2e re-run collision from the idempotency ledger
 - **What:** Two fixes exposed while running the final-transcript e2e. (1) `docker-compose.yml`:

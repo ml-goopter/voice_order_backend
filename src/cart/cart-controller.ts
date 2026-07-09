@@ -60,7 +60,6 @@ export class CartController {
           cart = { ...cart, version: cart.version + 1 };
           // Atomic: persist the cart AND mark the request processed together (§9).
           await this.repo.commitApplied(cart, proposal.request_id);
-          await this.repo.saveSnapshot(cart);
           updatedCart = cart;
         } else {
           await this.repo.markProcessed(proposal.request_id, 'rejected');

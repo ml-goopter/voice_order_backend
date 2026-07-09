@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { CartId, PosConfigId } from '../shared/types.js';
+import type { CartId, PosConfigId, PosOrderId } from '../shared/types.js';
 import { EventBus } from '../events/event-bus.js';
 import type { CartOperationRejected, CartUpdated } from '../events/event-types.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
@@ -10,6 +10,7 @@ import type { OrderProposal } from '../ordering/schemas/proposal.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 import { CartController } from './cart-controller.js';
 import { InMemoryCartRepository } from './cart-repository.js';
+import type { Cart } from './cart-types.js';
 
 const POS: PosConfigId = 1;
 const CART: CartId = 'cart_1';
@@ -221,5 +222,60 @@ describe('CartController.applyProposal', () => {
     expect(rejected[0]!.reason).toBe('internal_error');
     expect(rejected[0]!.session_id).toBe('sess_1');
     expect(await repo.wasProcessed(p.request_id)).toBe(false); // retry can reprocess
+  });
+
+  it('does nothing and emits nothing for an empty operations batch', async () => {
+    await h.controller.applyProposal(proposal([]));
+
+    expect(await h.cache.get(CART)).toBeUndefined();
+    expect(h.updated).toHaveLength(0);
+    expect(h.rejected).toHaveLength(0);
+  });
+
+  it('treats request_id as globally unique — a reused id on another cart is skipped', async () => {
+    // The idempotency ledger keys on request_id alone while the apply lock keys on
+    // cart_id, so a second proposal reusing the id (even for a different cart) is
+    // short-circuited by wasProcessed and never creates the second cart.
+    const p1 = proposal([addBurger], { cart_id: 'cart_A' });
+    await h.controller.applyProposal(p1);
+    await h.controller.applyProposal({ ...p1, cart_id: 'cart_B' });
+
+    expect(await h.cache.get('cart_A')).toBeDefined();
+    expect(await h.cache.get('cart_B')).toBeUndefined();
+    expect(h.updated).toHaveLength(1);
+  });
+
+  describe('confirm', () => {
+    it('is a no-op when the cart does not exist', async () => {
+      const confirmed: Cart[] = [];
+      const cache = new InMemoryCartCache();
+      const repo = new (class extends InMemoryCartRepository {
+        override async confirmOrder(cart: Cart): Promise<PosOrderId> {
+          confirmed.push(cart);
+          return 0;
+        }
+      })(cache);
+      const controller = new CartController(cache, makeMenu(), repo, new EventBus());
+
+      await controller.confirm('missing');
+      expect(confirmed).toHaveLength(0);
+    });
+
+    it('confirms an existing cart through the repository', async () => {
+      const confirmed: Cart[] = [];
+      const cache = new InMemoryCartCache();
+      const repo = new (class extends InMemoryCartRepository {
+        override async confirmOrder(cart: Cart): Promise<PosOrderId> {
+          confirmed.push(cart);
+          return 0;
+        }
+      })(cache);
+      const controller = new CartController(cache, makeMenu(), repo, new EventBus());
+      await controller.applyProposal(proposal([addBurger]));
+
+      await controller.confirm(CART);
+      expect(confirmed).toHaveLength(1);
+      expect(confirmed[0]!.cart_id).toBe(CART);
+    });
   });
 });
