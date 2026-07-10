@@ -23,6 +23,10 @@ describe('classifyIntent', () => {
     expect(await classifyIntent(fakeLlm('not json at all'), 'x')).toBe('order');
   });
 
+  it('defaults to order on a valid-but-non-object payload (JSON null)', async () => {
+    expect(await classifyIntent(fakeLlm('null'), 'x')).toBe('order');
+  });
+
   it('defaults to order on an unrecognized intent label', async () => {
     expect(await classifyIntent(fakeLlm(JSON.stringify({ intent: 'banana' })), 'x')).toBe('order');
   });

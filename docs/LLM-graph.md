@@ -48,27 +48,33 @@ Defined in `graph/build-graph.ts` → `buildOrderGraph({ menu, llm, carts })`.
  START
    │
    ▼
+ normalize
+   │
+   ▼
  classify ──(INTENT_ROUTE, one conditional edge)──┐
-   │ order          │ suggest        │ junk        │
-   ▼                ▼                │             │
- normalize        suggest ──────────┐│             │
-   │                                ││             │
-   ▼                                ▼▼             ▼
- load_cart ──► retrieve ──► parse ──► finalize ──► END
+   │ order            │ suggest          │ junk
+   ▼                  ▼                  ▼
+ load_cart          suggest             END   (junk not recorded)
+   │                  │
+   ▼                  │
+ retrieve ──► parse ──┤
+                      ▼
+                   finalize ──► END
 ```
 
-- **`classify` is the entry point** (design §6): it labels the utterance
-  `order | suggest | junk` and routes via a single conditional edge whose path map is
-  `INTENT_ROUTE` (`graph/intents.ts`). The router returns `s.intent`; `INTENT_ROUTE` maps it
-  to the destination node, so routing and the intent set can't drift.
-  - `order` → `normalize` (the full proposer spine).
+- **`normalize` is the entry point**; **`classify` runs right after it** (design §6) and labels
+  the NORMALIZED utterance `order | suggest | junk`, routing via a single conditional edge whose
+  path map is `INTENT_ROUTE` (`graph/intents.ts`). The router returns `s.intent`; `INTENT_ROUTE`
+  maps it to the next node, so routing and the intent set can't drift.
+  - `order` → `load_cart` (the rest of the proposer spine — `normalize` already ran).
   - `suggest` → the `suggest` stub node → `finalize`.
-  - `junk` → `finalize` directly.
-- Order spine: `normalize → load_cart → retrieve → parse → finalize`. A clarification is not a
-  branch/pause — `parse` sets `needs_clarification` and `finalize` records the question; the
-  order path always runs to `END`.
-- `finalize → END` is the single true terminus. Every route (order, suggest, junk) passes
-  through `finalize`, so a turn is recorded in history exactly once regardless of intent.
+  - `junk` → `END` directly.
+- Order spine: `normalize → classify → load_cart → retrieve → parse → finalize`. A clarification
+  is not a branch/pause — `parse` sets `needs_clarification` and `finalize` records the question;
+  the order path always runs to `END`.
+- `finalize → END` records the completed turn to history. The `order` and `suggest` routes pass
+  through it; **`junk` skips it and goes straight to `END`**, so a non-orderable utterance
+  (greeting, noise) is never recorded and can't pollute the context later fed to `parse`.
 - Non-order intents **short-circuit**: `suggest`/`junk` never touch `load_cart`/`retrieve`/`parse`,
   so no cart is loaded and no LLM parse call is made for them.
 - **Extensibility:** adding an intent is a one-row edit — a value in `intentSchema` and a row in
@@ -156,24 +162,25 @@ Three lifetimes are in play:
 ### `classify`
 
 ```ts
-const pending = s.history.at(-1)?.clarification_question;
-if (pending !== undefined) return { intent: 'order' as const };
-const intent = await classifyIntent(llm, s.customer_text);
+if (s.clarification_question !== undefined) return { intent: 'order' as const };
+const intent = await classifyIntent(intentLlm, s.customer_text);
 return { intent };
 ```
 
-- The graph's **entry point**. Sets the `intent` channel, which the conditional edge reads to
-  route the turn (§2).
-- **Pending-clarification override:** if the last history turn carries an unanswered
-  `clarification_question`, THIS utterance is its answer, so `classify` forces `intent = 'order'`
-  and skips the classifier LLM call entirely — the parse pipeline resolves the question. Without
-  this, a terse answer ("both", "the second one") could be mislabeled `junk` and dropped.
-- `classifyIntent` (`nodes/classify-intent.node.ts`) calls the LLM with `buildIntentPrompt`
+- Runs **right after `normalize`** (not the entry point). Sets the `intent` channel, which the
+  conditional edge reads to route the turn (§2). Classifies the NORMALIZED utterance.
+- **Pending-clarification override:** `normalize` carries an unanswered `clarification_question`
+  from the last history turn into the channel; if it's set, THIS utterance is that answer, so
+  `classify` forces `intent = 'order'` and skips the classifier LLM call entirely — the parse
+  pipeline resolves the question. Without this, a terse answer ("both", "the second one") could be
+  mislabeled `junk` and dropped.
+- `classifyIntent` (`nodes/classify-intent.node.ts`) calls its OWN LLM provider (`intentLlm`,
+  built from `INTENT_LLM_*` env by `createIntentLlmProvider`, falling back to `LLM_*` — so the
+  classifier can run on a cheaper/separate model+key than the parser) with `buildIntentPrompt`
   (`llm/intent-prompt-builder.ts`), JSON-parses, and validates against `intentSchema`. It
-  **degrades to `order` on any failure** (transport error, non-JSON, unknown label): a real
-  order must never be dropped. The `stub` provider returns a non-intent JSON, so it always
-  degrades to `order` — i.e. stub deployments behave exactly as before this node existed.
-- Runs on the RAW utterance (before `normalize`), which is fine for classification.
+  **degrades to `order` on any failure** (transport error, non-JSON, non-object payload, unknown
+  label): a real order must never be dropped. The `stub` provider returns a non-intent JSON, so it
+  always degrades to `order` — i.e. stub deployments behave exactly as before this node existed.
 
 ### `normalize`
 
@@ -292,9 +299,10 @@ history: [{
   newest ≤6 turns as conversation context so references ("that", "the same one")
   resolve. History is **reference-only** — the prompt forbids re-executing a past
   request; `current_cart` is the source of truth for what's actually in the cart.
-- Reached by the order path AND by the `suggest`/`junk` routes, so every turn is recorded once.
-  For a `suggest`/`junk` turn `output` is `null`, so no clarification is recorded — just the
-  utterance.
+- Reached by the order path AND by the `suggest` route, so those turns are recorded once. For a
+  `suggest` turn `output` is `null`, so no clarification is recorded — just the utterance. The
+  `junk` route skips `finalize` entirely (routes straight to `END`), so a non-orderable utterance
+  is **not** recorded — it can't pollute the context later fed to `parse`.
 
 ### `suggest`
 

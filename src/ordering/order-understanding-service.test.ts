@@ -7,9 +7,14 @@ import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
 import type { Cart } from '../cart/cart-types.js';
 import type { LlmPrompt, LlmProvider } from '../llm/llm-provider.js';
+import { buildIntentPrompt } from '../llm/intent-prompt-builder.js';
 import type { Intent } from './graph/intents.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
+
+/** The intent classifier's system prompt is text-independent, so this exactly identifies the
+ *  classifier hop without coupling the test to the prompt's wording. */
+const INTENT_SYSTEM = buildIntentPrompt('').system;
 
 const POS = 1;
 const MENU: MenuItem[] = [
@@ -48,7 +53,7 @@ class ScriptedLlm implements LlmProvider {
     return this.prompts.length;
   }
   async complete(prompt: LlmPrompt): Promise<string> {
-    if (prompt.system.startsWith('You classify')) {
+    if (prompt.system === INTENT_SYSTEM) {
       const { customer_text } = JSON.parse(prompt.user) as { customer_text: string };
       return JSON.stringify({ intent: this.intentFor(customer_text) });
     }

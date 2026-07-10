@@ -7,6 +7,32 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-10 — Intent classifier: run after normalize, own creds, hardening
+- **What:** Follow-ups to the intent classifier. (1) Moved `classify` to run AFTER `normalize`
+  instead of being the entry point — the graph is now `START → normalize → classify → (route)`,
+  so the classifier sees the whitespace-normalized utterance; `INTENT_ROUTE.order` now points at
+  `load_cart` (normalize already ran) and `classify` reads the `clarification_question` channel
+  (set by `normalize`) for its pending-answer override instead of re-reading `history`. (2) Gave
+  the classifier its OWN LLM provider/creds: new `INTENT_LLM_*` env (falling back to `LLM_*`),
+  `createIntentLlmProvider`, `GraphDeps.intentLlm`; `OpenAiCompatibleLlmProvider` now takes an
+  injected `LlmClientConfig` instead of reading `config` directly. (3) Fixed three review
+  findings: `classifyIntent` no longer throws on a valid-but-non-object payload (JSON `null`,
+  bare number/string) — it degrades to `order` like every other malformed shape; `junk` now
+  routes straight to `END` (skips `finalize`) so noise is not recorded to history and can't
+  pollute later `parse` context; the `ScriptedLlm` test now identifies the classifier hop by
+  comparing against `buildIntentPrompt('').system` rather than a hard-coded prefix.
+- **Why:** Classify the cleaned text; let the cheap routing call use a cheaper/separate model
+  and key; close the crash hole in the "never drop an order" contract; keep the order parser's
+  conversation context free of non-orderable noise.
+- **Where:** `ordering/graph/build-graph.ts`, `ordering/graph/intents.ts`,
+  `ordering/order-graph.ts`, `ordering/nodes/classify-intent.node.ts`, `config/env.ts`,
+  `llm/openai-compatible-provider.ts`, `llm/llm-client.ts`, `app.ts`, `.env.example`; tests in
+  `intents.test.ts`, `classify-intent.node.test.ts`, `openai-compatible-provider.test.ts`,
+  `llm-client.test.ts`, `order-understanding-service.test.ts`; docs `docs/LLM-graph.md`.
+- **Notes:** `INTENT_LLM_*` are opt-in — unset means the classifier shares the main provider
+  (and `OrderGraph`'s `intentLlm` constructor arg defaults to the parser `llm`), so existing
+  deployments and the `stub` provider behave exactly as before.
+
 ## 2026-07-10 — Intent classifier at the head of the order graph
 - **What:** Added a `classify` node as the graph's new entry point. It labels each utterance
   as `order` | `suggest` | `junk` via a cheap first-hop LLM call and routes on it through a

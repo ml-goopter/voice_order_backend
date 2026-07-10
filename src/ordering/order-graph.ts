@@ -44,8 +44,10 @@ type InvokeReturn = { intent: Intent; output: OrderGraphOutput | null; base_vers
 export class OrderGraph {
   private readonly graph: ReturnType<typeof buildOrderGraph>;
 
-  constructor(menu: MenuService, llm: LlmProvider, carts: CartCache) {
-    this.graph = buildOrderGraph({ menu, llm, carts });
+  // `intentLlm` is the intent classifier's own provider (its own creds, design §6); it defaults
+  // to the parser `llm` so a caller that doesn't wire a separate one shares a single provider.
+  constructor(menu: MenuService, llm: LlmProvider, carts: CartCache, intentLlm: LlmProvider = llm) {
+    this.graph = buildOrderGraph({ menu, llm, intentLlm, carts });
   }
 
   /** Start a new turn. Rejects if parsing fails after repair (§11.3) — caller fails the turn. */

@@ -9,8 +9,8 @@ describe('INTENT_ROUTE', () => {
     }
   });
 
-  it('routes the order intent through the proposer pipeline (normalize)', () => {
-    expect(INTENT_ROUTE.order).toBe('normalize');
+  it('routes the order intent through the proposer pipeline (load_cart)', () => {
+    expect(INTENT_ROUTE.order).toBe('load_cart');
     expect(DEFAULT_INTENT).toBe('order');
   });
 });

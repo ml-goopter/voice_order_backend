@@ -29,7 +29,10 @@ export async function classifyIntent(llm: LlmProvider, customerText: string): Pr
     return DEFAULT_INTENT;
   }
 
-  const result = intentSchema.safeParse((parsed as { intent?: unknown }).intent);
+  // Optional-chain the cast so a valid-but-non-object payload (JSON `null`, a bare number/
+  // string, an array) yields `undefined` instead of throwing — the point of this node is to
+  // NEVER drop a real order, so every malformed shape must degrade, not crash.
+  const result = intentSchema.safeParse((parsed as { intent?: unknown } | null)?.intent);
   if (!result.success) {
     logger.warn('order.classify_invalid', { raw });
     return DEFAULT_INTENT;

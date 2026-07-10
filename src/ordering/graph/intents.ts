@@ -1,3 +1,4 @@
+import { END } from '@langchain/langgraph';
 import { z } from 'zod';
 
 /**
@@ -20,13 +21,15 @@ export type Intent = z.infer<typeof intentSchema>;
 export const DEFAULT_INTENT: Intent = 'order';
 
 /**
- * Maps each intent to the graph node it routes to out of `classify`. Used BOTH as the
- * router's path map (intent → destination node) in `addConditionalEdges`, so routing and
- * the intent set can't drift. An intent that needs no special handling points at
- * `normalize` (the order pipeline); one with its own behavior points at its handler node.
+ * Maps each intent to the graph node (or `END`) it routes to out of `classify` (which runs
+ * after `normalize`). Used as the router's path map in `addConditionalEdges`, so routing and
+ * the intent set can't drift. An intent that needs no special handling points at `load_cart`
+ * (the order pipeline, already past normalize); one with its own behavior points at its handler
+ * node. `junk` goes straight to `END` — a non-orderable utterance (greeting, noise) is NOT
+ * recorded to history, so it can't pollute the conversation context later fed to `parse`.
  */
 export const INTENT_ROUTE = {
-  order: 'normalize',
+  order: 'load_cart',
   suggest: 'suggest',
-  junk: 'finalize',
+  junk: END,
 } as const satisfies Record<Intent, string>;
