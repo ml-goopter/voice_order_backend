@@ -12,9 +12,4 @@ export function registerOrderingHandlers(bus: EventBus, service: OrderUnderstand
       logger.error('order.handle_final_unhandled', { request_id: e.request_id, cart_id: e.cart_id, ...errorMeta(err) });
     });
   });
-  bus.on('order.clarification_answered', (e) => {
-    service.handleClarificationAnswer(e).catch((err: unknown) => {
-      logger.error('order.handle_clarification_unhandled', { request_id: e.request_id, cart_id: e.cart_id, ...errorMeta(err) });
-    });
-  });
 }

@@ -7,6 +7,53 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-10 — Drop the `clarification_answer` plumbing (keep the question)
+- **What:** Removed everything named `clarification_answer` — the never-written
+  `HistoryTurn.clarification_answer` field, the `clarification_answer` graph state channel,
+  the `OrderGraphInput.clarification_answer` field, and the prompt's `answer` in the
+  `clarification` block. `clarification_question` stays and is now the sole carrier: the
+  prompt sends `clarification: { question }`, and the model is told the current
+  `customer_text` is the answer. Also removed the always-true `clarification_answer ===
+  undefined` guards in `trailingClarificationRun` and the `normalize` node.
+- **Why:** The answer field was redundant with the question already riding in
+  `conversation_history` (and on `HistoryTurn` it was read but never set — dead code). The
+  utterance itself is the answer, so a separate round-tripped answer added no signal.
+- **Where:** `ordering/schemas/order-graph-input.schema.ts`, `ordering/graph/state.ts`,
+  `ordering/graph/build-graph.ts` (normalize), `llm/prompt-builder.ts`; tests in
+  `graph/state.test.ts`, `llm/prompt-builder.test.ts`, `order-understanding-service.test.ts`.
+- **Notes:** Behavior-preserving for the fire-and-forget clarification loop — the model still
+  asks questions (`needs_clarification` output + `order.clarification_needed` event unchanged)
+  and still resolves them from the pending question. The `retrieve` node also augments its
+  query with the pending `clarification_question` for better candidate recall.
+
+## 2026-07-10 — Fire-and-forget clarifications (no more waiting/resume)
+- **What:** The clarify flow no longer pauses the turn. When `parse` sets
+  `needs_clarification`, `finalize` records the question into `history` and the graph
+  runs to `END`; the service emits `order.clarification_needed` and releases its FIFO
+  slot. The customer's answer arrives as the **next** `stt.final_transcript` — that
+  turn's `normalize` detects the pending question (last `history` entry with a
+  `clarification_question` and no answer) and feeds `{question, answer: utterance}` to
+  `parse`. Removed the LangGraph `interrupt`/`Command({resume})` machinery, the
+  `clarify` node, the conditional edge, `OrderGraph.resume()`, and the whole blocking
+  path in the service (`awaitClarification`, `pendingClarifications`,
+  `handleClarificationAnswer`, `TIMEOUTS.clarificationMs`). Graph is now a straight
+  line `normalize → load_cart → retrieve → parse → finalize → END`. Added a soft cap:
+  `trailingClarificationRun(history)` counts consecutive unanswered clarifications and
+  the service fails the turn (`clarification_unresolved`) past `MAX_CLARIFICATION_ROUNDS`.
+  Added a prompt nudge so the model treats the utterance as the answer (or a fresh
+  request if it plainly isn't). Removed the now-dead inbound `order.clarification_answered`
+  contract (event type, bus map entry, WS message type, router case, gateway wiring).
+- **Why:** Blocking the turn on a clarifying answer held the per-cart FIFO (turn 2
+  stuck behind turn 1) and required a special answer channel + 30s timeout. Assuming the
+  customer answers on the next turn removes the wait entirely while keeping the question
+  in LLM history for context.
+- **Where:** `ordering` (`graph/build-graph.ts`, `graph/state.ts`, `order-graph.ts`,
+  `order-understanding-service.ts`, `register-handlers.ts`), `events/event-types.ts`,
+  `realtime/{message-router,realtime-message-types,realtime-gateway}.ts`,
+  `llm/prompt-builder.ts`, `config/constants.ts`, plus their tests.
+- **Notes:** Client-facing contract change — the app must stop sending
+  `order.clarification_answered` and simply send the next utterance. `MemorySaver` is
+  still in-process, so a pending question is lost on restart (unchanged caveat).
 ## 2026-07-10 — Partial-transcript stop detection (auto-end the turn on silence)
 - **What:** The voice handler now auto-fires `voice.stop` when no new partial transcript
   arrives within `TIMEOUTS.partialIdleMs` (2.5 s) — "the customer stopped talking." A

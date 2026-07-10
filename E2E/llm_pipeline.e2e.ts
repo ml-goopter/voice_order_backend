@@ -31,7 +31,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import { Redis } from 'ioredis';
 import { config } from '../src/config/env.js';
-import { TIMEOUTS } from '../src/config/constants.js';
 import { EventBus } from '../src/events/event-bus.js';
 import type { AppEventMap, AppEventName } from '../src/events/event-types.js';
 import { RedisCartCache } from '../src/redis/cart-cache.js';
@@ -435,17 +434,12 @@ describe('final-transcript → proposal pipeline (real stack: Redis + Jina + Oll
     );
 
     // The menu has several wonton dishes (soup, noodle, spicy-garlic), so the model sometimes
-    // asks which one. Answer it — pointing back at the deep fried wonton appetizer — and wait
-    // for the resumed proposal, so the quantity assertion still runs.
+    // asks which one. Answer it as the NEXT transcript — pointing back at the deep fried wonton
+    // appetizer — and wait for the follow-up proposal, so the quantity assertion still runs.
     if (outcome.name === 'order.clarification_needed') {
-      const resumed = waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
-      bus.emit('order.clarification_answered', {
-        cart_id: o.cart_id,
-        session_id: o.session_id,
-        request_id: o.request_id,
-        answer: 'the A3 deep fried wonton appetizer',
-      });
-      outcome = await resumed;
+      const answered = waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+      emitFinal('the A3 deep fried wonton appetizer', o);
+      outcome = await answered;
     }
 
     expect(outcome.name, `pipeline failed: ${JSON.stringify(outcome.payload)}`).toBe('order.operations_proposed');
@@ -478,7 +472,7 @@ describe('final-transcript → proposal pipeline (real stack: Redis + Jina + Oll
     await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /no broccoli/i);
   });
 
-  it.only('clarification → resume: an ambiguous order asks, then proposes the answer', async (ctx) => {
+  it.only('clarification → next turn answers: an ambiguous order asks, then proposes on the reply', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('clarify');
     await seedEmptyCart(o.cart_id);
@@ -496,45 +490,15 @@ describe('final-transcript → proposal pipeline (real stack: Redis + Jina + Oll
     ).toBe('order.clarification_needed');
     expect((first.payload as AppEventMap['order.clarification_needed']).question.length).toBeGreaterThan(0);
 
-    // Answer, then expect the resumed turn to propose a combination.
-    const resumed = waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
-    bus.emit('order.clarification_answered', {
-      cart_id: o.cart_id,
-      session_id: o.session_id,
-      request_id: o.request_id,
-      answer: 'the B combination, Combination For One B',
-    });
-    const { name, payload } = await resumed;
+    // The question was fire-and-forget (no pause). The answer is just the next transcript;
+    // the pending question rode across in conversation history, so the turn now proposes.
+    const answered = waitForAny(['order.operations_proposed', 'voice.session_failed'], o.cart_id, TURN_MS);
+    emitFinal('the B combination, Combination For One B', o);
+    const { name, payload } = await answered;
 
-    expect(name, `resume failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
-    // The resumed turn proposed valid operations that add a combination.
+    expect(name, `answer turn failed: ${JSON.stringify(payload)}`).toBe('order.operations_proposed');
+    // The follow-up turn proposed valid operations that add a combination.
     await expectAddItem(expectValidProposal(proposals), /combination for one/i, 1);
-  });
-
-  it('clarification → timeout: an unanswered clarification fails the turn', async (ctx) => {
-    if (!infraReady) return ctx.skip(infraSkipReason);
-    const o = ids('timeout');
-    await seedEmptyCart(o.cart_id);
-
-    emitFinal('let me get a combination for one', o);
-    const first = await waitForAny(
-      ['order.clarification_needed', 'order.operations_proposed', 'voice.session_failed'],
-      o.cart_id,
-      TURN_MS,
-    );
-    expect(
-      first.name,
-      `model did not request clarification this run (got ${first.name}: ${JSON.stringify(first.payload)})`,
-    ).toBe('order.clarification_needed');
-
-    // Never answer → the service expires the wait after TIMEOUTS.clarificationMs.
-    const { name, payload } = await waitForAny(
-      ['voice.session_failed', 'order.operations_proposed'],
-      o.cart_id,
-      TIMEOUTS.clarificationMs + 60_000,
-    );
-    expect(name).toBe('voice.session_failed');
-    expect((payload as AppEventMap['voice.session_failed']).reason).toBe('clarification_timeout');
   });
 
   it('update_quantity: "make that two" proposes an in-place edit of the seeded line', async (ctx) => {
@@ -847,7 +811,7 @@ describe('Chinese-language support (zh_CN, cross-language matching)', () => {
     await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /no broccoli/i);
   });
 
-  it.only('clarification → resume: an ambiguous Chinese order asks, then proposes the answer', async (ctx) => {
+  it.only('clarification → next turn answers: an ambiguous Chinese order asks, then proposes on the reply', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('zh_clarify');
     await seedEmptyCart(o.cart_id);
@@ -860,41 +824,32 @@ describe('Chinese-language support (zh_CN, cross-language matching)', () => {
       TURN_MS,
     );
     // 套餐 A/B/C are distinct combinations; the model usually asks which one. If it resolves
-    // without asking this run there is nothing to resume — self-skip (don't fail).
+    // without asking this run there is nothing to answer — self-skip (don't fail).
     if (first.name !== 'order.clarification_needed') {
       return ctx.skip(`model did not request clarification this run (got ${first.name})`);
     }
     expect((first.payload as AppEventMap['order.clarification_needed']).question.length).toBeGreaterThan(0);
 
-    // Answer in Chinese, naming the combination explicitly (as the English test does), and
-    // expect the resumed turn to propose it. On resume the model may re-ask instead of
-    // resolving — a known open issue (docs/ordering-langgraph.md §6.4: the system prompt does
-    // not yet tell it to resolve from `clarification` and stop re-asking). Register the wait
-    // BEFORE emitting so the resumed reply can't fire before we listen.
+    // Answer in Chinese as the NEXT transcript, naming the combination explicitly. The pending
+    // question rode across in conversation history; the model may still re-ask, so answer once
+    // more if it does, then self-skip rather than fail. Register the wait BEFORE emitting.
     const answer = () => {
       const next = waitForAny(
         ['order.operations_proposed', 'order.clarification_needed', 'voice.session_failed'],
         o.cart_id,
         TURN_MS,
       );
-      bus.emit('order.clarification_answered', {
-        cart_id: o.cart_id,
-        session_id: o.session_id,
-        request_id: o.request_id,
-        answer: '套餐 B (Combination For One B) lunch',
-      });
+      emitFinal('套餐 B (Combination For One B) lunch', o, 'zh_CN');
       return next;
     };
 
-    // Answer once; if it re-asks, answer once more, then self-skip rather than fail on the
-    // documented resume re-ask gap.
     let outcome = await answer();
     if (outcome.name === 'order.clarification_needed') outcome = await answer();
     if (outcome.name === 'order.clarification_needed') {
-      return ctx.skip('model re-requested clarification after answering (known resume re-ask issue, §6.4)');
+      return ctx.skip('model re-requested clarification after answering (known re-ask gap)');
     }
 
-    expect(outcome.name, `resume failed: ${JSON.stringify(outcome.payload)}`).toBe('order.operations_proposed');
+    expect(outcome.name, `answer turn failed: ${JSON.stringify(outcome.payload)}`).toBe('order.operations_proposed');
     await expectAddItem(expectValidProposal(proposals), /combination for one/i, 1);
   });
 });

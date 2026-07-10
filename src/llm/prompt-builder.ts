@@ -21,6 +21,7 @@ export function buildPrompt(input: OrderGraphInput): LlmPrompt {
     'add_modifier / remove_modifier / remove_item / update_quantity edit an item ALREADY in current_cart and target its line_id (a string) from the cart. Never invent a line_id and never use a numeric id.',
     'Each current_cart line is self-describing: it has line_id, name, menu_item_key, its current modifiers, and its available_modifiers. Match the customer\'s reference to a line by name, then use that line\'s line_id. An add_modifier modifier_key must come from that line\'s available_modifiers; a remove_modifier modifier_key must come from that line\'s current modifiers.',
     'conversation_history holds prior turns (oldest → newest) ONLY to resolve references like "that", "the same", or "make it two". current_cart is the sole source of truth for what is in the order — never re-execute a request from conversation_history.',
+    'When a `clarification` object is present, you previously asked its `question`; the current customer_text is the answer to it — combine them to resolve the original request. If the utterance plainly does not answer that question, ignore the clarification and treat customer_text as a new request.',
     'Only add_item omits line_id. If ambiguous, set needs_clarification=true with a question.',
     `Allowed operations: ${ALLOWED_OPERATIONS.join(', ')}.`,
     '',
@@ -47,8 +48,8 @@ export function buildPrompt(input: OrderGraphInput): LlmPrompt {
       current_cart: input.current_cart,
       candidate_items: input.candidate_items,
       conversation_history: input.history,
-      clarification: input.clarification_answer !== undefined
-        ? { question: input.clarification_question, answer: input.clarification_answer }
+      clarification: input.clarification_question !== undefined
+        ? { question: input.clarification_question }
         : undefined,
     },
     null,

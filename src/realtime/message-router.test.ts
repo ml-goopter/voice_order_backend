@@ -11,7 +11,7 @@ function makeRouter() {
     handleStop: vi.fn(async () => {}),
   } as unknown as VoiceMessageHandler;
   const bus = { emit: vi.fn() } as unknown as EventBus;
-  const router = new MessageRouter(voice, bus);
+  const router = new MessageRouter(voice);
   return { voice, bus, router };
 }
 
@@ -46,26 +46,8 @@ describe('MessageRouter', () => {
     expect(voice.handleStop).toHaveBeenCalledWith(conn, msg);
   });
 
-  it('maps order.clarification_answered onto a bus event', async () => {
-    const { router, bus } = makeRouter();
-    const msg = {
-      type: 'order.clarification_answered',
-      session_id: 's1',
-      cart_id: 'cart_1',
-      request_id: 'r1',
-      answer: 'Large',
-    } as const;
-    await router.route(conn, msg);
-    expect(bus.emit).toHaveBeenCalledWith('order.clarification_answered', {
-      cart_id: 'cart_1',
-      session_id: 's1',
-      request_id: 'r1',
-      answer: 'Large',
-    });
-  });
-
   it('connection.resume is a no-op (owned by the gateway)', async () => {
-    const { router, voice, bus } = makeRouter();
+    const { router, voice } = makeRouter();
     const msg = {
       type: 'connection.resume',
       session_id: 's1',
@@ -74,7 +56,6 @@ describe('MessageRouter', () => {
     } as const;
     await router.route(conn, msg);
     expect(voice.handleStart).not.toHaveBeenCalled();
-    expect(bus.emit).not.toHaveBeenCalled();
   });
 
   it('propagates a rejected handleStart to the caller', async () => {

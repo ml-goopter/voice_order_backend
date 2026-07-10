@@ -32,13 +32,6 @@ export interface OrderClarificationNeeded {
   options?: string[];
 }
 
-export interface OrderClarificationAnswered {
-  cart_id: CartId;
-  session_id: SessionId;
-  request_id: RequestId;
-  answer: string;
-}
-
 export interface CartUpdated {
   cart_id: CartId;
   pos_config_id: PosConfigId;
@@ -73,7 +66,6 @@ export interface AppEventMap {
   'stt.final_transcript.received': SttFinalTranscriptReceived;
   'order.operations_proposed': OrderOperationsProposed;
   'order.clarification_needed': OrderClarificationNeeded;
-  'order.clarification_answered': OrderClarificationAnswered;
   'cart.updated': CartUpdated;
   'cart.operation_rejected': CartOperationRejected;
   'voice.session_failed': VoiceSessionFailed;

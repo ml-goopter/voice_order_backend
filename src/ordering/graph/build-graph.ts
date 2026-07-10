@@ -1,4 +1,4 @@
-import { StateGraph, MemorySaver, interrupt, START, END } from '@langchain/langgraph';
+import { StateGraph, MemorySaver, START, END } from '@langchain/langgraph';
 import { OrderState } from './state.js';
 import type { OrderStateType } from './state.js';
 import { node } from './instrument.js';
@@ -18,12 +18,6 @@ export interface GraphDeps {
   carts: CartCache;
 }
 
-/** Payload carried by a clarification interrupt (design §6). */
-export interface ClarificationInterrupt {
-  question: string;
-  options?: string[];
-}
-
 /** Assemble the LLM input from graph state (cart is loaded before parse runs). */
 function toInput(s: OrderStateType): OrderGraphInput {
   return {
@@ -37,74 +31,66 @@ function toInput(s: OrderStateType): OrderGraphInput {
     history: s.history,
     supported_languages: s.supported_languages,
     ...(s.language !== undefined ? { language: s.language } : {}),
-    ...(s.clarification_answer !== undefined ? { clarification_answer: s.clarification_answer } : {}),
     ...(s.clarification_question !== undefined ? { clarification_question: s.clarification_question } : {}),
   };
 }
 
 /**
  * The Order Understanding graph (design §6): normalize → load cart → retrieve
- * candidates → parse (with schema repair) → decide {propose | clarify}. The clarify
- * node interrupts (pause) and, on resume, loops back to parse with the answer so the
- * model produces final operations. Compiled with a checkpointer so pause/resume works.
+ * candidates → parse (with schema repair) → finalize. A clarification is NOT a pause:
+ * when parse asks a question the graph records it to history and ends the turn
+ * (fire-and-forget). The customer's answer arrives as the NEXT transcript; that turn's
+ * normalize sees the pending question in history and feeds it to parse as the answer.
+ * Compiled with a checkpointer so history follows the cart across turns.
  */
 export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
   return new StateGraph(OrderState)
-    // Clear the one-shot clarification_answer so a prior turn's answer never leaks into
-    // this turn's parse prompt. normalize runs only on a fresh turn (START); a resume
-    // re-enters at `clarify`, so a within-turn answer still survives to parse. Durable
-    // cart/session context persists across turns via the cart-keyed checkpointer thread.
-    .addNode('normalize', node('normalize', (s) => ({
-      customer_text: normalizeTranscript(s.customer_text),
-      clarification_answer: undefined,
-      clarification_question: undefined,
-    })))
+    // If the previous turn raised a clarification we never got an answer to, THIS utterance
+    // IS that answer: carry the pending question into parse (as `clarification_question`) so it
+    // resolves the original request against the current utterance. Otherwise clear the one-shot
+    // question so no stale clarification leaks into a fresh turn. The pending question rides in
+    // `history`; durable cart/session context persists across turns via the checkpointer thread.
+    .addNode('normalize', node('normalize', (s) => {
+      const customer_text = normalizeTranscript(s.customer_text);
+      const last = s.history.at(-1);
+      const pendingQuestion = last?.clarification_question;
+      return { customer_text, clarification_question: pendingQuestion };
+    }))
     .addNode('load_cart', node('load_cart', async (s) => {
       const cart = await loadCart(carts, s.cart_id, s.pos_config_id);
       const cart_view = await buildCartView(menu, cart);
       return { cart_view, base_version: cart.version };
     }))
     .addNode('retrieve', node('retrieve', async (s) => {
-      const candidates = await retrieveCandidates(menu, s.pos_config_id, s.customer_text);
+      const pendingQuestion = s.clarification_question
+      const retrievalText = pendingQuestion ? (`${pendingQuestion} ${s.customer_text}`) : s.customer_text
+      const candidates = await retrieveCandidates(menu, s.pos_config_id, retrievalText);
       return { candidates: candidates.items };
     }))
     .addNode('parse', node('parse', async (s) => {
       const output = await parseAndValidate(llm, toInput(s), LIMITS.llmMaxRetries);
       return { output };
     }))
-    .addNode('clarify', node('clarify', (s) => {
-      const out = s.output!;
-      const payload: ClarificationInterrupt = {
-        question: out.clarification_question!,
-        ...(out.clarification_options !== undefined ? { options: out.clarification_options } : {}),
+    // Record the completed turn. If parse RAISED a clarification this turn, keep its question
+    // so the next turn (whose utterance is the answer) has the context — the answer is not
+    // waited for, it arrives as the next transcript. A turn that resolves a prior question
+    // records only its utterance, breaking the clarification run (design §6).
+    .addNode('finalize', node('finalize', (s) => {
+      const raised = s.output?.needs_clarification ? s.output.clarification_question ?? undefined : undefined;
+      return {
+        history: [
+          {
+            customer_text: s.customer_text,
+            ...(raised !== undefined ? { clarification_question: raised } : {}),
+          },
+        ],
       };
-      const answer = interrupt(payload) as string;
-      // Loop back to parse with the answer; clear the stale clarification output. Keep the
-      // question alongside the answer so `finalize` can record it as context in history.
-      return { clarification_answer: answer, clarification_question: payload.question, output: null };
     }))
-    // Record the completed turn (utterance + any clarification answer) so the next turn's
-    // parse re-sends it as conversation context. Runs once, at the true end of the turn —
-    // both the direct-propose path and the post-resume path arrive here (design §6).
-    .addNode('finalize', node('finalize', (s) => ({
-      history: [
-        {
-          customer_text: s.customer_text,
-          ...(s.clarification_question !== undefined ? { clarification_question: s.clarification_question } : {}),
-          ...(s.clarification_answer !== undefined ? { clarification_answer: s.clarification_answer } : {}),
-        },
-      ],
-    })))
     .addEdge(START, 'normalize')
     .addEdge('normalize', 'load_cart')
     .addEdge('load_cart', 'retrieve')
     .addEdge('retrieve', 'parse')
-    .addConditionalEdges(
-      'parse',
-      (s) => (s.output?.needs_clarification ? 'clarify' : 'finalize'),
-      { clarify: 'clarify', finalize: 'finalize' },
-    )
-    .addEdge('clarify', 'parse')
+    .addEdge('parse', 'finalize')
     .addEdge('finalize', END)
     .compile({ checkpointer: new MemorySaver() });
 }

@@ -21,13 +21,6 @@ export interface VoiceStopMsg {
   type: 'voice.stop';
   session_id: SessionId;
 }
-export interface ClarificationAnsweredMsg {
-  type: 'order.clarification_answered';
-  session_id: SessionId;
-  cart_id: CartId;
-  request_id: string;
-  answer: string;
-}
 export interface ConnectionResumeMsg {
   type: 'connection.resume';
   session_id: SessionId;
@@ -39,7 +32,6 @@ export type InboundMessage =
   | VoiceStartMsg
   | VoiceAudioChunkMsg
   | VoiceStopMsg
-  | ClarificationAnsweredMsg
   | ConnectionResumeMsg;
 
 // ── Outbound (gateway → mobile app) ───────────────────────────────────────────
@@ -112,7 +104,6 @@ export function parseInbound(raw: string): InboundMessage | null {
     case 'voice.start':
     case 'voice.audio_chunk':
     case 'voice.stop':
-    case 'order.clarification_answered':
     case 'connection.resume':
       return data as InboundMessage;
     default:

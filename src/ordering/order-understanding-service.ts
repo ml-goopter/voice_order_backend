@@ -1,30 +1,23 @@
 import type { EventBus } from '../events/event-bus.js';
-import type {
-  OrderClarificationAnswered,
-  SttFinalTranscriptReceived,
-} from '../events/event-types.js';
-import type { CartId } from '../shared/types.js';
+import type { SttFinalTranscriptReceived } from '../events/event-types.js';
 import type { OrderProposal } from './schemas/proposal.js';
 import type { GraphTurnResult } from './order-graph.js';
 import { OrderGraph } from './order-graph.js';
 import { CartTurnQueue } from './cart-turn-queue.js';
-import { TIMEOUTS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { messageOf } from '../shared/errors.js';
 
-/** Safety valve: cap clarification rounds so a looping model can't freeze a cart. */
+/** Safety valve: cap consecutive clarifications so a looping model can't freeze a cart. */
 const MAX_CLARIFICATION_ROUNDS = 3;
 
 /**
  * Order Understanding module (design §6). A PURE proposer — it never mutates the
- * cart. Serializes turns per cart (Tier-1 FIFO, design §9) in front of the graph;
- * a turn awaiting clarification HOLDS its FIFO slot (so turn 2 blocks behind it) and
- * a timeout cancels a stalled clarification so the cart never freezes.
+ * cart. Serializes turns per cart (Tier-1 FIFO, design §9) in front of the graph.
+ * A clarification is fire-and-forget: the turn emits the question and ends (releasing
+ * its FIFO slot); the customer's answer arrives as the next transcript, so nothing blocks.
  */
 export class OrderUnderstandingService {
   private readonly queue = new CartTurnQueue();
-  /** cart_id → resolver for the in-flight clarification (at most one per cart, held by the FIFO). */
-  private readonly pendingClarifications = new Map<CartId, (answer: string | null) => void>();
 
   constructor(
     private readonly graph: OrderGraph,
@@ -48,7 +41,7 @@ export class OrderUnderstandingService {
     const log = logger.child({ request_id: e.request_id, cart_id: e.cart_id });
     try {
       // TODO: source supported_languages from voice_restaurant_settings.
-      let result = await this.graph.start({
+      const result = await this.graph.start({
         request_id: e.request_id,
         session_id: e.session_id,
         cart_id: e.cart_id,
@@ -58,12 +51,17 @@ export class OrderUnderstandingService {
         ...(e.language !== undefined ? { language: e.language } : {}),
       });
 
-      for (let round = 0; result.status === 'clarify'; round += 1) {
-        if (round >= MAX_CLARIFICATION_ROUNDS) {
+      if (result.status === 'clarify') {
+        // A looping model that re-clarifies every turn would freeze the cart; give up after
+        // MAX_CLARIFICATION_ROUNDS consecutive unanswered clarifications.
+        if (result.round > MAX_CLARIFICATION_ROUNDS) {
           log.warn('order.clarification_rounds_exceeded');
           this.fail(e, 'clarification_unresolved');
           return null;
         }
+        // Fire-and-forget: send the question and end the turn. The customer's answer arrives
+        // as the next transcript; the pending question is already persisted to history so the
+        // next turn's parse has the context (design §6).
         this.bus.emit('order.clarification_needed', {
           cart_id: e.cart_id,
           session_id: e.session_id,
@@ -71,14 +69,7 @@ export class OrderUnderstandingService {
           question: result.question,
           ...(result.options !== undefined ? { options: result.options } : {}),
         });
-
-        const answer = await this.awaitClarification(e.cart_id);
-        if (answer === null) {
-          log.warn('order.clarification_timeout');
-          this.fail(e, 'clarification_timeout');
-          return null;
-        }
-        result = await this.graph.resume(e.pos_config_id, e.cart_id, answer);
+        return null;
       }
 
       return result;
@@ -89,35 +80,6 @@ export class OrderUnderstandingService {
       this.fail(e, 'order_parse_failed');
       return null;
     }
-  }
-
-  /**
-   * Deliver the customer's clarification answer to the paused turn (design §6). The
-   * turn is holding its FIFO slot inside awaitClarification; this just resolves it.
-   */
-  async handleClarificationAnswer(e: OrderClarificationAnswered): Promise<void> {
-    const resolve = this.pendingClarifications.get(e.cart_id);
-    if (resolve === undefined) {
-      logger.warn('order.clarification_answer_no_pending', { cart_id: e.cart_id, request_id: e.request_id });
-      return;
-    }
-    resolve(e.answer);
-  }
-
-  /** Wait for an answer or expire after TIMEOUTS.clarificationMs (design §9 clarification stall). */
-  private awaitClarification(cart_id: CartId): Promise<string | null> {
-    return new Promise<string | null>((resolve) => {
-      const timer = setTimeout(() => {
-        this.pendingClarifications.delete(cart_id);
-        resolve(null);
-      }, TIMEOUTS.clarificationMs);
-
-      this.pendingClarifications.set(cart_id, (answer) => {
-        clearTimeout(timer);
-        this.pendingClarifications.delete(cart_id);
-        resolve(answer);
-      });
-    });
   }
 
   private propose(e: SttFinalTranscriptReceived, result: Extract<GraphTurnResult, { status: 'complete' }>): void {

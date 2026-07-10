@@ -37,7 +37,6 @@ export interface HistoryTurn {
   customer_text: string;
   /** Present when the turn was clarified — the question is kept so the answer has context. */
   clarification_question?: string;
-  clarification_answer?: string;
 }
 
 export interface OrderGraphInput {
@@ -52,8 +51,6 @@ export interface OrderGraphInput {
   /** Prior turns (oldest → newest), for resolving references like "that" / "the same". */
   history: HistoryTurn[];
   supported_languages: LangCode[];
-  /** Present when resuming after a clarification (design §6 clarification loop). */
-  clarification_answer?: string;
-  /** The question posed on the previous clarify, sent back with the answer for context. */
+  /** The question posed on the previous (unanswered) clarify; the current utterance answers it. */
   clarification_question?: string;
 }
