@@ -7,6 +7,42 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-09 — Plan doc for a voice-session idle/silence timeout
+- **What:** Added `docs/voice-idle-timeout.md` — a proposed (not implemented) plan to
+  end a `listening` voice session after N seconds of silence. Key point: audio chunks
+  stream continuously while the mic is open, so the idle timer must reset on transcript
+  activity (`onPartial`/`onFinal`), never on `voice.audio_chunk`.
+- **Why:** Nothing currently ends a session on customer silence; it leaves `listening`
+  only on explicit `voice.stop`, disconnect, or STT error.
+- **Where:** `docs/voice-idle-timeout.md`. Docs only — no code change.
+
+## 2026-07-09 — Add Chinese-language e2e coverage to the LLM pipeline suite
+- **What:** New `describe('Chinese-language support (zh_CN, cross-language matching)')`
+  block in `E2E/llm_pipeline.e2e.ts` with 5 tests (happy-path add, quantity 两份→2,
+  modifier add 加西兰花→add Broccoli, modifier omit 走西兰花→no Broccoli, clarification
+  套餐→resume answered in Chinese). Extended the `emitFinal` helper with an optional
+  `language` arg so transcripts carry `language: 'zh_CN'` (what STT would tag).
+- **Why:** The suite exercised only English utterances; cross-language matching (the
+  design §7/§15 premise — multilingual Jina embeddings map a Chinese utterance to the
+  same menu items) had no end-to-end coverage.
+- **Where:** `E2E/llm_pipeline.e2e.ts` (test-only; no product code changed).
+- **Notes:** Phrases use the real Jade Garden `zh_CN` menu terms in Redis (咕嚕雞,
+  炸云吞, 套餐, 加西兰花/走西兰花). Assertions still key off each item's `en_US` name,
+  so the existing helpers are reused unchanged. Tolerant like the English tests
+  (self-skip on non-determinism). Not run here.
+
+## 2026-07-09 — Document current data schemas in design.md
+- **What:** Added a "Data Schemas" section (§17) to `docs/design.md` capturing the
+  implemented shapes: identity families (our text keys vs Odoo integer soft refs),
+  the two data stores, stored `Cart`/`CartLine`/`CartModifier`, menu/candidate types,
+  the LLM contract (`OrderGraphInput`, `CartOperation` union, `OrderGraphOutput`,
+  `OrderProposal`), `AppEventMap` payloads, WebSocket messages, and the contract-key →
+  Odoo-id mapping. Fixed the stale §9 Redis cart shape (was `menu_item_key`/flat money;
+  now `product_tmpl_id`/`ptav_id`/`*_cents`/combo fields, key `cart:{cart_id}`).
+- **Why:** design.md carried a `data schema` TODO and the §9 Redis block predated the
+  move to Odoo integer ids and cents-based money.
+- **Where:** `docs/design.md` (§9, new §17). Docs only — no code change.
+
 ## 2026-07-09 — Send clarification question with the answer on resume
 - **What:** Thread the prior `clarification_question` through to the resumed parse
   prompt. Added `clarification_question?` to `OrderGraphInput`; `toInput` now copies it

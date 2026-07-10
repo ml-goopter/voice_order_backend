@@ -61,6 +61,8 @@ Direct calls inside modules.
 flowchart TD
     A[Mobile App] <-->|One WebSocket connection| B[Realtime Gateway]
 
+    A -->|POST /orders/confirm| T[Order REST API]
+
     B -->|voice.audio_chunk| C[Voice Module]
     C -->|Stream audio| D[Cloud STT Provider]
 
@@ -95,6 +97,8 @@ flowchart TD
     E -.->|Resume LangGraph| F
 
     E -.->|Handle operations_proposed| O[Cart Module]
+    T -->|Confirm order| O
+
     O --> P[Cart Validator]
     P --> Q[Cart Controller]
     Q --> R[(Redis Cart Cache)]
@@ -103,7 +107,8 @@ flowchart TD
     E -.->|cart.updated| B
     B -->|Update cart UI| A
 
-    Q -->|On customer confirmation| S[(Database)]
+    Q -->|On customer confirmation| S[Odoo endpoints]
+    R <-->|Sync db data on change| S
 ```
 
 ### Core internal events
@@ -237,7 +242,8 @@ restaurant language settings, supported menu languages, session/cart metadata.
 
 **Output:** proposed operations, a clarification question, or a failure result.
 
-### LangGraph responsibilities
+### LangGraph responsibilities 
+[see details](LLM-graph.md)
 
 Owns multi-turn state, clarification loops (pause/resume), LLM orchestration, and
 structured proposal. It does **not** touch raw audio, WebSocket lifecycle, STT,
@@ -471,11 +477,16 @@ confirmed orders and recovery snapshots. Consider periodic snapshots of active
 carts if losing them would be unacceptable.
 
 ```
-key:  cart:{restaurant_id}:{cart_id}
-value: cart_id, restaurant_id, version,
-       items: [ { line_id, menu_item_key, quantity, modifiers[] } ],
-       subtotal, taxes/fees, last_updated
+key:  cart:{cart_id}          # cart_id is globally unique; not namespaced by pos_config_id
+value: cart_id, pos_config_id, version,
+       items: [ { line_id, product_tmpl_id, product_id?, name, quantity,
+                  modifiers: [ { ptav_id, name } ],
+                  combo_id?, combo_choices?: [ product_id ] } ],
+       subtotal_cents, tax_cents, total_cents, last_updated
 ```
+
+The stored cart speaks Odoo integer ids, not the `menu_item_key`/`modifier_key`
+the LLM emits — the Cart Module resolves keys → ids on apply. Full shapes in §17.
 
 ### Concurrency on a shared cart
 
@@ -871,5 +882,218 @@ text is ~3–8 M tokens/month at ~$0.02/1M. Not worth a column.
 - Vector DB for menu items if the menu grows large (a single markdown/in-memory
   store likely suffices under ~2,000 items; a local vector DB is heavy overhead).
 
-## TODOs:
-- data schema 
+---
+
+## 17. Data Schemas
+
+The authoritative shapes as implemented. Two identity families and two data
+stores; contract-facing keys map to Odoo integer ids at the data layer.
+
+### 17.1 Identity families
+
+Our own identities are opaque **text keys**; Odoo (POS) entities are referenced
+by their **integer primary key** as a *soft* reference — no cross-schema FK,
+because Odoo's ORM owns those tables' lifecycle.
+
+```ts
+// Ours (text keys)
+type CartId    = string; // "cart_456" — globally unique; it is the Redis cart key
+type SessionId = string; // "voice_session_123"
+type RequestId = string; // "voice_final_abc123" — idempotency key
+type LineId    = string; // "ln_1" — assigned by the Cart Module
+
+// Odoo POS (integer soft refs)
+type PosConfigId      = number; // pos_config.id (the "restaurant")
+type ProductTmplId    = number; // product_template.id (menu item / catalog)
+type ProductId        = number; // product_product.id (sellable variant)
+type PtavId           = number; // product_template_attribute_value.id (a modifier)
+type RestaurantTableId = number; // restaurant_table.id
+type PosOrderId       = number; // pos_order.id (confirmed order)
+
+// Values
+type LangCode = string; // Odoo res.lang code, e.g. "en_US", "zh_CN" (not bare "en")
+type Cents    = number; // integer minor units
+```
+
+### 17.2 Two data stores
+
+| Store | Holds | Ownership |
+|---|---|---|
+| **Redis** | live active carts **and** our durable app state (cart registry + recovery snapshots, sessions, transcripts, clarifications, server calls, idempotency ledger, order-confirmation bridge) | ours |
+| **Odoo POS Postgres** | menu (`product_template`/`product_product`), modifiers (`product_attribute*`), categories, combos, floors/tables (`restaurant_table`), restaurants (`pos_config`), **confirmed orders** (`pos_order`) | Odoo ORM — we READ, never alter |
+
+The app has **no local Postgres**. See `src/db/schema/README.md` and
+`docs/menu_restaurant_schema.md` for the Odoo POS reference.
+
+### 17.3 Stored cart (Redis)
+
+The Redis value; the Cart Module is its only writer. Odoo integer ids, money in
+integer cents.
+
+```ts
+interface CartModifier {
+  ptav_id: PtavId;
+  name: string;              // display name captured at add time
+}
+
+interface CartLine {
+  line_id: LineId;
+  product_tmpl_id: ProductTmplId;
+  product_id?: ProductId;    // resolved sellable variant, if known
+  name: string;              // display name captured at add time (en_US fallback)
+  quantity: number;
+  modifiers: CartModifier[];
+  combo_id?: number;
+  combo_choices?: ProductId[];
+}
+
+interface Cart {
+  cart_id: CartId;
+  pos_config_id: PosConfigId;
+  version: number;           // optimistic-concurrency counter (§9)
+  items: CartLine[];
+  subtotal_cents: Cents;
+  tax_cents: Cents;
+  total_cents: Cents;
+  last_updated: string;      // ISO
+}
+```
+
+Key: `cart:{cart_id}`. A recovery snapshot mirrors this JSON so the hot cart can
+be rebuilt after a loss.
+
+### 17.4 Menu (in-memory cache)
+
+Loaded from Odoo `product_template`; multiple vectors per item drive
+cross-language matching (§7/§15).
+
+```ts
+interface MenuItem {
+  product_tmpl_id: ProductTmplId;
+  menu_item_key: string;               // catalog key exposed to the LLM
+  names: Record<LangCode, string>;     // Odoo jsonb translations, e.g. { en_US: "Chicken Burger" }
+  base_price_cents: number;
+  available: boolean;
+  modifiers: CandidateModifier[];
+}
+
+interface MenuVector { text: string; vector: number[]; }
+
+interface CandidateModifier { modifier_key: string; ptav_id: PtavId; name: string; }
+
+interface CandidateItem {
+  menu_item_key: string;               // maps to product_tmpl_id
+  product_tmpl_id: ProductTmplId;
+  name: string;
+  matched_text?: string;
+  score?: number;
+  available_modifiers: CandidateModifier[];
+}
+
+interface CandidateSet { items: CandidateItem[]; }
+```
+
+### 17.5 LLM / Order Understanding contract
+
+The LLM speaks catalog **keys** (`menu_item_key` / `modifier_key`), never numeric
+ids — the prompt-facing `CartView` deliberately omits `product_tmpl_id`/`ptav_id`
+so the model can't confuse one for a `line_id`. See the §8 JSON examples.
+
+```ts
+// Prompt-facing cart projection (NOT the stored Cart)
+interface CartModifierView { modifier_key: string; name: string; }
+interface CartLineView {
+  line_id: LineId; menu_item_key: string; name: string; quantity: number;
+  modifiers: CartModifierView[]; available_modifiers: CartModifierView[];
+}
+interface CartView { cart_id: CartId; pos_config_id: PosConfigId; version: number; items: CartLineView[]; }
+
+interface HistoryTurn {
+  customer_text: string;
+  clarification_question?: string;     // present when the turn was clarified
+  clarification_answer?: string;
+}
+
+interface OrderGraphInput {
+  request_id: RequestId; session_id: SessionId; cart_id: CartId; pos_config_id: PosConfigId;
+  customer_text: string; language?: LangCode;
+  current_cart: CartView; candidate_items: CandidateItem[];
+  history: HistoryTurn[];              // oldest → newest, for reference resolution
+  supported_languages: LangCode[];
+  clarification_answer?: string;       // present when resuming after a clarification
+  clarification_question?: string;
+}
+
+// LLM output — validated with zod (single source of truth)
+type CartOperation =
+  | { action: 'add_item';        menu_item_key: string; quantity: number; modifiers: { modifier_key: string }[] }
+  | { action: 'remove_item';     line_id: LineId }
+  | { action: 'update_quantity'; line_id: LineId; quantity: number }
+  | { action: 'add_modifier';    line_id: LineId; modifier_key: string }
+  | { action: 'remove_modifier'; line_id: LineId; modifier_key: string };
+
+interface OrderGraphOutput {
+  operations: CartOperation[];
+  needs_clarification: boolean;        // true requires a non-null clarification_question
+  clarification_question: string | null;
+  clarification_options?: string[];
+}
+
+// What Order Understanding hands the Cart Module (carries base_version for rebase, §9)
+interface OrderProposal {
+  request_id: RequestId; cart_id: CartId; pos_config_id: PosConfigId;
+  base_version: number; operations: CartOperation[];
+}
+```
+
+### 17.6 Internal events (`AppEventMap`)
+
+Payloads for the core events in §2. Modules communicate ONLY through these.
+
+```ts
+'stt.final_transcript.received': { request_id; session_id; cart_id; pos_config_id; text; language? }
+'order.operations_proposed':     { session_id; proposal: OrderProposal }
+'order.clarification_needed':    { cart_id; session_id; request_id; question; options? }
+'order.clarification_answered':  { cart_id; session_id; request_id; answer }
+'cart.updated':                  { cart_id; pos_config_id; version; cart: Cart }
+'cart.operation_rejected':       { cart_id; session_id?; request_id; reason; message; operation? }
+'voice.session_failed':          { session_id; cart_id; reason }
+'voice.session_ended':           { session_id; cart_id }
+```
+
+`cart.operation_rejected.reason` is one of `line_gone` / `stale_edit` /
+`unavailable_item` / … ; `message` is customer-facing.
+
+### 17.7 WebSocket messages (one socket, §3)
+
+```ts
+// Inbound (app → gateway)
+{ type: 'voice.start';       session_id; cart_id }
+{ type: 'voice.audio_chunk'; session_id; seq; audio }        // audio: base64 PCM/opus
+{ type: 'voice.stop';        session_id }
+{ type: 'order.clarification_answered'; session_id; cart_id; request_id; answer }
+{ type: 'connection.resume'; session_id; cart_id; last_seen_cart_version }
+
+// Outbound (gateway → app)
+{ type: 'voice.partial_transcript'; session_id; text }        // display-only
+{ type: 'voice.final_transcript';   session_id; text; language? }
+{ type: 'order.clarification_needed'; cart_id; request_id; question; options? }
+{ type: 'cart.updated';             cart_id; version; cart: Cart }
+{ type: 'cart.operation_rejected';  cart_id; request_id; reason; message }
+{ type: 'voice.error';              session_id; reason; message }
+{ type: 'connection.resumed';       session_id; cart_id; cart_version; cart: Cart; voice_session_status }
+```
+
+### 17.8 Contract keys → Odoo ids
+
+The §7/§8 JSON contract uses keys; the Menu Candidate Matcher maps them to Odoo
+rows.
+
+| Contract term | Data-layer identity (Odoo) |
+|---|---|
+| `restaurant_id` | `pos_config.id` (`pos_config_id`) |
+| `menu_item_key` | `product_template.id` (`product_tmpl_id`) / `product_product.id` (`product_id`) |
+| `modifier_key` | `product_template_attribute_value.id` (`ptav_id`, carries `price_extra`) |
+| table | `restaurant_table.id` (`restaurant_table_id`) |
+| confirmed order | `pos_order.id` (`pos_order_id`) |
+| `line_id` | ours — assigned by the Cart Module, unrelated to Odoo |
