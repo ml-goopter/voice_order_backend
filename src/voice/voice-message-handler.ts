@@ -36,7 +36,15 @@ export class VoiceMessageHandler {
     try {
       session.stream = await this.stt.openStream({
         // Partial: display-only, straight back to the client (never enters backend flow, §3).
-        onPartial: (text) => conn.send({ type: 'voice.partial_transcript', session_id: session.session_id, text }),
+        onPartial: (text) => {
+          conn.send({ type: 'voice.partial_transcript', session_id: session.session_id, text });
+          // Reset the stopped-talking timer only on real speech progress — ignore empty or
+          // keepalive partials and verbatim repeats so a genuine silence can actually elapse.
+          if (text.trim() !== '' && text !== session.lastPartialText) {
+            session.lastPartialText = text;
+            this.armIdleStop(conn, session);
+          }
+        },
         // Final: the one signal that may touch the cart (§11 invariant).
         onFinal: (text, language) => {
           // A final that lands after the session already went terminal (timeout-failed,
@@ -77,8 +85,17 @@ export class VoiceMessageHandler {
             session.status = 'ended';
             this.bus.emit('voice.session_ended', { session_id: session.session_id, cart_id: session.cart_id });
           }
+          // A final is speech activity: reset the stopped-talking countdown for the next
+          // utterance (no-op once the session ended above). Clear the last partial so the
+          // next utterance's first partial always registers as fresh progress.
+          session.lastPartialText = '';
+          this.armIdleStop(conn, session);
         },
         onError: (error) => {
+          if (session.stopTimer) {
+            clearTimeout(session.stopTimer);
+            session.stopTimer = null;
+          }
           session.status = 'failed';
           logger.warn('voice.stt_error', { session_id: session.session_id, error: error.message });
           conn.send({
@@ -144,8 +161,13 @@ export class VoiceMessageHandler {
     // a grace window is pending (finalTimer set), or the session already went terminal.
     // Re-running would flush a closing socket and orphan the first timer.
     if (session.stopping || session.finalTimer || session.status === 'ended' || session.status === 'failed') return;
-    // Committed to stopping: stop feeding audio into the stream we're about to flush.
+    // Committed to stopping: stop feeding audio into the stream we're about to flush,
+    // and disarm the stopped-talking timer (this stop supersedes it).
     session.stopping = true;
+    if (session.stopTimer) {
+      clearTimeout(session.stopTimer);
+      session.stopTimer = null;
+    }
     // Flush the stream; a pending final may be delivered during/just after this.
     await session.stream.stop();
     if (session.finalReceived) {
@@ -183,8 +205,34 @@ export class VoiceMessageHandler {
         clearTimeout(session.finalTimer);
         session.finalTimer = null;
       }
+      if (session.stopTimer) {
+        clearTimeout(session.stopTimer);
+        session.stopTimer = null;
+      }
       if (session.status === 'listening') session.status = 'interrupted';
     }
     this.manager.remove(session_id);
+  }
+
+  /**
+   * Arm (or reset) the stopped-talking timer: if no further speech activity arrives
+   * within `TIMEOUTS.partialIdleMs`, auto-fire voice.stop so the customer need not press
+   * stop. Only tracked while actively listening — audio chunks keep flowing during
+   * silence, so the timer rides on transcript activity (partials/finals), not audio.
+   */
+  private armIdleStop(conn: ClientConnection, session: VoiceSession): void {
+    if (session.stopTimer) {
+      clearTimeout(session.stopTimer);
+      session.stopTimer = null;
+    }
+    if (session.status !== 'listening' || session.stopping) return;
+    session.stopTimer = setTimeout(() => {
+      session.stopTimer = null;
+      if (session.status !== 'listening' || session.stopping) return;
+      // No new speech for partialIdleMs → end-of-turn. Same flush/grace path as voice.stop.
+      void this.handleStop(conn, { type: 'voice.stop', session_id: session.session_id });
+    }, TIMEOUTS.partialIdleMs);
+    // Housekeeping timer: never keep the process alive on its own account.
+    session.stopTimer.unref?.();
   }
 }
