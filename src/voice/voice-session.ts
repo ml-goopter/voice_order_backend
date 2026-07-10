@@ -13,6 +13,10 @@ export class VoiceSession {
   stopping = false;
   /** Armed after voice.stop while awaiting a final (§11.2 C); cleared on final/disconnect. */
   finalTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Armed on speech activity; auto-fires voice.stop when no new partial arrives (customer stopped talking). */
+  stopTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Last partial text seen — gates stopTimer resets to real speech progress (ignores keepalive/repeat partials). */
+  lastPartialText = '';
   /** Audio that arrived before the STT stream finished connecting; flushed in order once it opens. */
   pendingAudio: Buffer[] = [];
 

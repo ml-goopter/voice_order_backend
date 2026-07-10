@@ -31,6 +31,15 @@ that may eventually touch the cart (§11 invariant).
 - `handleAudioChunk` forwards base64 audio to the stream (only while `listening` and
   not yet `stopping` — `voice.stop` sets `stopping` so trailing chunks aren't fed
   into the flushing stream).
+- **Stopped-talking detection** — `armIdleStop` (re)arms a per-session `stopTimer` on real
+  speech progress (a growing partial or a final; empty/keepalive and verbatim-repeat
+  partials are ignored via `lastPartialText`). It is never reset by `voice.audio_chunk`,
+  since the mic keeps streaming audio during silence. If no progress arrives within
+  `TIMEOUTS.partialIdleMs` (2.5 s) while `listening`, it auto-invokes `handleStop` — the
+  same flush/grace path as a client `voice.stop`. Cleared on stop, disconnect, and STT
+  error; `unref`'d so it never holds the process open. This is the shorter turn-level
+  end-of-turn signal; the separate ~20–30 s session-idle "walked away" backstop
+  (`docs/voice-idle-timeout.md`) is still only proposed.
 - `handleStop` ignores a repeat/concurrent `voice.stop` (guarded on `stopping`,
   which is set before the flush await, plus a pending timer / terminal status) so an
   overlapping stop never double-flushes the socket, then flushes the stream. If a
