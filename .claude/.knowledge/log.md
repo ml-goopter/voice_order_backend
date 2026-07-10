@@ -54,6 +54,22 @@ timestamp: 2026-07-07
 - **Notes:** Client-facing contract change — the app must stop sending
   `order.clarification_answered` and simply send the next utterance. `MemorySaver` is
   still in-process, so a pending question is lost on restart (unchanged caveat).
+## 2026-07-10 — Partial-transcript stop detection (auto-end the turn on silence)
+- **What:** The voice handler now auto-fires `voice.stop` when no new partial transcript
+  arrives within `TIMEOUTS.partialIdleMs` (2.5 s) — "the customer stopped talking." A
+  `stopTimer` on `VoiceSession` is (re)armed on real speech progress (a growing partial
+  or a final), never on `voice.audio_chunk` (silence still streams audio); empty/keepalive
+  and verbatim-repeat partials are ignored via `lastPartialText`. On fire it reuses
+  `handleStop`, so the flush + `finalTranscriptMs` grace window behave exactly like a
+  client-sent stop. The timer is cleared on `handleStop`, disconnect, and STT error, and
+  is `unref`'d so it never keeps the process alive.
+- **Why:** The turn previously ended only on an explicit client `voice.stop`; customers
+  had to signal end-of-turn manually. This detects end-of-turn from transcript inactivity.
+  (Distinct from the longer session-idle "walked away" backstop in `voice-idle-timeout.md`.)
+- **Where:** `config/constants.ts` (`partialIdleMs`), `voice/voice-session.ts`
+  (`stopTimer`, `lastPartialText`), `voice/voice-message-handler.ts` (`armIdleStop`,
+  `onPartial`/`onFinal` reset, clears in stop/disconnect/error),
+  `voice/voice-message-handler.test.ts` (5 new tests), `docs/customer-stop-detection.md`.
 
 ## 2026-07-09 — Plan doc for a voice-session idle/silence timeout
 - **What:** Added `docs/voice-idle-timeout.md` — a proposed (not implemented) plan to

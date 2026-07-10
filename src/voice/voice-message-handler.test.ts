@@ -260,4 +260,98 @@ describe('VoiceMessageHandler', () => {
     expect(stt.stream.close).toHaveBeenCalledTimes(1); // via manager.remove
     expect(manager.get('s1')).toBeUndefined();
   });
+
+  describe('stopped-talking detection (partial-idle auto-stop)', () => {
+    it('auto-ends the turn when no new partial arrives after speech began', async () => {
+      vi.useFakeTimers();
+      try {
+        const { handler, conn, stt, events } = setup();
+        await handler.handleStart(conn, startMsg);
+        stt.handlers.onPartial('two burgers'); // speech → arms the stopped-talking timer
+        stt.handlers.onFinal('two burgers', 'en'); // a final is on record, session keeps listening
+
+        vi.advanceTimersByTime(TIMEOUTS.partialIdleMs); // silence elapses → auto voice.stop
+        await vi.runAllTimersAsync(); // let the async handleStop flush settle
+
+        expect(stt.stream.stop).toHaveBeenCalledTimes(1); // flushed once, as if the client stopped
+        expect(events['voice.session_ended']).toHaveLength(1); // final already present → clean end
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not reset the timer on audio chunks (silence still streams audio)', async () => {
+      vi.useFakeTimers();
+      try {
+        const { handler, conn, stt } = setup();
+        await handler.handleStart(conn, startMsg);
+        stt.handlers.onPartial('one coke'); // arms the timer
+
+        vi.advanceTimersByTime(1_000);
+        handler.handleAudioChunk(conn, { type: 'voice.audio_chunk', session_id: 's1', seq: 1, audio: 'AAA=' });
+        vi.advanceTimersByTime(TIMEOUTS.partialIdleMs - 1_000); // reaches the original deadline
+        await vi.runAllTimersAsync();
+
+        expect(stt.stream.stop).toHaveBeenCalledTimes(1); // audio did not push the deadline back
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a growing partial resets the timer; a repeat/keepalive partial does not', async () => {
+      vi.useFakeTimers();
+      try {
+        const { handler, conn, stt } = setup();
+        await handler.handleStart(conn, startMsg);
+
+        stt.handlers.onPartial('one'); // arm at t0
+        vi.advanceTimersByTime(TIMEOUTS.partialIdleMs - 500);
+        stt.handlers.onPartial('one'); // identical → NOT a reset
+        stt.handlers.onPartial(''); // empty/keepalive → NOT a reset
+        vi.advanceTimersByTime(400);
+        expect(stt.stream.stop).not.toHaveBeenCalled(); // still before the original deadline
+
+        stt.handlers.onPartial('one two'); // grew → resets the countdown
+        vi.advanceTimersByTime(TIMEOUTS.partialIdleMs - 100);
+        expect(stt.stream.stop).not.toHaveBeenCalled(); // reset pushed the deadline out
+        vi.advanceTimersByTime(100);
+        await vi.runAllTimersAsync();
+        expect(stt.stream.stop).toHaveBeenCalledTimes(1); // fires one partialIdleMs after the growth
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('an explicit voice.stop disarms the timer (no double stop)', async () => {
+      vi.useFakeTimers();
+      try {
+        const { handler, conn, stt } = setup();
+        await handler.handleStart(conn, startMsg);
+        stt.handlers.onPartial('one coke'); // arms the timer
+        await handler.handleStop(conn, stopMsg); // manual stop clears it
+
+        vi.advanceTimersByTime(TIMEOUTS.partialIdleMs * 2);
+        await vi.runAllTimersAsync();
+        expect(stt.stream.stop).toHaveBeenCalledTimes(1); // only the manual stop, timer never fired
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a disconnect disarms the timer', async () => {
+      vi.useFakeTimers();
+      try {
+        const { handler, conn, stt } = setup();
+        await handler.handleStart(conn, startMsg);
+        stt.handlers.onPartial('one coke'); // arms the timer
+        handler.handleDisconnect('s1'); // clears it and removes the session
+
+        vi.advanceTimersByTime(TIMEOUTS.partialIdleMs * 2);
+        await vi.runAllTimersAsync();
+        expect(stt.stream.stop).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });
