@@ -6,9 +6,9 @@ import { OrderGraph } from './order-graph.js';
 import { CartTurnQueue } from './cart-turn-queue.js';
 import { logger } from '../config/logger.js';
 import { messageOf } from '../shared/errors.js';
-
+import { LIMITS } from '../config/constants.js';
 /** Safety valve: cap consecutive clarifications so a looping model can't freeze a cart. */
-const MAX_CLARIFICATION_ROUNDS = 3;
+const MAX_CLARIFICATION_ROUNDS = LIMITS.maxClarifications;
 
 /**
  * Order Understanding module (design §6). A PURE proposer — it never mutates the
@@ -22,7 +22,7 @@ export class OrderUnderstandingService {
   constructor(
     private readonly graph: OrderGraph,
     private readonly bus: EventBus,
-  ) {}
+  ) { }
 
   async handleFinalTranscript(e: SttFinalTranscriptReceived): Promise<void> {
     await this.queue.enqueue(e.cart_id, async () => {
