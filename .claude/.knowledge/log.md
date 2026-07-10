@@ -7,6 +7,55 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-10 — Cross-event log traceability (request_id threading)
+- **What:** (1) `voice-message-handler` now logs `voice.final_transcript`
+  `{ request_id, session_id, cart_id }` where the turn id is minted — the join point
+  from a socket (session_id) to its turn (request_id). (2) Added top-level `request_id`
+  (+`cart_id`) to the `order.operations_proposed` payload and `request_id` to
+  `cart.updated`, so the event-bus `event.emit` correlation log keeps the turn thread
+  across the propose→apply→update hops (previously it dropped to session-only / cart-only).
+- **Why:** A single user turn could not be traced end-to-end through the logs: the
+  event-bus trace is the one cross-cutting line, but two payloads didn't expose
+  `request_id`, and nothing bound session_id↔request_id together.
+- **Where:** `src/voice/voice-message-handler.ts`, `src/ordering/order-understanding-service.ts`,
+  `src/cart/cart-controller.ts`, `src/events/event-types.ts` (payload contracts).
+- **Notes:** Additive fields only — consumers (`cart/register-handlers`, realtime gateway)
+  ignore the extra keys. `event.emit` remains DEBUG-level, so a full trace still requires
+  `LOG_LEVEL=debug`. Tests updated in voice/ordering/cart/realtime/event-bus suites (247 passing).
+- **What:** Added `events/event-bus.test.ts`, `redis/redis-client.test.ts`, realtime
+  `client-registry`/`message-router`/`realtime-message-types`/`realtime-gateway` tests,
+  and extended `redis/cart-cache.test.ts` with `InMemoryCartCache` + `cartKey` (60 new
+  tests). event-bus covers delivery/order/`off`/isolation, the **no-error-isolation**
+  behavior (a throwing handler escapes `emit`), and conditional correlation-logging;
+  gateway covers multi-device `cart.updated` broadcast, `cart.operation_rejected`
+  targeting, clarification option-omission, disconnect→voice cleanup, and resume fallback.
+- **Why:** Close the remaining top-priority audit gaps; the event bus (app backbone) and
+  realtime routing had no direct coverage.
+- **Where:** `src/events/`, `src/redis/`, `src/realtime/`; audit doc updated.
+- **Notes:** `ioredis` mocked via `vi.mock` with an instance-capturing fake. Full suite
+  now 246 passing.
+
+## 2026-07-10 — Unit tests for the llm module
+- **What:** Added `prompt-builder.test.ts`, `openai-compatible-provider.test.ts`, and
+  `llm-client.test.ts` (21 tests). Covers the "keep full `available_modifiers`" prompt
+  invariant, clarification-block branches, repair prompt, provider request mapping
+  (`temperature:0`, `response_format json_object`), missing-`LLM_API_KEY` throw,
+  empty-content warn, SDK rejection propagation, and the provider factory + stub.
+- **Why:** Close the top-priority gaps from the coverage audit; the llm module had none.
+- **Where:** `src/llm/`; audit doc `docs/unit-test-coverage-audit.md` updated.
+- **Notes:** `openai` SDK mocked via `vi.mock`; config-dependent branches use env set
+  before import + `vi.resetModules()` for the missing-key / provider-switch cases.
+  Full suite now 186 passing.
+
+## 2026-07-09 — Unit test coverage audit
+- **What:** Added `docs/unit-test-coverage-audit.md` — a per-module review of missing
+  unit tests (status table, top-12 prioritized gaps, per-file detail).
+- **Why:** Establish a coverage baseline and prioritize which units to test next.
+- **Where:** docs only; no source changes.
+- **Notes:** Flags two structural items — `event-bus` has no handler error isolation
+  (a throwing subscriber breaks `emit`), and `env.ts`/`logger.ts` bind config at import
+  time so tests need `vi.resetModules()`.
+
 ## 2026-07-09 — Send clarification question with the answer on resume
 - **What:** Thread the prior `clarification_question` through to the resumed parse
   prompt. Added `clarification_question?` to `OrderGraphInput`; `toInput` now copies it

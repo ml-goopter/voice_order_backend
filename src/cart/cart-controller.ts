@@ -90,6 +90,8 @@ export class CartController {
           pos_config_id: updatedCart.pos_config_id,
           version: updatedCart.version,
           cart: updatedCart,
+          // The turn that produced this update, so the event-bus log can trace it.
+          request_id: proposal.request_id,
         });
       }
 

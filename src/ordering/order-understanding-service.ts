@@ -128,7 +128,14 @@ export class OrderUnderstandingService {
       base_version: result.base_version,
       operations: result.output.operations,
     };
-    this.bus.emit('order.operations_proposed', { session_id: e.session_id, proposal });
+    // request_id/cart_id are hoisted to the top level (they also live inside `proposal`)
+    // so the event-bus correlation log keeps the turn thread across this hop.
+    this.bus.emit('order.operations_proposed', {
+      session_id: e.session_id,
+      request_id: proposal.request_id,
+      cart_id: proposal.cart_id,
+      proposal,
+    });
   }
 
   private fail(e: SttFinalTranscriptReceived, reason: string): void {
