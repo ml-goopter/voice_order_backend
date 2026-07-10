@@ -7,6 +7,25 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-10 — Drop the `clarification_answer` plumbing (keep the question)
+- **What:** Removed everything named `clarification_answer` — the never-written
+  `HistoryTurn.clarification_answer` field, the `clarification_answer` graph state channel,
+  the `OrderGraphInput.clarification_answer` field, and the prompt's `answer` in the
+  `clarification` block. `clarification_question` stays and is now the sole carrier: the
+  prompt sends `clarification: { question }`, and the model is told the current
+  `customer_text` is the answer. Also removed the always-true `clarification_answer ===
+  undefined` guards in `trailingClarificationRun` and the `normalize` node.
+- **Why:** The answer field was redundant with the question already riding in
+  `conversation_history` (and on `HistoryTurn` it was read but never set — dead code). The
+  utterance itself is the answer, so a separate round-tripped answer added no signal.
+- **Where:** `ordering/schemas/order-graph-input.schema.ts`, `ordering/graph/state.ts`,
+  `ordering/graph/build-graph.ts` (normalize), `llm/prompt-builder.ts`; tests in
+  `graph/state.test.ts`, `llm/prompt-builder.test.ts`, `order-understanding-service.test.ts`.
+- **Notes:** Behavior-preserving for the fire-and-forget clarification loop — the model still
+  asks questions (`needs_clarification` output + `order.clarification_needed` event unchanged)
+  and still resolves them from the pending question. The `retrieve` node also augments its
+  query with the pending `clarification_question` for better candidate recall.
+
 ## 2026-07-10 — Fire-and-forget clarifications (no more waiting/resume)
 - **What:** The clarify flow no longer pauses the turn. When `parse` sets
   `needs_clarification`, `finalize` records the question into `history` and the graph

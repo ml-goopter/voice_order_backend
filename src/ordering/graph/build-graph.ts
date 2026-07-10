@@ -31,7 +31,6 @@ function toInput(s: OrderStateType): OrderGraphInput {
     history: s.history,
     supported_languages: s.supported_languages,
     ...(s.language !== undefined ? { language: s.language } : {}),
-    ...(s.clarification_answer !== undefined ? { clarification_answer: s.clarification_answer } : {}),
     ...(s.clarification_question !== undefined ? { clarification_question: s.clarification_question } : {}),
   };
 }
@@ -47,20 +46,15 @@ function toInput(s: OrderStateType): OrderGraphInput {
 export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
   return new StateGraph(OrderState)
     // If the previous turn raised a clarification we never got an answer to, THIS utterance
-    // IS that answer: pass the {question, answer} pair to parse so it resolves the original
-    // request. Otherwise clear the one-shot clarification fields so no stale clarification
-    // leaks into a fresh turn. The pending question rides in `history`; durable cart/session
-    // context persists across turns via the cart-keyed checkpointer thread.
+    // IS that answer: carry the pending question into parse (as `clarification_question`) so it
+    // resolves the original request against the current utterance. Otherwise clear the one-shot
+    // question so no stale clarification leaks into a fresh turn. The pending question rides in
+    // `history`; durable cart/session context persists across turns via the checkpointer thread.
     .addNode('normalize', node('normalize', (s) => {
       const customer_text = normalizeTranscript(s.customer_text);
       const last = s.history.at(-1);
-      const pendingQuestion =
-        last?.clarification_question !== undefined && last.clarification_answer === undefined
-          ? last.clarification_question
-          : undefined;
-      return pendingQuestion !== undefined
-        ? { customer_text, clarification_question: pendingQuestion, clarification_answer: customer_text }
-        : { customer_text, clarification_answer: undefined, clarification_question: undefined };
+      const pendingQuestion = last?.clarification_question;
+      return { customer_text, clarification_question: pendingQuestion };
     }))
     .addNode('load_cart', node('load_cart', async (s) => {
       const cart = await loadCart(carts, s.cart_id, s.pos_config_id);
@@ -68,7 +62,10 @@ export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
       return { cart_view, base_version: cart.version };
     }))
     .addNode('retrieve', node('retrieve', async (s) => {
-      const candidates = await retrieveCandidates(menu, s.pos_config_id, s.customer_text);
+      const last = s.history.at(-1);
+      const pendingQuestion = last?.clarification_question;
+      const retrieval_text = pendingQuestion ? (`${pendingQuestion} ${s.customer_text}`) : s.customer_text
+      const candidates = await retrieveCandidates(menu, s.pos_config_id, retrieval_text);
       return { candidates: candidates.items };
     }))
     .addNode('parse', node('parse', async (s) => {

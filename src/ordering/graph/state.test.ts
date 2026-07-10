@@ -3,16 +3,15 @@ import type { HistoryTurn } from '../schemas/order-graph-input.schema.js';
 import { mergeHistory, trailingClarificationRun } from './state.js';
 
 describe('mergeHistory (Plan A conversation context)', () => {
-  const turn = (text: string, answer?: string): HistoryTurn =>
-    answer === undefined ? { customer_text: text } : { customer_text: text, clarification_answer: answer };
+  const turn = (text: string): HistoryTurn => ({ customer_text: text });
 
   it('appends the new turn after prior turns, oldest → newest', () => {
     const prev = [turn('one coke'), turn('and fries')];
-    const next = [turn('make it two', 'the large one')];
+    const next = [turn('make it two')];
     expect(mergeHistory(prev, next, 6)).toEqual([
       turn('one coke'),
       turn('and fries'),
-      turn('make it two', 'the large one'),
+      turn('make it two'),
     ]);
   });
 

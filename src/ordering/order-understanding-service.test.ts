@@ -163,13 +163,13 @@ describe('OrderUnderstandingService', () => {
     expect(proposed).toHaveLength(1);
     expect(proposed[0]!.proposal.operations[0]).toMatchObject({ action: 'add_item', quantity: 2 });
     expect(llm.calls).toBe(2);
-    // The resolving turn's prompt pairs the original question with this utterance as the answer,
-    // and the pending question rode across in conversation_history.
+    // The resolving turn's prompt carries the original question (the current utterance is its
+    // answer), and the pending question also rode across in conversation_history.
     const p2 = JSON.parse(llm.prompts[1]!.user) as {
-      clarification?: { question: string; answer: string };
+      clarification?: { question: string };
       conversation_history: Array<{ customer_text: string; clarification_question?: string }>;
     };
-    expect(p2.clarification).toEqual({ question: 'One without mayo, or both?', answer: 'both' });
+    expect(p2.clarification).toEqual({ question: 'One without mayo, or both?' });
     expect(p2.conversation_history).toEqual([
       { customer_text: 'two burgers no mayo', clarification_question: 'One without mayo, or both?' },
     ]);

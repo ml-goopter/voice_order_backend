@@ -51,8 +51,8 @@ proposer**; the Cart Module validates and applies.
   the service emits `order.clarification_needed` and releases its FIFO slot (nothing
   blocks, no timeout). The customer's answer arrives as the **next** `stt.final_transcript`;
   that turn's `normalize` sees the pending question as the last `history` entry
-  (a `clarification_question` with no answer) and feeds `{question, answer: this utterance}`
-  to `parse` so it resolves the original request. `trailingClarificationRun(history)`
+  `clarification_question` and carries it into `parse`
+  (the current utterance is the answer) so it resolves the original request. `trailingClarificationRun(history)`
   counts consecutive unanswered clarifications; the service fails the turn
   (`voice.session_failed` reason `clarification_unresolved`) once it exceeds
   `MAX_CLARIFICATION_ROUNDS`, so a looping model can't freeze the cart. There is no

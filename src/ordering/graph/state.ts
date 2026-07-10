@@ -29,7 +29,7 @@ export function trailingClarificationRun(history: HistoryTurn[]): number {
   let n = 0;
   for (let i = history.length - 1; i >= 0; i -= 1) {
     const t = history[i]!;
-    if (t.clarification_question !== undefined && t.clarification_answer === undefined) n += 1;
+    if (t.clarification_question !== undefined) n += 1;
     else break;
   }
   return n;
@@ -65,7 +65,6 @@ export const OrderState = Annotation.Root({
   supported_languages: lww<LangCode[]>(() => []),
 
   // ── working state (filled by nodes) ──
-  clarification_answer: lww<string | undefined>(() => undefined),
   clarification_question: lww<string | undefined>(() => undefined),
   cart_view: lww<CartView | null>(() => null),
   base_version: lww<number>(() => 0),

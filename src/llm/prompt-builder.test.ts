@@ -71,24 +71,15 @@ describe('buildPrompt', () => {
     expect(payload.conversation_history).toEqual(input.history);
   });
 
-  it('omits the clarification block when clarification_answer is undefined', () => {
+  it('omits the clarification block when clarification_question is undefined', () => {
     const payload = JSON.parse(buildPrompt(makeInput()).user);
     expect('clarification' in payload).toBe(false);
   });
 
-  it('includes the clarification block when clarification_answer is defined', () => {
-    const input = makeInput({
-      clarification_question: 'Which size?',
-      clarification_answer: 'Large',
-    });
+  it('includes the clarification block when clarification_question is defined', () => {
+    const input = makeInput({ clarification_question: 'Which size?' });
     const payload = JSON.parse(buildPrompt(input).user);
-    expect(payload.clarification).toEqual({ question: 'Which size?', answer: 'Large' });
-  });
-
-  it('includes the clarification block for an empty-but-defined answer', () => {
-    const input = makeInput({ clarification_question: 'Which size?', clarification_answer: '' });
-    const payload = JSON.parse(buildPrompt(input).user);
-    expect(payload.clarification).toEqual({ question: 'Which size?', answer: '' });
+    expect(payload.clarification).toEqual({ question: 'Which size?' });
   });
 });
 
