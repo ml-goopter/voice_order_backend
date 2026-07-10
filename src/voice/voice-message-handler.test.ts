@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { logger } from '../config/logger.js';
 import { VoiceMessageHandler } from './voice-message-handler.js';
 import { VoiceSessionManager } from './voice-session-manager.js';
 import { EventBus } from '../events/event-bus.js';
@@ -74,6 +75,18 @@ describe('VoiceMessageHandler', () => {
     const final = events['stt.final_transcript.received']?.[0] as Record<string, unknown>;
     expect(final).toMatchObject({ session_id: 's1', cart_id: 'c1', pos_config_id: 7, text: 'two burgers', language: 'en' });
     expect(typeof final['request_id']).toBe('string');
+  });
+
+  it('logs voice.final_transcript binding request_id to the session (session→turn join)', async () => {
+    const { handler, conn, stt } = setup();
+    const infoSpy = vi.spyOn(logger, 'info');
+    await handler.handleStart(conn, startMsg);
+    stt.handlers.onFinal('two burgers', 'en');
+    expect(infoSpy).toHaveBeenCalledWith(
+      'voice.final_transcript',
+      expect.objectContaining({ session_id: 's1', cart_id: 'c1', request_id: expect.any(String) }),
+    );
+    infoSpy.mockRestore();
   });
 
   it('sends the final transcript to the client for display on a final', async () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Redis } from 'ioredis';
-import { RedisCartCache } from './cart-cache.js';
+import { RedisCartCache, InMemoryCartCache, cartKey } from './cart-cache.js';
 import { emptyCart } from '../cart/cart-types.js';
 
 /** Minimal in-memory stand-in for the ioredis methods RedisCartCache uses. */
@@ -63,5 +63,41 @@ describe('RedisCartCache', () => {
     };
     const cache = new RedisCartCache(redis as unknown as Redis);
     await expect(cache.get('cart_1')).rejects.toThrow('connection reset');
+  });
+});
+
+describe('cartKey', () => {
+  it('namespaces the cart id under cart:{cart_id}', () => {
+    expect(cartKey('cart_1')).toBe('cart:cart_1');
+  });
+});
+
+describe('InMemoryCartCache', () => {
+  it('round-trips a cart by id', async () => {
+    const cache = new InMemoryCartCache();
+    const cart = emptyCart('cart_1', 7);
+    await cache.set(cart);
+    expect(await cache.get('cart_1')).toEqual(cart);
+  });
+
+  it('returns undefined for an unknown cart', async () => {
+    const cache = new InMemoryCartCache();
+    expect(await cache.get('nope')).toBeUndefined();
+  });
+
+  it('deletes a cart', async () => {
+    const cache = new InMemoryCartCache();
+    await cache.set(emptyCart('cart_2', 1));
+    await cache.delete('cart_2');
+    expect(await cache.get('cart_2')).toBeUndefined();
+  });
+
+  it('overwrites on a second set for the same cart_id', async () => {
+    const cache = new InMemoryCartCache();
+    await cache.set(emptyCart('cart_3', 1));
+    const updated = emptyCart('cart_3', 1);
+    updated.version = 5;
+    await cache.set(updated);
+    expect((await cache.get('cart_3'))?.version).toBe(5);
   });
 });

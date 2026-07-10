@@ -20,6 +20,14 @@ modules stay decoupled behind event contracts rather than direct references.
 - `event-bus.ts` wraps Node's `EventEmitter` with generic `emit`/`on`/`off` keyed
   by `AppEventName`, so payloads are compile-checked. A singleton `eventBus` is the
   shared instance; each module's `register-handlers.ts` subscribes to it.
+- **Correlation trace** — the bus sees every event, so `emit` writes one DEBUG
+  `event.emit` line pulling `request_id`/`cart_id`/`session_id` off the top level of
+  the payload (each included only when present). It's the single cross-cutting log
+  that lets a developer follow one turn end-to-end, so payloads deliberately carry
+  those ids at the top level even when they're also nested: `order.operations_proposed`
+  and `cart.updated` hoist `request_id` (and `cart_id`) up from inside `proposal`/`cart`
+  so the `request_id` thread survives the propose→apply→update hops. Requires
+  `LOG_LEVEL=debug`.
 
 ## Dependencies
 - `cart/cart-types`, `ordering/schemas/*`, `shared/types` for payload shapes.

@@ -120,6 +120,8 @@ describe('OrderUnderstandingService', () => {
     await service.handleFinalTranscript(transcript('add two chicken burgers, one without mayo'));
 
     expect(proposed).toHaveLength(1);
+    // request_id/cart_id are hoisted to the top level so the event bus can trace the turn.
+    expect(proposed[0]).toMatchObject({ request_id: 'req_1', cart_id: 'cart_1' });
     expect(proposed[0]!.proposal.base_version).toBe(6);
     expect(proposed[0]!.proposal.operations).toHaveLength(2);
     expect(proposed[0]!.proposal.operations[1]).toMatchObject({

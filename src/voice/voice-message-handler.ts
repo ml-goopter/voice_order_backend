@@ -52,8 +52,17 @@ export class VoiceMessageHandler {
             text,
             ...(language !== undefined ? { language } : {}),
           });
+          // Mint the turn id here and log it against the session so a developer can
+          // pivot from a socket (session_id) to the turn (request_id) it spawned — the
+          // one join point between the connection-scoped and turn-scoped logs.
+          const request_id = newRequestId();
+          logger.info('voice.final_transcript', {
+            request_id,
+            session_id: session.session_id,
+            cart_id: session.cart_id,
+          });
           this.bus.emit('stt.final_transcript.received', {
-            request_id: newRequestId(),
+            request_id,
             session_id: session.session_id,
             cart_id: session.cart_id,
             pos_config_id: session.pos_config_id,

@@ -18,6 +18,9 @@ export interface SttFinalTranscriptReceived {
 
 export interface OrderOperationsProposed {
   session_id: SessionId;
+  /** Turn id — duplicated from `proposal` at the top level so the event bus can trace it. */
+  request_id: RequestId;
+  cart_id: CartId;
   proposal: OrderProposal;
 }
 
@@ -41,6 +44,8 @@ export interface CartUpdated {
   pos_config_id: PosConfigId;
   version: number;
   cart: Cart;
+  /** Turn that produced this update, so the event bus can trace it. */
+  request_id: RequestId;
 }
 
 export interface CartOperationRejected {

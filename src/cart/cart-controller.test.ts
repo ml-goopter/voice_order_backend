@@ -81,7 +81,8 @@ describe('CartController.applyProposal', () => {
   });
 
   it('creates the cart on first apply and emits cart.updated at version 1', async () => {
-    await h.controller.applyProposal(proposal([addBurger]));
+    const p = proposal([addBurger]);
+    await h.controller.applyProposal(p);
 
     const cart = await h.cache.get(CART);
     expect(cart?.version).toBe(1);
@@ -91,6 +92,8 @@ describe('CartController.applyProposal', () => {
     expect(h.updated).toHaveLength(1);
     expect(h.updated[0]!.version).toBe(1);
     expect(h.updated[0]!.cart.items).toHaveLength(1);
+    // request_id is carried on cart.updated so the event bus can trace the turn.
+    expect(h.updated[0]!.request_id).toBe(p.request_id);
     expect(h.rejected).toHaveLength(0);
   });
 
