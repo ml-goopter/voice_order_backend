@@ -19,10 +19,19 @@ proposer**; the Cart Module validates and applies.
   turn 2 sees turn 1's result and loads a fresh `base_version` (design §9). Sits
   **in front of** the graph.
 - **Graph** (`order-graph.ts` + `graph/`) is a real `@langchain/langgraph`
-  `StateGraph`, a straight line: `normalize → load_cart → retrieve → parse → finalize
-  → END`. A clarification is NOT a branch/pause — `parse` simply sets
-  `needs_clarification` and `finalize` records the question; the graph always runs to
-  `END`. Compiled with a `MemorySaver` checkpointer keyed by
+  `StateGraph`. The entry point is `classify` (intent classification, design §6): it
+  labels the utterance `order` | `suggest` | `junk` (a cheap first-hop LLM call,
+  `nodes/classify-intent.node.ts`) and routes on it via ONE table-driven conditional edge
+  (`INTENT_ROUTE` in `graph/intents.ts`, the single source of truth for the intent set →
+  destination node). `order` runs the proposer spine `normalize → load_cart → retrieve →
+  parse → finalize → END`; `suggest` → a v1 stub node (`nodes/suggest.node.ts`) → `finalize`;
+  `junk` → straight to `finalize`. Non-order turns short-circuit (no cart load, no parse).
+  Adding/routing a new intent is a one-row edit to `intentSchema` + `INTENT_ROUTE`. The
+  classifier DEGRADES TO `order` on any failure so a real order is never dropped (the `stub`
+  provider therefore always yields `order`); when a clarification is pending it forces `order`
+  and skips the classifier so the answer is never mislabeled `junk`. A clarification is NOT a
+  branch/pause — `parse` simply sets `needs_clarification` and `finalize` records the question;
+  the order path always runs to `END`. Compiled with a `MemorySaver` checkpointer keyed by
   `thread_id = ${pos_config_id}:${cart_id}` — context follows the CART, not a
   session, so multiple sessions on one cart share conversational memory (§6). State
   channels live in `graph/state.ts` (`Annotation.Root`, last-write-wins with
@@ -45,7 +54,9 @@ proposer**; the Cart Module validates and applies.
     is the source of truth.
 
   The `OrderGraph` façade exposes `start()` returning a `GraphTurnResult`
-  (`complete` with `{output, base_version}` | `clarify` with `{question, round, options?}`).
+  (`complete` with `{output, base_version}` | `clarify` with `{question, round, options?}` |
+  `suggest` | `junk` — the last two mean the classifier routed the utterance away from the
+  proposer; the service logs and ends the turn with no proposal and no failure).
 - **Clarification is fire-and-forget** (§6, no pause): when `parse` sets
   `needs_clarification`, `finalize` records the question to `history` and the turn ENDS —
   the service emits `order.clarification_needed` and releases its FIFO slot (nothing
@@ -78,10 +89,13 @@ proposer**; the Cart Module validates and applies.
 - `order-understanding-service.ts`, `order-graph.ts` (façade), `cart-turn-queue.ts`,
   `register-handlers.ts`.
 - `graph/state.ts`, `graph/build-graph.ts` — LangGraph state + graph wiring.
+- `graph/intents.ts` — `intentSchema` (`order`/`suggest`/`junk`) + `INTENT_ROUTE` table: the
+  single source of truth the classifier prompt, its validation, and the routing edge derive from.
 - `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` (with node name +
   correlation ids) on any node throw, passing through LangGraph control-flow bubbles.
-- `nodes/*.node.ts` — `normalize`, `load-cart`, `retrieve-candidates`, `parse-order`,
-  `validate-operations`, and `parse-and-validate` (parse + repair loop).
+- `nodes/*.node.ts` — `classify-intent` (LLM intent classifier, defaults to `order`),
+  `normalize`, `load-cart`, `retrieve-candidates`, `parse-order`, `validate-operations`,
+  `parse-and-validate` (parse + repair loop), and `suggest` (v1 stub handler).
 - `schemas/*.ts` — operation/input/output/clarification/proposal types + zod validators.
 - `order-understanding-service.test.ts` — happy path, edits, fire-and-forget clarify
   (question then answered by the next transcript), consecutive-clarification cap, repair

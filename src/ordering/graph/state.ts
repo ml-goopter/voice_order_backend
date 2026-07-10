@@ -3,6 +3,8 @@ import type { CartId, LangCode, PosConfigId, RequestId, SessionId } from '../../
 import type { CandidateItem } from '../../menu/menu-types.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import type { CartView, HistoryTurn } from '../schemas/order-graph-input.schema.js';
+import { DEFAULT_INTENT } from './intents.js';
+import type { Intent } from './intents.js';
 import { LIMITS } from '../../config/constants.js';
 
 /** last-write-wins channel with a default, so it can be read before it is written. */
@@ -65,6 +67,7 @@ export const OrderState = Annotation.Root({
   supported_languages: lww<LangCode[]>(() => []),
 
   // ── working state (filled by nodes) ──
+  intent: lww<Intent>(() => DEFAULT_INTENT),
   clarification_question: lww<string | undefined>(() => undefined),
   cart_view: lww<CartView | null>(() => null),
   base_version: lww<number>(() => 0),

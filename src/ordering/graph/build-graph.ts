@@ -7,10 +7,13 @@ import type { LlmProvider } from '../../llm/llm-provider.js';
 import type { CartCache } from '../../redis/cart-cache.js';
 import type { OrderGraphInput } from '../schemas/order-graph-input.schema.js';
 import { LIMITS } from '../../config/constants.js';
+import { INTENT_ROUTE } from './intents.js';
+import { classifyIntent } from '../nodes/classify-intent.node.js';
 import { normalizeTranscript } from '../nodes/normalize-transcript.node.js';
 import { loadCart, buildCartView } from '../nodes/load-cart.node.js';
 import { retrieveCandidates } from '../nodes/retrieve-candidates.node.js';
 import { parseAndValidate } from '../nodes/parse-and-validate.node.js';
+import { suggestReply } from '../nodes/suggest.node.js';
 
 export interface GraphDeps {
   menu: MenuService;
@@ -36,15 +39,27 @@ function toInput(s: OrderStateType): OrderGraphInput {
 }
 
 /**
- * The Order Understanding graph (design §6): normalize → load cart → retrieve
- * candidates → parse (with schema repair) → finalize. A clarification is NOT a pause:
- * when parse asks a question the graph records it to history and ends the turn
- * (fire-and-forget). The customer's answer arrives as the NEXT transcript; that turn's
- * normalize sees the pending question in history and feeds it to parse as the answer.
- * Compiled with a checkpointer so history follows the cart across turns.
+ * The Order Understanding graph (design §6): classify → (route by intent). The `order`
+ * intent runs the proposer pipeline normalize → load cart → retrieve candidates → parse
+ * (with schema repair) → finalize; `suggest`/`junk` short-circuit past it to finalize.
+ * A clarification is NOT a pause: when parse asks a question the graph records it to
+ * history and ends the turn (fire-and-forget). The customer's answer arrives as the NEXT
+ * transcript; that turn's normalize sees the pending question in history and feeds it to
+ * parse as the answer. Routing is table-driven (`INTENT_ROUTE`) so adding an intent is a
+ * one-row change. Compiled with a checkpointer so history follows the cart across turns.
  */
 export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
   return new StateGraph(OrderState)
+    // First hop: label the utterance so the graph can route it (design §6). A pending
+    // clarification means THIS utterance is the answer to it, so force `order` and skip the
+    // classifier's LLM call — the parse pipeline resolves the question. Otherwise classify;
+    // the classifier degrades to `order` on any failure so a real order is never dropped.
+    .addNode('classify', node('classify', async (s) => {
+      const pending = s.history.at(-1)?.clarification_question;
+      if (pending !== undefined) return { intent: 'order' as const };
+      const intent = await classifyIntent(llm, s.customer_text);
+      return { intent };
+    }))
     // If the previous turn raised a clarification we never got an answer to, THIS utterance
     // IS that answer: carry the pending question into parse (as `clarification_question`) so it
     // resolves the original request against the current utterance. Otherwise clear the one-shot
@@ -86,11 +101,20 @@ export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
         ],
       };
     }))
-    .addEdge(START, 'normalize')
+    // Suggest-intent handler (v1 stub). Runs, records nothing new, and routes to finalize so the
+    // turn is recorded like any other; the façade surfaces it as { status: 'suggest' }.
+    .addNode('suggest', node('suggest', () => {
+      suggestReply();
+      return {};
+    }))
+    .addEdge(START, 'classify')
+    // Table-driven fan-out: the router returns the intent, INTENT_ROUTE maps it to the entry node.
+    .addConditionalEdges('classify', (s) => s.intent, INTENT_ROUTE)
     .addEdge('normalize', 'load_cart')
     .addEdge('load_cart', 'retrieve')
     .addEdge('retrieve', 'parse')
     .addEdge('parse', 'finalize')
+    .addEdge('suggest', 'finalize')
     .addEdge('finalize', END)
     .compile({ checkpointer: new MemorySaver() });
 }
