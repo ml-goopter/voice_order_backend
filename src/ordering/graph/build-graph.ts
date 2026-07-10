@@ -62,10 +62,9 @@ export function buildOrderGraph({ menu, llm, carts }: GraphDeps) {
       return { cart_view, base_version: cart.version };
     }))
     .addNode('retrieve', node('retrieve', async (s) => {
-      const last = s.history.at(-1);
-      const pendingQuestion = last?.clarification_question;
-      const retrieval_text = pendingQuestion ? (`${pendingQuestion} ${s.customer_text}`) : s.customer_text
-      const candidates = await retrieveCandidates(menu, s.pos_config_id, retrieval_text);
+      const pendingQuestion = s.clarification_question
+      const retrievalText = pendingQuestion ? (`${pendingQuestion} ${s.customer_text}`) : s.customer_text
+      const candidates = await retrieveCandidates(menu, s.pos_config_id, retrievalText);
       return { candidates: candidates.items };
     }))
     .addNode('parse', node('parse', async (s) => {
