@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { EventBus } from '../events/event-bus.js';
 import type { AppEventMap, AppEventName } from '../events/event-types.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
@@ -9,7 +9,6 @@ import type { Cart } from '../cart/cart-types.js';
 import type { LlmPrompt, LlmProvider } from '../llm/llm-provider.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
-import { TIMEOUTS } from '../config/constants.js';
 
 const POS = 1;
 const MENU: MenuItem[] = [
@@ -65,17 +64,6 @@ function collect<K extends AppEventName>(bus: EventBus, name: K): AppEventMap[K]
   return out;
 }
 
-/** Resolve once the named event fires (one-shot). */
-function once<K extends AppEventName>(bus: EventBus, name: K): Promise<AppEventMap[K]> {
-  return new Promise((resolve) => {
-    const h = (p: AppEventMap[K]) => {
-      bus.off(name, h);
-      resolve(p);
-    };
-    bus.on(name, h);
-  });
-}
-
 function transcript(text: string, over: Partial<AppEventMap['stt.final_transcript.received']> = {}) {
   return {
     request_id: 'req_1',
@@ -101,10 +89,6 @@ function cartWith(version: number, lines: Cart['items'] = []): Cart {
 }
 
 describe('OrderUnderstandingService', () => {
-  beforeEach(() => {
-    vi.useRealTimers();
-  });
-
   it('proposes operations on the happy path with base_version from the loaded cart', async () => {
     const llmOut = JSON.stringify({
       operations: [
@@ -149,7 +133,7 @@ describe('OrderUnderstandingService', () => {
     expect(proposed[0]!.proposal.operations[0]).toEqual({ action: 'update_quantity', line_id: 'ln_1', quantity: 2 });
   });
 
-  it('emits a clarification, then resumes on the answer to propose operations', async () => {
+  it('emits a clarification and ends the turn without waiting; the next transcript answers it', async () => {
     const clarifyOut = JSON.stringify({
       operations: [],
       needs_clarification: true,
@@ -164,25 +148,31 @@ describe('OrderUnderstandingService', () => {
     const { service, bus, llm } = await makeService([clarifyOut, resolvedOut], cartWith(1));
     const clarifications = collect(bus, 'order.clarification_needed');
     const proposed = collect(bus, 'order.operations_proposed');
+    const failed = collect(bus, 'voice.session_failed');
 
-    const turn = service.handleFinalTranscript(transcript('two burgers no mayo'));
-    await once(bus, 'order.clarification_needed');
-
+    // Turn 1: clarify. It emits the question and returns — no blocking, no proposal, no timeout.
+    await service.handleFinalTranscript(transcript('two burgers no mayo', { request_id: 'req_1' }));
     expect(clarifications).toHaveLength(1);
     expect(clarifications[0]).toMatchObject({ question: 'One without mayo, or both?', options: ['one', 'both'] });
-    expect(proposed).toHaveLength(0); // nothing proposed while paused
+    expect(proposed).toHaveLength(0);
+    expect(failed).toHaveLength(0);
 
-    await service.handleClarificationAnswer({
-      cart_id: 'cart_1',
-      session_id: 'sess_1',
-      request_id: 'req_1',
-      answer: 'both',
-    });
-    await turn;
+    // Turn 2: an ordinary transcript IS the answer.
+    await service.handleFinalTranscript(transcript('both', { request_id: 'req_2' }));
 
     expect(proposed).toHaveLength(1);
     expect(proposed[0]!.proposal.operations[0]).toMatchObject({ action: 'add_item', quantity: 2 });
-    expect(llm.calls).toBe(2); // initial + resume
+    expect(llm.calls).toBe(2);
+    // The resolving turn's prompt pairs the original question with this utterance as the answer,
+    // and the pending question rode across in conversation_history.
+    const p2 = JSON.parse(llm.prompts[1]!.user) as {
+      clarification?: { question: string; answer: string };
+      conversation_history: Array<{ customer_text: string; clarification_question?: string }>;
+    };
+    expect(p2.clarification).toEqual({ question: 'One without mayo, or both?', answer: 'both' });
+    expect(p2.conversation_history).toEqual([
+      { customer_text: 'two burgers no mayo', clarification_question: 'One without mayo, or both?' },
+    ]);
   });
 
   it('repairs invalid JSON with one retry, then proposes', async () => {
@@ -242,7 +232,7 @@ describe('OrderUnderstandingService', () => {
     expect(versions).toEqual([5, 6]); // turn 2 saw turn 1's bump → FIFO held
   });
 
-  it('treats a fresh turn as fresh: prior answer rides in history, not as the current answer', async () => {
+  it('does not treat a later unrelated turn as a clarification answer', async () => {
     const clarifyOut = JSON.stringify({
       operations: [],
       needs_clarification: true,
@@ -258,34 +248,33 @@ describe('OrderUnderstandingService', () => {
       needs_clarification: false,
       clarification_question: null,
     });
-    const { service, bus, llm } = await makeService([clarifyOut, resolvedOut, plainOut], cartWith(0));
+    const { service, llm } = await makeService([clarifyOut, resolvedOut, plainOut], cartWith(0));
 
-    // Turn 1: clarify, then resume with 'both'.
-    const t1 = service.handleFinalTranscript(transcript('two burgers no mayo'));
-    await once(bus, 'order.clarification_needed');
-    await service.handleClarificationAnswer({
-      cart_id: 'cart_1',
-      session_id: 'sess_1',
-      request_id: 'req_1',
-      answer: 'both',
-    });
-    await t1;
+    await service.handleFinalTranscript(transcript('two burgers no mayo', { request_id: 'req_1' })); // clarify
+    await service.handleFinalTranscript(transcript('both', { request_id: 'req_2' })); // resolves it
+    await service.handleFinalTranscript(transcript('a coke', { request_id: 'req_3' })); // fresh, unrelated
 
-    // Turn 2: a fresh, unrelated transcript on the same cart.
-    await service.handleFinalTranscript(transcript('a coke', { request_id: 'req_2' }));
+    // Turn 2 answered the question; turn 3 has nothing pending, so no clarification is attached.
+    const p3 = JSON.parse(llm.prompts[2]!.user) as { clarification?: unknown };
+    expect(p3.clarification ?? null).toBeNull();
+  });
 
-    const p2 = JSON.parse(llm.prompts[2]!.user) as {
-      clarification_answer?: string | null;
-      conversation_history: Array<{ customer_text: string; clarification_question?: string; clarification_answer?: string }>;
-    };
-    // The one-shot top-level clarification_answer is cleared: turn 2 is NOT told it is
-    // answering a clarification (the original leak guard).
-    expect(p2.clarification_answer ?? null).toBeNull();
-    // But turn 1's utterance + clarification (question + answer) persist as conversation
-    // context so the answer 'both' is not stranded without the question it resolved.
-    expect(p2.conversation_history).toEqual([
-      { customer_text: 'two burgers no mayo', clarification_question: 'one or both?', clarification_answer: 'both' },
-    ]);
+  it('fails the session after too many consecutive clarifications', async () => {
+    const ask = (n: number) =>
+      JSON.stringify({ operations: [], needs_clarification: true, clarification_question: `q${n}?` });
+    // Rounds 1-3 emit a question; round 4 exceeds MAX_CLARIFICATION_ROUNDS and fails the turn.
+    const { service, bus } = await makeService([ask(1), ask(2), ask(3), ask(4)], cartWith(0));
+    const clarifications = collect(bus, 'order.clarification_needed');
+    const failed = collect(bus, 'voice.session_failed');
+
+    await service.handleFinalTranscript(transcript('a', { request_id: 'req_1' }));
+    await service.handleFinalTranscript(transcript('b', { request_id: 'req_2' }));
+    await service.handleFinalTranscript(transcript('c', { request_id: 'req_3' }));
+    await service.handleFinalTranscript(transcript('d', { request_id: 'req_4' }));
+
+    expect(clarifications).toHaveLength(3);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.reason).toBe('clarification_unresolved');
   });
 
   it('persists each turn to conversation history and sends it to the next turn', async () => {
@@ -354,22 +343,4 @@ describe('OrderUnderstandingService', () => {
     expect(failed).toHaveLength(0);
   });
 
-  it('expires a stalled clarification and unblocks the cart', async () => {
-    vi.useFakeTimers();
-    const clarifyOut = JSON.stringify({
-      operations: [],
-      needs_clarification: true,
-      clarification_question: 'which one?',
-    });
-    const { service, bus } = await makeService([clarifyOut], cartWith(0));
-    const failed = collect(bus, 'voice.session_failed');
-
-    const turn = service.handleFinalTranscript(transcript('the thing'));
-    await vi.advanceTimersByTimeAsync(0); // let the graph run to the interrupt
-    await vi.advanceTimersByTimeAsync(TIMEOUTS.clarificationMs); // expire the wait
-    await turn;
-
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.reason).toBe('clarification_timeout');
-  });
 });

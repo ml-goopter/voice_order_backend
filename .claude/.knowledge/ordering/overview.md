@@ -19,13 +19,14 @@ proposer**; the Cart Module validates and applies.
   turn 2 sees turn 1's result and loads a fresh `base_version` (design §9). Sits
   **in front of** the graph.
 - **Graph** (`order-graph.ts` + `graph/`) is a real `@langchain/langgraph`
-  `StateGraph`: `normalize → load_cart → retrieve → parse → decide{clarify | finalize}`
-  (`finalize → END`). Compiled with a `MemorySaver` checkpointer keyed by
+  `StateGraph`, a straight line: `normalize → load_cart → retrieve → parse → finalize
+  → END`. A clarification is NOT a branch/pause — `parse` simply sets
+  `needs_clarification` and `finalize` records the question; the graph always runs to
+  `END`. Compiled with a `MemorySaver` checkpointer keyed by
   `thread_id = ${pos_config_id}:${cart_id}` — context follows the CART, not a
   session, so multiple sessions on one cart share conversational memory (§6). State
   channels live in `graph/state.ts` (`Annotation.Root`, last-write-wins with
-  defaults); `base_version` is captured at `load_cart` (= `cart.version`) and rides
-  through resumes. Two channels carry information across turns beyond a single
+  defaults); `base_version` is captured at `load_cart` (= `cart.version`). Two channels carry information across turns beyond a single
   invoke (Plan A); `candidates` is per-turn (last-write-wins — `retrieve` fully
   replaces it each turn, capped at `LIMITS.maxCandidatesToLlm`):
   - **`cart_view`** (Plan A): `load_cart` projects the stored cart into a
@@ -37,27 +38,32 @@ proposer**; the Cart Module validates and applies.
     cart-resident item's `line_id` + modifier vocabulary now come from the cart itself,
     not from keeping stale candidates alive.
   - **`history`** (Plan A): the `finalize` node appends each completed turn's
-    `customer_text` + any `clarification_question`/`clarification_answer` (`mergeHistory`,
-    capped at `LIMITS.maxHistoryTurns`), re-sent to the next turn's `parse` as
-    `conversation_history` so references ("that", "the same") resolve. Reference-only —
-    the prompt forbids re-executing a past request; `current_cart` is the source of truth.
+    `customer_text`, plus — when THIS turn raised a clarification — the newly asked
+    `clarification_question` (`mergeHistory`, capped at `LIMITS.maxHistoryTurns`). Re-sent
+    to the next turn's `parse` as `conversation_history` so references ("that", "the same")
+    resolve. Reference-only — the prompt forbids re-executing a past request; `current_cart`
+    is the source of truth.
 
-  The `OrderGraph` façade exposes `start()` / `resume()` returning
-  a `GraphTurnResult` (`complete` with `{output, base_version}` | `clarify`).
-- **Clarification pause/resume** (§6): the `clarify` node calls `interrupt(payload)`;
-  the graph pauses (invoke returns `__interrupt__`) and, on resume via
-  `Command({resume: answer})`, loops `clarify → parse` so the model produces final
-  operations. The **service holds its FIFO slot** while awaiting the answer (turn 2
-  blocks behind), with a `TIMEOUTS.clarificationMs` timeout that fails the turn
-  (`voice.session_failed` reason `clarification_timeout`) so the cart never freezes.
-  A `MAX_CLARIFICATION_ROUNDS` cap guards a looping model.
+  The `OrderGraph` façade exposes `start()` returning a `GraphTurnResult`
+  (`complete` with `{output, base_version}` | `clarify` with `{question, round, options?}`).
+- **Clarification is fire-and-forget** (§6, no pause): when `parse` sets
+  `needs_clarification`, `finalize` records the question to `history` and the turn ENDS —
+  the service emits `order.clarification_needed` and releases its FIFO slot (nothing
+  blocks, no timeout). The customer's answer arrives as the **next** `stt.final_transcript`;
+  that turn's `normalize` sees the pending question as the last `history` entry
+  (a `clarification_question` with no answer) and feeds `{question, answer: this utterance}`
+  to `parse` so it resolves the original request. `trailingClarificationRun(history)`
+  counts consecutive unanswered clarifications; the service fails the turn
+  (`voice.session_failed` reason `clarification_unresolved`) once it exceeds
+  `MAX_CLARIFICATION_ROUNDS`, so a looping model can't freeze the cart. There is no
+  `order.clarification_answered` inbound message anymore — the answer is just the next turn.
 - **Schema-repair retry** (§11.3 stages 2/3): `nodes/parse-and-validate.node.ts`
   validates the LLM JSON and, on failure, re-prompts once (`LIMITS.llmMaxRetries`)
   with `buildRepairPrompt` (rejected output + validation error). Exhaustion throws →
   the `parse` node rejects → service emits `voice.session_failed` (`order_parse_failed`).
-- **Service** (`order-understanding-service.ts`) enqueues the turn, drives the
-  clarification loop, then emits `order.operations_proposed` (with the
-  `OrderProposal`) or `order.clarification_needed`, or `voice.session_failed`.
+- **Service** (`order-understanding-service.ts`) enqueues the turn, runs the graph once,
+  then emits `order.operations_proposed` (with the `OrderProposal`) or
+  `order.clarification_needed`, or `voice.session_failed`.
 - **Contracts** in `schemas/`: `cart-operation` + `order-graph-output` are **zod**
   schemas (types inferred; `parse*` return `Result` with a repair-friendly message
   via `zod-error.ts`); `order-graph-input`, `clarification`, `proposal` are types.
@@ -77,8 +83,9 @@ proposer**; the Cart Module validates and applies.
 - `nodes/*.node.ts` — `normalize`, `load-cart`, `retrieve-candidates`, `parse-order`,
   `validate-operations`, and `parse-and-validate` (parse + repair loop).
 - `schemas/*.ts` — operation/input/output/clarification/proposal types + zod validators.
-- `order-understanding-service.test.ts` — happy path, edits, clarify+resume, repair
-  (retry + exhaustion), per-cart FIFO ordering, clarification timeout.
+- `order-understanding-service.test.ts` — happy path, edits, fire-and-forget clarify
+  (question then answered by the next transcript), consecutive-clarification cap, repair
+  (retry + exhaustion), per-cart FIFO ordering.
 
 ## Not done yet
 - Business validation of operations against candidates (unknown key → clarify,

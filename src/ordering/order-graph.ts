@@ -1,11 +1,11 @@
-import { Command } from '@langchain/langgraph';
 import type { LangCode, CartId, PosConfigId, RequestId, SessionId } from '../shared/types.js';
 import type { MenuService } from '../menu/menu-service.js';
 import type { LlmProvider } from '../llm/llm-provider.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import type { OrderGraphOutput } from './schemas/order-graph-output.schema.js';
+import type { HistoryTurn } from './schemas/order-graph-input.schema.js';
 import { buildOrderGraph } from './graph/build-graph.js';
-import type { ClarificationInterrupt } from './graph/build-graph.js';
+import { trailingClarificationRun } from './graph/state.js';
 
 export interface OrderGraphParams {
   request_id: RequestId;
@@ -17,21 +17,24 @@ export interface OrderGraphParams {
   supported_languages: LangCode[];
 }
 
-/** Outcome of a graph turn: either a proposal is ready, or the graph paused for clarification. */
+/**
+ * Outcome of a graph turn: a proposal is ready, or the model asked a clarification. A
+ * clarification does NOT pause — the turn is complete; `round` is how many consecutive
+ * unanswered clarifications precede it (including this one) so the caller can cap runaways.
+ */
 export type GraphTurnResult =
   | { status: 'complete'; output: OrderGraphOutput; base_version: number }
-  | { status: 'clarify'; question: string; options?: string[] };
+  | { status: 'clarify'; question: string; round: number; options?: string[] };
 
-type InvokeReturn = { output: OrderGraphOutput | null; base_version: number } & {
-  __interrupt__?: Array<{ value: ClarificationInterrupt }>;
-};
+type InvokeReturn = { output: OrderGraphOutput | null; base_version: number; history: HistoryTurn[] };
 
 /**
  * Turns a final transcript into proposed operations or a clarification (design §6),
- * backed by @langchain/langgraph with a cart-keyed checkpointer so a clarification can
- * pause and resume. The thread id is `${pos_config_id}:${cart_id}` — context follows the
- * CART, not a single voice session (design §6). The per-cart FIFO that serializes turns
- * lives in OrderUnderstandingService, in front of this graph (design §9).
+ * backed by @langchain/langgraph with a cart-keyed checkpointer so conversation history
+ * follows the CART across turns. The thread id is `${pos_config_id}:${cart_id}`, not a
+ * single voice session (design §6). A clarification is fire-and-forget: the graph records
+ * the question to history and ends; the answer arrives as the next transcript. The per-cart
+ * FIFO that serializes turns lives in OrderUnderstandingService, in front of this graph.
  */
 export class OrderGraph {
   private readonly graph: ReturnType<typeof buildOrderGraph>;
@@ -55,23 +58,17 @@ export class OrderGraph {
     return this.interpret(out);
   }
 
-  /** Resume a paused turn with the customer's clarification answer (design §6). */
-  async resume(pos_config_id: PosConfigId, cart_id: CartId, answer: string): Promise<GraphTurnResult> {
-    const out = (await this.graph.invoke(
-      new Command({ resume: answer }),
-      this.threadConfig(pos_config_id, cart_id),
-    )) as InvokeReturn;
-    return this.interpret(out);
-  }
-
   private interpret(out: InvokeReturn): GraphTurnResult {
-    const first = out.__interrupt__?.[0];
-    if (first !== undefined) {
-      const { question, options } = first.value;
-      return { status: 'clarify', question, ...(options !== undefined ? { options } : {}) };
+    const output = out.output!;
+    if (output.needs_clarification) {
+      return {
+        status: 'clarify',
+        question: output.clarification_question!,
+        round: trailingClarificationRun(out.history),
+        ...(output.clarification_options !== undefined ? { options: output.clarification_options } : {}),
+      };
     }
-    // Not interrupted → parse ran to completion and set output.
-    return { status: 'complete', output: out.output!, base_version: out.base_version };
+    return { status: 'complete', output, base_version: out.base_version };
   }
 
   private threadConfig(pos_config_id: PosConfigId, cart_id: CartId) {

@@ -20,6 +20,22 @@ export function mergeHistory(prev: HistoryTurn[], next: HistoryTurn[], cap: numb
 }
 
 /**
+ * Count the trailing run of turns that raised a clarification the customer has not yet
+ * answered — i.e. consecutive fire-and-forget clarifications. A turn that resolves a prior
+ * question records only its utterance (no question), breaking the run. Used to cap runaway
+ * re-clarification. Pure so it can be unit-tested without LangGraph.
+ */
+export function trailingClarificationRun(history: HistoryTurn[]): number {
+  let n = 0;
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const t = history[i]!;
+    if (t.clarification_question !== undefined && t.clarification_answer === undefined) n += 1;
+    else break;
+  }
+  return n;
+}
+
+/**
  * Accumulate prior turns' utterances + clarification answers across turns (Plan A), capped to
  * the newest `LIMITS.maxHistoryTurns`. The `finalize` node appends the completed turn; a later
  * turn's `parse` re-sends this as conversation context so references ("that", "the same")

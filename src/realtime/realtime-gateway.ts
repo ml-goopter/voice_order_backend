@@ -21,7 +21,7 @@ export class RealtimeGateway {
     private readonly voice: VoiceMessageHandler,
     private readonly carts: CartCache,
   ) {
-    this.router = new MessageRouter(voice, bus);
+    this.router = new MessageRouter(voice);
     this.subscribe();
   }
 

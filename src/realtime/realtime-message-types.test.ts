@@ -28,7 +28,6 @@ describe('parseInbound', () => {
     'voice.start',
     'voice.audio_chunk',
     'voice.stop',
-    'order.clarification_answered',
     'connection.resume',
   ])('passes through a recognized %s message as-is', (type) => {
     const msg = { type, session_id: 's1' };
