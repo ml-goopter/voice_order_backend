@@ -4,6 +4,7 @@ import type { LlmProvider } from '../llm/llm-provider.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import type { OrderGraphOutput } from './schemas/order-graph-output.schema.js';
 import type { HistoryTurn } from './schemas/order-graph-input.schema.js';
+import type { Intent } from './graph/intents.js';
 import { buildOrderGraph } from './graph/build-graph.js';
 import { trailingClarificationRun } from './graph/state.js';
 
@@ -18,15 +19,19 @@ export interface OrderGraphParams {
 }
 
 /**
- * Outcome of a graph turn: a proposal is ready, or the model asked a clarification. A
- * clarification does NOT pause — the turn is complete; `round` is how many consecutive
- * unanswered clarifications precede it (including this one) so the caller can cap runaways.
+ * Outcome of a graph turn. `complete` — a proposal is ready; `clarify` — the model asked a
+ * question (does NOT pause; `round` is how many consecutive unanswered clarifications precede
+ * it, including this one, so the caller can cap runaways); `suggest`/`junk` — the classifier
+ * routed the utterance away from the proposer pipeline (a recommendation request, or a
+ * non-orderable utterance) and there is nothing to propose.
  */
 export type GraphTurnResult =
   | { status: 'complete'; output: OrderGraphOutput; base_version: number }
-  | { status: 'clarify'; question: string; round: number; options?: string[] };
+  | { status: 'clarify'; question: string; round: number; options?: string[] }
+  | { status: 'suggest' }
+  | { status: 'junk' };
 
-type InvokeReturn = { output: OrderGraphOutput | null; base_version: number; history: HistoryTurn[] };
+type InvokeReturn = { intent: Intent; output: OrderGraphOutput | null; base_version: number; history: HistoryTurn[] };
 
 /**
  * Turns a final transcript into proposed operations or a clarification (design §6),
@@ -39,8 +44,10 @@ type InvokeReturn = { output: OrderGraphOutput | null; base_version: number; his
 export class OrderGraph {
   private readonly graph: ReturnType<typeof buildOrderGraph>;
 
-  constructor(menu: MenuService, llm: LlmProvider, carts: CartCache) {
-    this.graph = buildOrderGraph({ menu, llm, carts });
+  // `intentLlm` is the intent classifier's own provider (its own creds, design §6); it defaults
+  // to the parser `llm` so a caller that doesn't wire a separate one shares a single provider.
+  constructor(menu: MenuService, llm: LlmProvider, carts: CartCache, intentLlm: LlmProvider = llm) {
+    this.graph = buildOrderGraph({ menu, llm, intentLlm, carts });
   }
 
   /** Start a new turn. Rejects if parsing fails after repair (§11.3) — caller fails the turn. */
@@ -59,6 +66,10 @@ export class OrderGraph {
   }
 
   private interpret(out: InvokeReturn): GraphTurnResult {
+    // Non-order intents short-circuit the proposer pipeline: `output` was never produced,
+    // so branch on the classified intent before reading it.
+    if (out.intent === 'junk') return { status: 'junk' };
+    if (out.intent === 'suggest') return { status: 'suggest' };
     const output = out.output!;
     if (output.needs_clarification) {
       return {

@@ -1,12 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// The provider binds config at import time; set env before importing it.
-process.env.LLM_PROVIDER = 'openai';
-process.env.LLM_MODEL = 'test-model';
-process.env.LLM_BASE_URL = 'https://example.test/v1';
-process.env.LLM_API_KEY = 'test-key';
-process.env.LLM_TIMEOUT_MS = '12345';
-
 // Records constructor opts and lets each test drive chat.completions.create.
 const createMock = vi.fn();
 const ctorMock = vi.fn();
@@ -24,6 +17,13 @@ const { OpenAiCompatibleLlmProvider } = await import('./openai-compatible-provid
 const { LIMITS } = await import('../config/constants.js');
 const { logger } = await import('../config/logger.js');
 
+const CFG = {
+  name: 'openai',
+  model: 'test-model',
+  baseUrl: 'https://example.test/v1',
+  apiKey: 'test-key',
+  timeoutMs: 12345,
+};
 const PROMPT = { system: 'SYS', user: 'USR' };
 
 describe('OpenAiCompatibleLlmProvider', () => {
@@ -34,7 +34,7 @@ describe('OpenAiCompatibleLlmProvider', () => {
   });
 
   it('constructs the OpenAI client with base URL, key, timeout, and max retries', () => {
-    new OpenAiCompatibleLlmProvider();
+    new OpenAiCompatibleLlmProvider(CFG);
     expect(ctorMock).toHaveBeenCalledWith({
       baseURL: 'https://example.test/v1',
       apiKey: 'test-key',
@@ -43,12 +43,12 @@ describe('OpenAiCompatibleLlmProvider', () => {
     });
   });
 
-  it('exposes name from config.llmProvider', () => {
-    expect(new OpenAiCompatibleLlmProvider().name).toBe('openai');
+  it('exposes name from the injected config', () => {
+    expect(new OpenAiCompatibleLlmProvider(CFG).name).toBe('openai');
   });
 
   it('sends model, temperature 0, json_object, and system/user messages', async () => {
-    const out = await new OpenAiCompatibleLlmProvider().complete(PROMPT);
+    const out = await new OpenAiCompatibleLlmProvider(CFG).complete(PROMPT);
     expect(out).toBe('{"ok":true}');
     expect(createMock).toHaveBeenCalledWith({
       model: 'test-model',
@@ -64,7 +64,7 @@ describe('OpenAiCompatibleLlmProvider', () => {
   it('warns and returns empty string when the content is empty', async () => {
     createMock.mockResolvedValue({ choices: [{ message: { content: '' } }] });
     const warnSpy = vi.spyOn(logger, 'warn');
-    const out = await new OpenAiCompatibleLlmProvider().complete(PROMPT);
+    const out = await new OpenAiCompatibleLlmProvider(CFG).complete(PROMPT);
     expect(out).toBe('');
     expect(warnSpy).toHaveBeenCalledWith('llm.openai_compatible.empty_content', {
       provider: 'openai',
@@ -75,21 +75,19 @@ describe('OpenAiCompatibleLlmProvider', () => {
 
   it('returns empty string when choices are missing (no throw)', async () => {
     createMock.mockResolvedValue({ choices: [] });
-    expect(await new OpenAiCompatibleLlmProvider().complete(PROMPT)).toBe('');
+    expect(await new OpenAiCompatibleLlmProvider(CFG).complete(PROMPT)).toBe('');
   });
 
   it('propagates a rejection from the SDK', async () => {
     createMock.mockRejectedValue(new Error('429 rate limited'));
-    await expect(new OpenAiCompatibleLlmProvider().complete(PROMPT)).rejects.toThrow(
+    await expect(new OpenAiCompatibleLlmProvider(CFG).complete(PROMPT)).rejects.toThrow(
       '429 rate limited',
     );
   });
 
-  it('throws when LLM_API_KEY is missing', async () => {
-    vi.resetModules();
-    delete process.env.LLM_API_KEY;
-    const mod = await import('./openai-compatible-provider.js');
-    expect(() => new mod.OpenAiCompatibleLlmProvider()).toThrow(/LLM_API_KEY is required/);
-    process.env.LLM_API_KEY = 'test-key';
+  it('throws when the API key is missing', () => {
+    expect(() => new OpenAiCompatibleLlmProvider({ ...CFG, apiKey: '' })).toThrow(
+      /API key is required/,
+    );
   });
 });

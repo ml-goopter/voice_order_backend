@@ -2,8 +2,8 @@
 export const TIMEOUTS = {
   /** §11.2 case C — fail the session if no final transcript arrives after voice.stop. */
   finalTranscriptMs: 4_000,
-  /** Auto-end the voice session when no new partial transcript arrives — the customer stopped talking. */
-  partialIdleMs: 35_500,
+  /** Auto-end the turn when no new partial transcript arrives — the customer stopped talking. */
+  partialIdleMs: 60_000,
   /** §9 Tier-1 — expire a stalled clarification so the per-cart FIFO never freezes. */
   clarificationMs: 30_000,
   /** §3 / §11.1 — heartbeat ping interval and dead-socket threshold. */

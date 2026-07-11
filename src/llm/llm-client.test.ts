@@ -34,6 +34,22 @@ describe('createLlmProvider', () => {
   });
 });
 
+describe('createIntentLlmProvider', () => {
+  it('uses its own INTENT_LLM_* creds when set', async () => {
+    const { createIntentLlmProvider } = await loadFactory({
+      INTENT_LLM_PROVIDER: 'openai',
+      INTENT_LLM_API_KEY: 'k',
+    });
+    expect(createIntentLlmProvider().name).toBe('openai');
+  });
+
+  it('falls back to LLM_PROVIDER when INTENT_LLM_PROVIDER is unset', async () => {
+    delete process.env.INTENT_LLM_PROVIDER;
+    const { createIntentLlmProvider } = await loadFactory({ LLM_PROVIDER: 'stub' });
+    expect(createIntentLlmProvider().name).toBe('stub');
+  });
+});
+
 describe('StubLlmProvider', () => {
   it('returns a valid empty proposal and warns that the stub is in use', async () => {
     const { createLlmProvider } = await loadFactory({ LLM_PROVIDER: 'stub' });

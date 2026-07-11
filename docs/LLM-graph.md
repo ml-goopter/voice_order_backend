@@ -48,26 +48,37 @@ Defined in `graph/build-graph.ts` → `buildOrderGraph({ menu, llm, carts })`.
  START
    │
    ▼
- normalize ──► load_cart ──► retrieve ──► parse
-                                            │
-                              ┌─────────────┴─────────────┐
-                     needs_clarification            otherwise
-                              │                           │
-                              ▼                           ▼
-                           clarify ──(interrupt)──►    finalize ──► END
-                              │  (resume)
-                              └──────────► parse   (loops back)
+ normalize
+   │
+   ▼
+ classify ──(INTENT_ROUTE, one conditional edge)──┐
+   │ order            │ suggest          │ junk
+   ▼                  ▼                  ▼
+ load_cart          suggest             END   (junk not recorded)
+   │                  │
+   ▼                  │
+ retrieve ──► parse ──┤
+                      ▼
+                   finalize ──► END
 ```
 
-- Linear spine: `START → normalize → load_cart → retrieve → parse`.
-- One conditional edge out of `parse`:
-  `s.output?.needs_clarification ? 'clarify' : 'finalize'`.
-- `clarify → parse` is an unconditional back-edge — after an answer arrives, the
-  turn re-parses with the answer in context. This is why the model can clarify,
-  get an answer, and *then* emit final operations in the same logical turn.
-- `finalize → END` is the single true terminus. **Both** the direct-propose path
-  and the post-clarification path pass through `finalize`, so history is recorded
-  exactly once per turn regardless of whether a clarification happened.
+- **`normalize` is the entry point**; **`classify` runs right after it** (design §6) and labels
+  the NORMALIZED utterance `order | suggest | junk`, routing via a single conditional edge whose
+  path map is `INTENT_ROUTE` (`graph/intents.ts`). The router returns `s.intent`; `INTENT_ROUTE`
+  maps it to the next node, so routing and the intent set can't drift.
+  - `order` → `load_cart` (the rest of the proposer spine — `normalize` already ran).
+  - `suggest` → the `suggest` stub node → `finalize`.
+  - `junk` → `END` directly.
+- Order spine: `normalize → classify → load_cart → retrieve → parse → finalize`. A clarification
+  is not a branch/pause — `parse` sets `needs_clarification` and `finalize` records the question;
+  the order path always runs to `END`.
+- `finalize → END` records the completed turn to history. The `order` and `suggest` routes pass
+  through it; **`junk` skips it and goes straight to `END`**, so a non-orderable utterance
+  (greeting, noise) is never recorded and can't pollute the context later fed to `parse`.
+- Non-order intents **short-circuit**: `suggest`/`junk` never touch `load_cart`/`retrieve`/`parse`,
+  so no cart is loaded and no LLM parse call is made for them.
+- **Extensibility:** adding an intent is a one-row edit — a value in `intentSchema` and a row in
+  `INTENT_ROUTE` (+ a handler node only if it needs its own behavior).
 
 Compiled with `.compile({ checkpointer: new MemorySaver() })` — the checkpointer is
 what makes pause/resume possible (§5).
@@ -122,6 +133,7 @@ pure + deterministic).
 | `cart_id` | plain | — | invoke input | cart being ordered against |
 | `pos_config_id` | plain | — | invoke input | POS/menu scope |
 | `customer_text` | plain | — | invoke input, then `normalize` | the utterance |
+| `intent` | lww | `'order'` | `classify` | routing label (`order`/`suggest`/`junk`) |
 | `language` | lww | `undefined` | invoke input | optional lang hint |
 | `supported_languages` | lww | `[]` | invoke input | allowed langs (currently `[]`, TODO) |
 | `clarification_answer` | lww | `undefined` | `clarify` (set), `normalize` (clear) | one-shot answer for the resumed parse |
@@ -146,6 +158,29 @@ Three lifetimes are in play:
 ---
 
 ## 4. Nodes, one by one
+
+### `classify`
+
+```ts
+if (s.clarification_question !== undefined) return { intent: 'order' as const };
+const intent = await classifyIntent(intentLlm, s.customer_text);
+return { intent };
+```
+
+- Runs **right after `normalize`** (not the entry point). Sets the `intent` channel, which the
+  conditional edge reads to route the turn (§2). Classifies the NORMALIZED utterance.
+- **Pending-clarification override:** `normalize` carries an unanswered `clarification_question`
+  from the last history turn into the channel; if it's set, THIS utterance is that answer, so
+  `classify` forces `intent = 'order'` and skips the classifier LLM call entirely — the parse
+  pipeline resolves the question. Without this, a terse answer ("both", "the second one") could be
+  mislabeled `junk` and dropped.
+- `classifyIntent` (`nodes/classify-intent.node.ts`) calls its OWN LLM provider (`intentLlm`,
+  built from `INTENT_LLM_*` env by `createIntentLlmProvider`, falling back to `LLM_*` — so the
+  classifier can run on a cheaper/separate model+key than the parser) with `buildIntentPrompt`
+  (`llm/intent-prompt-builder.ts`), JSON-parses, and validates against `intentSchema`. It
+  **degrades to `order` on any failure** (transport error, non-JSON, non-object payload, unknown
+  label): a real order must never be dropped. The `stub` provider returns a non-intent JSON, so it
+  always degrades to `order` — i.e. stub deployments behave exactly as before this node existed.
 
 ### `normalize`
 
@@ -264,6 +299,23 @@ history: [{
   newest ≤6 turns as conversation context so references ("that", "the same one")
   resolve. History is **reference-only** — the prompt forbids re-executing a past
   request; `current_cart` is the source of truth for what's actually in the cart.
+- Reached by the order path AND by the `suggest` route, so those turns are recorded once. For a
+  `suggest` turn `output` is `null`, so no clarification is recorded — just the utterance. The
+  `junk` route skips `finalize` entirely (routes straight to `END`), so a non-orderable utterance
+  is **not** recorded — it can't pollute the context later fed to `parse`.
+
+### `suggest`
+
+```ts
+suggestReply();   // v1: logs order.suggest_stub
+return {};
+```
+
+- **v1 stub** and the seam for a future recommender (`nodes/suggest.node.ts`). The `suggest`
+  intent is surfaced to the caller purely via the `intent` state channel (read by
+  `OrderGraph.interpret` → `{ status: 'suggest' }`), so the node itself only needs to exist as the
+  routing target and pass through to `finalize`. Replace the body with real suggestion logic when
+  the recommender lands.
 
 ---
 
@@ -490,10 +542,13 @@ the loop): a `TIMEOUTS.clarificationMs = 30_000` stall timeout and a
 
 | File | Role |
 |---|---|
-| `order-graph.ts` | Façade: `start()` / `resume()` / `interpret()`, thread config. |
-| `graph/build-graph.ts` | Node definitions, edges, conditional routing, compile+checkpointer. |
+| `order-graph.ts` | Façade: `start()` / `interpret()`, thread config; maps intent → `GraphTurnResult`. |
+| `graph/build-graph.ts` | Node definitions, edges, intent routing, compile+checkpointer. |
+| `graph/intents.ts` | `intentSchema` + `INTENT_ROUTE` — the intent set and its routing table. |
 | `graph/state.ts` | `OrderState` annotations, `lww`/`appendHistory` reducers, `mergeHistory`. |
 | `graph/instrument.ts` | `node(name, fn)` — per-node error logging, bubble-up passthrough. |
+| `nodes/classify-intent.node.ts` | LLM intent classifier; defaults to `order` on any failure. |
+| `nodes/suggest.node.ts` | v1 stub handler for the `suggest` intent (recommender seam). |
 | `nodes/normalize-transcript.node.ts` | Whitespace normalization. |
 | `nodes/load-cart.node.ts` | `loadCart` + `buildCartView` (self-describing projection). |
 | `nodes/retrieve-candidates.node.ts` | Candidate retrieval wrapper. |
