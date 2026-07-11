@@ -1,5 +1,6 @@
 import type { LlmPrompt, LlmProvider } from './llm-provider.js';
 import { OpenAiCompatibleLlmProvider } from './openai-compatible-provider.js';
+import type { LlmClientConfig } from './openai-compatible-provider.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 
@@ -16,14 +17,38 @@ class StubLlmProvider implements LlmProvider {
   }
 }
 
-/** Single swap point: select the LLM provider by config (mirrors createEmbeddingService). */
-export function createLlmProvider(): LlmProvider {
-  switch (config.llmProvider) {
+/** Build a provider for one cred set (mirrors createEmbeddingService). Non-cloud providers fall
+ *  through to the stub — for the classifier the stub's non-intent JSON degrades to `order`. */
+function selectProvider(provider: string, cfg: LlmClientConfig): LlmProvider {
+  switch (provider) {
     // Ollama, OpenAI, Groq, etc. all speak the OpenAI chat API — one client, env-driven.
     case 'ollama':
     case 'openai':
-      return new OpenAiCompatibleLlmProvider();
+      return new OpenAiCompatibleLlmProvider(cfg);
     default:
       return new StubLlmProvider();
   }
+}
+
+/** The main proposer/parser LLM (LLM_* env). */
+export function createLlmProvider(): LlmProvider {
+  return selectProvider(config.llmProvider, {
+    name: config.llmProvider,
+    model: config.llmModel,
+    baseUrl: config.llmBaseUrl,
+    apiKey: config.llmApiKey,
+    timeoutMs: config.llmTimeoutMs,
+  });
+}
+
+/** The intent classifier's own LLM (INTENT_LLM_* env, falling back to LLM_*), so the cheap
+ *  first-hop call can use separate creds/model from the parser (design §6). */
+export function createIntentLlmProvider(): LlmProvider {
+  return selectProvider(config.intentLlmProvider, {
+    name: config.intentLlmProvider,
+    model: config.intentLlmModel,
+    baseUrl: config.intentLlmBaseUrl,
+    apiKey: config.intentLlmApiKey,
+    timeoutMs: config.intentLlmTimeoutMs,
+  });
 }

@@ -51,6 +51,19 @@ export class OrderUnderstandingService {
         ...(e.language !== undefined ? { language: e.language } : {}),
       });
 
+      if (result.status === 'junk') {
+        // Non-orderable utterance (greeting, noise, off-topic): nothing to propose, end quietly.
+        log.info('order.intent_junk');
+        return null;
+      }
+
+      if (result.status === 'suggest') {
+        // Recommendation request. The recommender is future work (v1 stub); acknowledge and
+        // end the turn without proposing. TODO: emit a suggestion event once it exists.
+        log.info('order.intent_suggest');
+        return null;
+      }
+
       if (result.status === 'clarify') {
         // A looping model that re-clarifies every turn would freeze the cart; give up after
         // MAX_CLARIFICATION_ROUNDS consecutive unanswered clarifications.

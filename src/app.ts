@@ -8,7 +8,7 @@ import { RedisCartCache } from './redis/cart-cache.js';
 import { MenuService } from './menu/menu-service.js';
 import { RedisMenuStore } from './menu/menu-store.js';
 import { createSttProvider } from './stt/stt-client.js';
-import { createLlmProvider } from './llm/llm-client.js';
+import { createLlmProvider, createIntentLlmProvider } from './llm/llm-client.js';
 
 import { VoiceSessionManager } from './voice/voice-session-manager.js';
 import { VoiceMessageHandler } from './voice/voice-message-handler.js';
@@ -42,6 +42,7 @@ export function createApp(): App {
   const menu = new MenuService(new RedisMenuStore(redis));
   const stt = createSttProvider();
   const llm = createLlmProvider();
+  const intentLlm = createIntentLlmProvider();
 
   // Voice + Realtime.
   const voiceManager = new VoiceSessionManager();
@@ -49,7 +50,7 @@ export function createApp(): App {
   const gateway = new RealtimeGateway(bus, voice, carts);
 
   // Order Understanding (pure proposer).
-  const graph = new OrderGraph(menu, llm, carts);
+  const graph = new OrderGraph(menu, llm, carts, intentLlm);
   const ordering = new OrderUnderstandingService(graph, bus);
   registerOrderingHandlers(bus, ordering);
 

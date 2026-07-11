@@ -7,8 +7,14 @@ import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
 import type { Cart } from '../cart/cart-types.js';
 import type { LlmPrompt, LlmProvider } from '../llm/llm-provider.js';
+import { buildIntentPrompt } from '../llm/intent-prompt-builder.js';
+import type { Intent } from './graph/intents.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
+
+/** The intent classifier's system prompt is text-independent, so this exactly identifies the
+ *  classifier hop without coupling the test to the prompt's wording. */
+const INTENT_SYSTEM = buildIntentPrompt('').system;
 
 const POS = 1;
 const MENU: MenuItem[] = [
@@ -30,15 +36,27 @@ const MENU: MenuItem[] = [
   },
 ];
 
-/** A fake LLM that replays scripted JSON responses in order and records its calls. */
+/**
+ * A fake LLM that replays scripted PARSE responses in order and records its parse calls.
+ * The intent classifier is a separate first-hop call (a different system prompt); it is
+ * answered from `intentFor(text)` — default `order` — and does NOT consume the parse script
+ * or count toward `prompts`/`calls`, so these parse-focused tests stay index-aligned.
+ */
 class ScriptedLlm implements LlmProvider {
   readonly name = 'scripted';
   readonly prompts: LlmPrompt[] = [];
-  constructor(private readonly responses: string[]) {}
+  constructor(
+    private readonly responses: string[],
+    private readonly intentFor: (text: string) => Intent = () => 'order',
+  ) {}
   get calls(): number {
     return this.prompts.length;
   }
   async complete(prompt: LlmPrompt): Promise<string> {
+    if (prompt.system === INTENT_SYSTEM) {
+      const { customer_text } = JSON.parse(prompt.user) as { customer_text: string };
+      return JSON.stringify({ intent: this.intentFor(customer_text) });
+    }
     this.prompts.push(prompt);
     const next = this.responses.shift();
     if (next === undefined) throw new Error('ScriptedLlm: no response left');
@@ -46,11 +64,15 @@ class ScriptedLlm implements LlmProvider {
   }
 }
 
-async function makeService(responses: string[], seedCart?: Cart) {
+async function makeService(
+  responses: string[],
+  seedCart?: Cart,
+  intentFor: (text: string) => Intent = () => 'order',
+) {
   const menu = new MenuService(InMemoryMenuStore.of(POS, MENU));
   const carts = new InMemoryCartCache();
   if (seedCart) await carts.set(seedCart);
-  const llm = new ScriptedLlm(responses);
+  const llm = new ScriptedLlm(responses, intentFor);
   const bus = new EventBus();
   const graph = new OrderGraph(menu, llm, carts);
   const service = new OrderUnderstandingService(graph, bus);
@@ -341,6 +363,58 @@ describe('OrderUnderstandingService', () => {
     await service.handleFinalTranscript(transcript('a coke')).catch(() => undefined);
 
     expect(failed).toHaveLength(0);
+  });
+
+  it('short-circuits a junk utterance: no proposal, no failure, and parse never runs', async () => {
+    // No parse responses scripted — if the pipeline were not short-circuited it would fail.
+    const { service, bus, llm } = await makeService([], cartWith(0), () => 'junk');
+    const proposed = collect(bus, 'order.operations_proposed');
+    const failed = collect(bus, 'voice.session_failed');
+
+    await service.handleFinalTranscript(transcript('uh, hello, is anyone there'));
+
+    expect(proposed).toHaveLength(0);
+    expect(failed).toHaveLength(0);
+    expect(llm.calls).toBe(0); // routed classify → finalize, skipping load_cart/retrieve/parse
+  });
+
+  it('short-circuits a suggest utterance without proposing or failing', async () => {
+    const { service, bus, llm } = await makeService([], cartWith(0), () => 'suggest');
+    const proposed = collect(bus, 'order.operations_proposed');
+    const failed = collect(bus, 'voice.session_failed');
+
+    await service.handleFinalTranscript(transcript('what do you recommend'));
+
+    expect(proposed).toHaveLength(0);
+    expect(failed).toHaveLength(0);
+    expect(llm.calls).toBe(0); // routed classify → suggest → finalize, no parse call
+  });
+
+  it('forces order (skips the classifier) when a clarification is pending, so the answer is not dropped', async () => {
+    const clarifyOut = JSON.stringify({
+      operations: [],
+      needs_clarification: true,
+      clarification_question: 'one or both?',
+    });
+    const resolvedOut = JSON.stringify({
+      operations: [{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }],
+      needs_clarification: false,
+      clarification_question: null,
+    });
+    // The classifier would label the terse answer "both" as junk; the pending clarification
+    // must override that and run the parse pipeline so the answer resolves the order.
+    const { service, bus } = await makeService(
+      [clarifyOut, resolvedOut],
+      cartWith(0),
+      (t) => (t === 'both' ? 'junk' : 'order'),
+    );
+    const proposed = collect(bus, 'order.operations_proposed');
+
+    await service.handleFinalTranscript(transcript('two burgers no mayo', { request_id: 'req_1' }));
+    await service.handleFinalTranscript(transcript('both', { request_id: 'req_2' }));
+
+    expect(proposed).toHaveLength(1);
+    expect(proposed[0]!.proposal.operations[0]).toMatchObject({ action: 'add_item', quantity: 2 });
   });
 
 });
