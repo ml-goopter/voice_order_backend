@@ -36,7 +36,7 @@ import type { AppEventMap, AppEventName } from '../src/events/event-types.js';
 import { RedisCartCache } from '../src/redis/cart-cache.js';
 import { MenuService } from '../src/menu/menu-service.js';
 import { RedisMenuStore } from '../src/menu/menu-store.js';
-import { createLlmProvider } from '../src/llm/llm-client.js';
+import { createLlmProvider, createIntentLlmProvider } from '../src/llm/llm-client.js';
 import type { LlmProvider, LlmPrompt } from '../src/llm/llm-provider.js';
 import { OrderGraph } from '../src/ordering/order-graph.js';
 import { OrderUnderstandingService } from '../src/ordering/order-understanding-service.js';
@@ -364,7 +364,12 @@ beforeAll(async () => {
   const llm = recordingLlm(createLlmProvider());
   bus = new EventBus();
 
-  const graph = new OrderGraph(menu, llm, carts);
+  // Intent classifier: its OWN provider, wired exactly as prod (app.ts) — createIntentLlmProvider()
+  // reads INTENT_LLM_* (falling back to LLM_*). A separate instance from the recording `llm`, so
+  // the classify hop never pollutes that log/assertions.
+  const intentLlm = createIntentLlmProvider();
+
+  const graph = new OrderGraph(menu, llm, carts, intentLlm);
   const ordering = new OrderUnderstandingService(graph, bus);
   registerOrderingHandlers(bus, ordering);
 
@@ -472,7 +477,7 @@ describe('final-transcript → proposal pipeline (real stack: Redis + Jina + Oll
     await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /no broccoli/i);
   });
 
-  it.only('clarification → next turn answers: an ambiguous order asks, then proposes on the reply', async (ctx) => {
+  it('clarification → next turn answers: an ambiguous order asks, then proposes on the reply', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('clarify');
     await seedEmptyCart(o.cart_id);
@@ -811,7 +816,7 @@ describe('Chinese-language support (zh_CN, cross-language matching)', () => {
     await expectAddItemModifier(expectValidProposal(proposals), /sweet.*sour.*chicken/i, 1, /no broccoli/i);
   });
 
-  it.only('clarification → next turn answers: an ambiguous Chinese order asks, then proposes on the reply', async (ctx) => {
+  it('clarification → next turn answers: an ambiguous Chinese order asks, then proposes on the reply', async (ctx) => {
     if (!infraReady) return ctx.skip(infraSkipReason);
     const o = ids('zh_clarify');
     await seedEmptyCart(o.cart_id);
