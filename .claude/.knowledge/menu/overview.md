@@ -1,9 +1,9 @@
 ---
 type: Concept
 title: Menu Candidate Matcher
-description: Hybrid KNN + lexical search over Redis, rank candidates, resolve LLM keys to Odoo ids.
+description: Hybrid KNN + lexical search over Postgres/pgvector, rank candidates, resolve LLM keys to Odoo ids.
 resource: src/menu
-timestamp: 2026-07-07
+timestamp: 2026-07-13
 ---
 
 # Menu Candidate Matcher
@@ -12,10 +12,35 @@ timestamp: 2026-07-07
 Retrieves a small candidate set of items/modifiers for a transcript before the LLM
 call — cuts token cost and improves accuracy (design §7). Also resolves LLM
 `menu_item_key` back to Odoo `product_tmpl_id` for the Cart Module. Every request
-reads Redis at query time; there is **no in-memory menu cache**.
+reads the store at query time; there is **no in-memory menu cache**.
+
+## Backend
+The runtime menu backend is **Postgres/pgvector** (`PostgresMenuStore`), wired in
+`app.ts`. `RedisMenuStore` (below) still implements the same `MenuStore` interface
+and keeps its tests, but is no longer wired into the app.
 
 ## Mechanics
-- **Store** (`menu-store.ts`): `MenuStore` is the query surface. `RedisMenuStore`
+- **Store** (`postgres-menu-store.ts`): `PostgresMenuStore` is the production query
+  surface, implementing `MenuStore` over an `item_vector` table that lives **inside
+  the Odoo Postgres DB**. `item_vector(pos_config_id, product_tmpl_id,
+  menu_item_key, lang, name, vector)` holds the per-restaurant membership + LLM key
+  + one pgvector row per (item, language) name — the pgvector analogue of the
+  RediSearch per-language doc explosion. It carries NO item metadata: hydration
+  JOINs Odoo's own read-only tables (`product_template` for names(jsonb)/
+  `list_price`/`available_in_pos`/`active`; `product_template_attribute_value` ⋈
+  `product_attribute_value` ⋈ `product_attribute` for modifiers). `knnSearch` runs
+  pgvector `<=>` cosine distance (`sim = 1 - dist`, clamped [0,1], one query per
+  phrase, `k·4` over-fetch, best sim per DISTINCT tmpl); `lexicalSearch` is
+  `name ILIKE ANY(%term%)`; hydration maps `base_price_cents = round(list_price·100)`,
+  `available = available_in_pos AND active`, `modifier_key = String(ptav_id)`,
+  modifier `name` en_US-first. `ensureIndex()` runs idempotent DDL (`CREATE EXTENSION
+  vector`, `CREATE TABLE item_vector`, a `(pos,tmpl)` btree + an HNSW
+  `vector_cosine_ops` index); no-ops when `dims <= 0`. Any query error degrades to
+  empty → the matcher's fuzzy fallback. Uses a shared `pg.Pool`
+  (`db/postgres-client.ts`). `pos_config_id` scoping lives entirely in `item_vector`
+  (Odoo's `available_in_pos` is a global flag).
+- **Store, Redis (unwired)** (`menu-store.ts`): `MenuStore` interface + mapping
+  helpers (`toMenuItem`/`toCandidateModifier`). `RedisMenuStore`
   reads the seeded item blobs (`menu:item:{pos}:{id}`) and searches the RediSearch
   index. Methods: `ensureIndex()`, `knnSearch(pos, queryVectors, k)` →
   `Map<product_tmpl_id, bestCosineSim>` (up to `k` DISTINCT items; over-fetches
@@ -68,7 +93,12 @@ reads Redis at query time; there is **no in-memory menu cache**.
   `/v1/embeddings` (`jina-embeddings-v3`, 1024 dims, normalized).
 
 ## Seeding & indexing (additive, derived layer)
-- `scripts/populate-redis-menu.ts` (from Odoo Postgres) and
+- **Postgres (wired):** `scripts/populate-postgres-menu.ts` (`npm run seed:menu:pg`)
+  seeds `item_vector` for one `POS_CONFIG_ID`: reads `available_in_pos AND active`
+  templates from Odoo, slugifies a stable `menu_item_key`, embeds each language name
+  (role `passage`), and rewrites this pos's rows in one transaction (idempotent).
+  Needs a real embedder (`EMBEDDING_PROVIDER≠stub`).
+- **Redis (unwired):** `scripts/populate-redis-menu.ts` (from Odoo Postgres) and
   `scripts/embed-redis-menu.ts` (`npm run embed:menu`, backfill embeddings into an
   already-seeded Redis) write the item blobs and their per-language `vectors`.
 - `scripts/index-redis-menu.ts` (`npm run index:menu`) projects the search layer
@@ -80,23 +110,28 @@ reads Redis at query time; there is **no in-memory menu cache**.
   rewrites its own derived keys per pos (idempotent).
 
 ## Dependencies
-- `ioredis` (Redis Stack / RediSearch); `config/constants` (`LIMITS`); `config/env`
-  (`REDIS_URL`, `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`,
-  `JINA_API_KEY`, `JINA_BASE_URL`).
+- `pg` (Postgres/pgvector, the production backend) + `db/postgres-client.ts`;
+  `ioredis` (RediSearch, the unwired `RedisMenuStore`); `config/constants`
+  (`LIMITS`); `config/env` (`ODOO_DATABASE_URL`, `REDIS_URL`, `EMBEDDING_PROVIDER`,
+  `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `JINA_API_KEY`, `JINA_BASE_URL`).
 
 ## Key files
-- `menu-service.ts` (`MenuService`, `MenuLookup`), `menu-store.ts`
-  (`MenuStore`, `RedisMenuStore`, mapping helpers), `menu-index.ts`
-  (index + vector encoding), `in-memory-menu-store.ts` (test/dev store).
+- `menu-service.ts` (`MenuService`, `MenuLookup`), `postgres-menu-store.ts`
+  (`PostgresMenuStore` — the wired backend, vector encoding, lexical terms),
+  `menu-store.ts` (`MenuStore` interface, `RedisMenuStore` (unwired), mapping
+  helpers), `menu-index.ts` (RediSearch index + vector encoding),
+  `in-memory-menu-store.ts` (test/dev store).
 - `candidate-matcher.ts`, `menu-types.ts`.
 - `fuzzy-matcher.ts`, `modifier-matcher.ts` — pure ranking signals (unit-tested).
 - `embedding-service.ts`, `jina-embedding-service.ts`.
-- `scripts/populate-redis-menu.ts`, `scripts/embed-redis-menu.ts`,
-  `scripts/index-redis-menu.ts`.
-- `*.test.ts` — matchers, the Jina client, `RedisMenuStore` reads, and the matcher
-  (via `InMemoryMenuStore`).
+- `scripts/populate-postgres-menu.ts` (wired backend seed);
+  `scripts/populate-redis-menu.ts`, `scripts/embed-redis-menu.ts`,
+  `scripts/index-redis-menu.ts` (Redis backend).
+- `*.test.ts` — matchers, the Jina client, `PostgresMenuStore` (fake `pg.Pool`),
+  `RedisMenuStore` reads, and the matcher (via `InMemoryMenuStore`).
 
 ## Not done yet
 - Default is still `stub` until `EMBEDDING_PROVIDER=jina` + `JINA_API_KEY` are set;
-  with the stub (or before `index:menu` runs) the matcher falls back to fuzzy/
-  modifier. `populate-redis-menu.ts` still needs the `pg` package + an Odoo dump.
+  with the stub (or before `seed:menu:pg` runs) `item_vector` is empty and the
+  matcher falls back to fuzzy/modifier over an empty corpus. Needs a real embedder +
+  a live Odoo DB with the pgvector extension.

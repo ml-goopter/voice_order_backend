@@ -7,6 +7,27 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-13 — Menu backend: Postgres/pgvector replaces Redis
+- **What:** Added `PostgresMenuStore` (`src/menu/postgres-menu-store.ts`) implementing the
+  `MenuStore` interface over an `item_vector` table (pgvector) that lives IN the Odoo Postgres DB.
+  `item_vector(pos_config_id, product_tmpl_id, menu_item_key, lang, name, vector)` holds the
+  per-restaurant membership + LLM key + one embedding row per (item, language); Odoo's own tables
+  (`product_template`, `product_template_attribute_value`, `product_attribute_value`,
+  `product_attribute`) are JOINed at read time for live names/price/availability/modifiers.
+  KNN uses pgvector `<=>` cosine distance; lexical retrieval is `name ILIKE ANY(%term%)`. Mapping:
+  `base_price_cents = round(list_price*100)`, `available = available_in_pos AND active`,
+  `modifier_key = String(ptav_id)`. New `src/db/postgres-client.ts` (shared `pg.Pool`), `env`
+  `ODOO_DATABASE_URL`, and `scripts/populate-postgres-menu.ts` (`npm run seed:menu:pg`) which
+  embeds Odoo template names and upserts `item_vector`. `app.ts` now wires
+  `MenuService(new PostgresMenuStore(pool))` and closes the pool on stop.
+- **Why:** Move the menu off Redis/RediSearch onto Postgres/pgvector (a pgvector `db` service is in
+  docker-compose). Cart state stays on Redis.
+- **Where:** `menu` (new store + tests), `persistence` (pg client), `platform` (env, app wiring),
+  `docker-compose.yml`, `package.json`.
+- **Notes:** `RedisMenuStore` and its tests stay in the tree but are no longer wired. With the stub
+  embedder (`EMBEDDING_DIMENSIONS=0`) `ensureIndex` no-ops and the menu is empty — a real embedding
+  provider + `seed:menu:pg` is required to populate `item_vector`. Requires the pgvector extension.
+
 ## 2026-07-10 — Intent classifier: run after normalize, own creds, hardening
 - **What:** Follow-ups to the intent classifier. (1) Moved `classify` to run AFTER `normalize`
   instead of being the entry point — the graph is now `START → normalize → classify → (route)`,

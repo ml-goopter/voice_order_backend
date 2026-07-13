@@ -24,11 +24,11 @@ sit behind interfaces with stub implementations (search `TODO`).
 | [realtime](./realtime/index.md) | WebSocket gateway, routing, client registry, reconnect (design §4) |
 | [voice](./voice/index.md) | Voice sessions + STT streaming; emits final transcript (design §5) |
 | [ordering](./ordering/index.md) | Transcript → proposed ops / clarification; per-cart FIFO (design §6/§8) |
-| [menu](./menu/index.md) | Candidate matching before the LLM; Odoo-backed (design §7) |
+| [menu](./menu/index.md) | Candidate matching before the LLM; Postgres/pgvector + Odoo JOINs (design §7) |
 | [llm](./llm/index.md) | Cloud LLM abstraction + prompt building (design §8) |
 | [cart](./cart/index.md) | Sole writer of cart state: validate → apply → persist (design §9) |
 | [events](./events/index.md) | Typed in-process event bus + event contracts (design §2) |
-| [persistence](./persistence/index.md) | Redis (hot + durable state), Odoo-referenced source of truth |
+| [persistence](./persistence/index.md) | Redis (carts), Postgres/pgvector (menu), Odoo-referenced source of truth |
 | [platform](./platform/index.md) | Config, shared utils, auth, observability, composition root |
 
 ## Change history
