@@ -7,6 +7,17 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-13 — Remove Redis code from the menu module
+- **What:** Deleted `RedisMenuStore`, the RediSearch index (`menu-index.ts`), and their
+  tests. Reduced `menu-store.ts` to just the `MenuStore` interface; dropped the now-unused
+  Redis-only helpers (`toMenuItem`/`toCandidateModifier`/`lexicalQuery`/`Stored*`/key
+  builders). Refreshed stale Redis comments in `menu-service.ts`, `candidate-matcher.ts`,
+  `in-memory-menu-store.ts`, `postgres-menu-store.ts`.
+- **Why:** The menu backend is Postgres/pgvector; Redis should only be used by the Cart
+  Module (cart persistence). The Redis menu path was unwired dead code.
+- **Where:** menu module (`src/menu/`).
+- **Notes:** No production wiring changed (`app.ts` already used `PostgresMenuStore`).
+  `MenuStore` interface + `InMemoryMenuStore` (test double) and `PostgresMenuStore` unchanged.
 ## 2026-07-13 — All-language names for the client (cart, modifiers, suggestions)
 - **What:** Added an all-language `names` map alongside the single-string `name` on every
   client-facing item/modifier, so the frontend picks the display locale.

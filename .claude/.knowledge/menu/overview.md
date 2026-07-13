@@ -16,8 +16,9 @@ reads the store at query time; there is **no in-memory menu cache**.
 
 ## Backend
 The runtime menu backend is **Postgres/pgvector** (`PostgresMenuStore`), wired in
-`app.ts`. `RedisMenuStore` (below) still implements the same `MenuStore` interface
-and keeps its tests, but is no longer wired into the app.
+`app.ts`. The menu module no longer contains any Redis code — Redis is now used
+solely by the Cart Module (cart persistence). The `InMemoryMenuStore` remains as
+the test/dev double.
 
 ## Mechanics
 - **Store** (`postgres-menu-store.ts`): `PostgresMenuStore` is the production query
@@ -40,6 +41,12 @@ and keeps its tests, but is no longer wired into the app.
   empty → the matcher's fuzzy fallback. Uses a shared `pg.Pool`
   (`db/postgres-client.ts`). `pos_config_id` scoping lives entirely in `item_vector`
   (Odoo's `available_in_pos` is a global flag).
+- **Interface** (`menu-store.ts`): the `MenuStore` interface only — the contract
+  the matcher and cart lookups run against (`ensureIndex`, `knnSearch`,
+  `lexicalSearch`, `getItems`, `allItems`, `getItem`, `getItemByKey`).
+  `InMemoryMenuStore` (`in-memory-menu-store.ts`) is the test/dev double (KNN as an
+  in-process cosine scan, lexical as substring+fuzzy); it is NOT wired into the
+  production app.
 - **Store, Redis (unwired)** (`menu-store.ts`): `MenuStore` interface + mapping
   helpers (`toMenuItem`/`toCandidateModifier`). `RedisMenuStore`
   reads the seeded item blobs (`menu:item:{pos}:{id}`) and searches the RediSearch
@@ -93,43 +100,30 @@ and keeps its tests, but is no longer wired into the app.
   fuzzy fallback); `JinaEmbeddingService` (`jina-embedding-service.ts`) calls Jina
   `/v1/embeddings` (`jina-embeddings-v3`, 1024 dims, normalized).
 
-## Seeding & indexing (additive, derived layer)
+## Seeding & indexing
 - **Postgres (wired):** `scripts/populate-postgres-menu.ts` (`npm run seed:menu:pg`)
   seeds `item_vector` for one `POS_CONFIG_ID`: reads `available_in_pos AND active`
   templates from Odoo, slugifies a stable `menu_item_key`, embeds each language name
   (role `passage`), and rewrites this pos's rows in one transaction (idempotent).
   Needs a real embedder (`EMBEDDING_PROVIDER≠stub`).
-- **Redis (unwired):** `scripts/populate-redis-menu.ts` (from Odoo Postgres) and
-  `scripts/embed-redis-menu.ts` (`npm run embed:menu`, backfill embeddings into an
-  already-seeded Redis) write the item blobs and their per-language `vectors`.
-- `scripts/index-redis-menu.ts` (`npm run index:menu`) projects the search layer
-  from the existing blobs: it reads each `menu:item:*` record and writes the derived
-  `menu:vec:*` docs (`{ pos, tmpl, name, vector }`) + `menu:key:*` lookups + ensures
-  the index (rebuilding it if the dimension/schema changed). Vectors whose width ≠
-  `EMBEDDING_DIMENSIONS` are skipped (RediSearch can't index them). Purely additive
-  — it never mutates `menu:item`/`menu:items`/`menu:meta`; it only clears and
-  rewrites its own derived keys per pos (idempotent).
 
 ## Dependencies
 - `pg` (Postgres/pgvector, the production backend) + `db/postgres-client.ts`;
-  `ioredis` (RediSearch, the unwired `RedisMenuStore`); `config/constants`
-  (`LIMITS`); `config/env` (`ODOO_DATABASE_URL`, `REDIS_URL`, `EMBEDDING_PROVIDER`,
-  `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `JINA_API_KEY`, `JINA_BASE_URL`).
+  `config/constants` (`LIMITS`); `config/env` (`ODOO_DATABASE_URL`,
+  `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `JINA_API_KEY`,
+  `JINA_BASE_URL`). No Redis dependency — the menu module is Redis-free.
 
 ## Key files
 - `menu-service.ts` (`MenuService`, `MenuLookup`), `postgres-menu-store.ts`
   (`PostgresMenuStore` — the wired backend, vector encoding, lexical terms),
-  `menu-store.ts` (`MenuStore` interface, `RedisMenuStore` (unwired), mapping
-  helpers), `menu-index.ts` (RediSearch index + vector encoding),
-  `in-memory-menu-store.ts` (test/dev store).
+  `menu-store.ts` (`MenuStore` interface only), `in-memory-menu-store.ts`
+  (test/dev store).
 - `candidate-matcher.ts`, `menu-types.ts`.
 - `fuzzy-matcher.ts`, `modifier-matcher.ts` — pure ranking signals (unit-tested).
 - `embedding-service.ts`, `jina-embedding-service.ts`.
-- `scripts/populate-postgres-menu.ts` (wired backend seed);
-  `scripts/populate-redis-menu.ts`, `scripts/embed-redis-menu.ts`,
-  `scripts/index-redis-menu.ts` (Redis backend).
+- `scripts/populate-postgres-menu.ts` (wired backend seed).
 - `*.test.ts` — matchers, the Jina client, `PostgresMenuStore` (fake `pg.Pool`),
-  `RedisMenuStore` reads, and the matcher (via `InMemoryMenuStore`).
+  and the matcher (via `InMemoryMenuStore`).
 
 ## Not done yet
 - Default is still `stub` until `EMBEDDING_PROVIDER=jina` + `JINA_API_KEY` are set;

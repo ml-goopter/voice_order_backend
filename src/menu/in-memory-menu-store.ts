@@ -31,9 +31,9 @@ function cosine(a: number[], b: number[]): number {
 }
 
 /**
- * In-memory `MenuStore` — the test double and a Redis-free local option. It runs
- * KNN as an in-process cosine scan, mirroring `RedisMenuStore` semantics. Not
- * wired into the production app, which uses `RedisMenuStore` exclusively.
+ * In-memory `MenuStore` — the test double and a dependency-free local option. It
+ * runs KNN as an in-process cosine scan, mirroring `PostgresMenuStore` semantics.
+ * Not wired into the production app, which uses `PostgresMenuStore` exclusively.
  */
 export class InMemoryMenuStore implements MenuStore {
   private readonly byPos = new Map<PosConfigId, IndexedMenuItem[]>();
@@ -75,7 +75,7 @@ export class InMemoryMenuStore implements MenuStore {
     queryVectors: number[][],
     k: number,
   ): Promise<Map<ProductTmplId, number>> {
-    // Availability is NOT filtered here (mirrors RedisMenuStore); the matcher's
+    // Availability is NOT filtered here (mirrors PostgresMenuStore); the matcher's
     // rank() re-checks it against the live item.
     const best = new Map<ProductTmplId, number>();
     for (const { item, vectors } of this.indexed(pos)) {

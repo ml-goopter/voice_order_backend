@@ -18,7 +18,7 @@ const LEXICAL_LIMIT = 64;
 /** Odoo translatable text: a jsonb `{ "en_US": "…", … }` (node-pg parses it to an object). */
 type Translatable = Record<string, string> | null;
 
-/** en_US-first, then any value, then the fallback — mirrors `toCandidateModifier`. */
+/** en_US-first, then any value, then the fallback. */
 function firstName(t: Translatable, fallback = ''): string {
   if (!t) return fallback;
   return t.en_US ?? Object.values(t)[0] ?? fallback;
@@ -140,7 +140,7 @@ export class PostgresMenuStore implements MenuStore {
   ): Promise<Array<{ tmpl: ProductTmplId; sim: number }>> {
     try {
       // pgvector `<=>` is cosine DISTANCE in [0, 2]; similarity = 1 - distance,
-      // clamped to [0, 1] (mirrors the RediSearch path).
+      // clamped to [0, 1].
       const { rows } = await this.pool.query<{ product_tmpl_id: number; sim: string }>(
         `SELECT product_tmpl_id, 1 - (vector <=> $1::vector) AS sim
            FROM item_vector
