@@ -110,7 +110,7 @@ describe('PostgresMenuStore hydration (JOIN to Odoo)', () => {
       names: { en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' },
       base_price_cents: 1299, // list_price 12.99 → cents
       available: true,
-      modifiers: [{ modifier_key: '5', ptav_id: 5, name: 'Large' }],
+      modifiers: [{ modifier_key: '5', ptav_id: 5, name: 'Large', names: { en_US: 'Large' } }],
     });
   });
 
@@ -136,6 +136,8 @@ describe('PostgresMenuStore hydration (JOIN to Odoo)', () => {
     pool.modRows = [{ product_tmpl_id: 42, ptav_id: 9, names: {}, attr_name: { en_US: 'Spice' } }];
     const item = await makeStore(pool).getItem(1, 42);
     expect(item?.modifiers[0]?.name).toBe('Spice');
+    // The all-language map falls back to the attribute's names too.
+    expect(item?.modifiers[0]?.names).toEqual({ en_US: 'Spice' });
   });
 
   it('getItems short-circuits on an empty id list (no query)', async () => {

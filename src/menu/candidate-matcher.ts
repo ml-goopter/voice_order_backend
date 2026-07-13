@@ -98,6 +98,7 @@ export class CandidateMatcher {
           menu_item_key: item.menu_item_key,
           product_tmpl_id: item.product_tmpl_id,
           name: item.names['en_US'] ?? Object.values(item.names)[0] ?? item.menu_item_key,
+          names: item.names,
           score,
           available_modifiers: item.modifiers,
         },

@@ -34,7 +34,8 @@ the test/dev double.
   phrase, `k·4` over-fetch, best sim per DISTINCT tmpl); `lexicalSearch` is
   `name ILIKE ANY(%term%)`; hydration maps `base_price_cents = round(list_price·100)`,
   `available = available_in_pos AND active`, `modifier_key = String(ptav_id)`,
-  modifier `name` en_US-first. `ensureIndex()` runs idempotent DDL (`CREATE EXTENSION
+  modifier `name` en_US-first plus a full `names` map (`namesOf`, value-names else the
+  attribute's, for the client). `ensureIndex()` runs idempotent DDL (`CREATE EXTENSION
   vector`, `CREATE TABLE item_vector`, a `(pos,tmpl)` btree + an HNSW
   `vector_cosine_ops` index); no-ops when `dims <= 0`. Any query error degrades to
   empty → the matcher's fuzzy fallback. Uses a shared `pg.Pool`
@@ -46,6 +47,34 @@ the test/dev double.
   `InMemoryMenuStore` (`in-memory-menu-store.ts`) is the test/dev double (KNN as an
   in-process cosine scan, lexical as substring+fuzzy); it is NOT wired into the
   production app.
+- **Store, Redis (unwired)** (`menu-store.ts`): `MenuStore` interface + mapping
+  helpers (`toMenuItem`/`toCandidateModifier`). `RedisMenuStore`
+  reads the seeded item blobs (`menu:item:{pos}:{id}`) and searches the RediSearch
+  index. Methods: `ensureIndex()`, `knnSearch(pos, queryVectors, k)` →
+  `Map<product_tmpl_id, bestCosineSim>` (up to `k` DISTINCT items; over-fetches
+  `k·4` docs to offset per-language doc explosion; similarity clamped to [0,1];
+  per-phrase searches run concurrently and any FT error degrades to empty →
+  fuzzy fallback), `lexicalSearch(pos, phrases)` → `Set<product_tmpl_id>` (FT TEXT
+  match over the `name` field, fuzzy for words ≥ 4 chars), `getItems`/`allItems`
+  (hydrate), `getItem` (by tmpl id), `getItemByKey` (via the `menu:key:*` secondary
+  index, falling back to an item scan if it is absent). `toMenuItem`/
+  `toCandidateModifier` map stored JSON → runtime `MenuItem` (en_US-first modifier
+  name plus the full `names` map). Holds no state between calls. `InMemoryMenuStore` (`in-memory-menu-store.ts`)
+  is the test double / Redis-free local option (KNN as an in-process cosine scan,
+  lexical as substring+fuzzy); it is NOT wired into the production app.
+- **Index** (`menu-index.ts`): `idx:menuvec`, a RediSearch index over prefix
+  `menu:vec:` combining a FLAT/COSINE vector field with a `name` TEXT field. KNN
+  needs one vector per document, but an item carries a multi-vector array (one name
+  per language), so each (item, language) name is exploded into its own HASH doc
+  `menu:vec:{pos}:{tmpl}:{i}` = `{ pos(TAG), tmpl(NUMERIC), name(TEXT),
+  vector(FLOAT32 blob) }`. A single index spans all restaurants; `pos` is a TAG
+  pre-filter. **Availability is not indexed** — it is a mutable fact filtered at
+  read time from the source blob (`rank()`), so re-enabling an item needs no
+  reindex. `ensureMenuIndex()` no-ops when dims ≤ 0 and records a schema+dim
+  signature (`menu:index:meta`): an up-to-date index is a cheap no-op, and a stale
+  one (dimension changed, or the `SCHEMA_VERSION` bumped) is dropped + recreated.
+  **Requires the RediSearch module (Redis Stack / Redis 8)**; on plain Redis the
+  FT.* calls error and the matcher falls back to a fuzzy scan.
 - **Matcher** (`candidate-matcher.ts`): retrieve-then-rerank. `chunk()` splits the
   transcript into item/modifier phrases; `match()` embeds all phrases in one
   `embedBatch(phrases, 'query')`, then retrieves a candidate **union** of KNN hits

@@ -18,12 +18,12 @@ function makeMenu(): MenuService {
     {
       product_tmpl_id: 100,
       menu_item_key: 'chicken_burger',
-      names: { en_US: 'Chicken Burger' },
+      names: { en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' },
       base_price_cents: 500,
       available: true,
       modifiers: [
         { modifier_key: 'no_mayo', ptav_id: 900, name: 'No mayo' },
-        { modifier_key: 'extra_cheese', ptav_id: 901, name: 'Extra cheese' },
+        { modifier_key: 'extra_cheese', ptav_id: 901, name: 'Extra cheese', names: { en_US: 'Extra cheese', zh_CN: '加芝士' } },
       ],
     },
     {
@@ -101,6 +101,8 @@ describe('applyOperation', () => {
       expect(line.line_id).toMatch(/^ln_/);
       expect(line.product_tmpl_id).toBe(100);
       expect(line.name).toBe('Chicken Burger');
+      // All translatable names are snapshotted so the client can pick a locale.
+      expect(line.names).toEqual({ en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' });
       expect(line.quantity).toBe(2);
       expect(line.modifiers).toEqual([]);
       // 2 × 500 = 1000
@@ -196,7 +198,10 @@ describe('applyOperation', () => {
     it('adds a modifier to an existing line', async () => {
       const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger');
       const next = expectOk(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'extra_cheese' }, menu, POS));
-      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 901, name: 'Extra cheese' }]);
+      // All-language names are snapshotted onto the cart modifier for the client.
+      expect(next.items[0]!.modifiers).toEqual([
+        { ptav_id: 901, name: 'Extra cheese', names: { en_US: 'Extra cheese', zh_CN: '加芝士' } },
+      ]);
     });
 
     it('is idempotent — adding the same modifier twice does not duplicate it', async () => {
@@ -219,7 +224,9 @@ describe('applyOperation', () => {
     it('removes a present modifier', async () => {
       const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1, ['no_mayo', 'extra_cheese']);
       const next = expectOk(await applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
-      expect(next.items[0]!.modifiers).toEqual([{ ptav_id: 901, name: 'Extra cheese' }]);
+      expect(next.items[0]!.modifiers).toEqual([
+        { ptav_id: 901, name: 'Extra cheese', names: { en_US: 'Extra cheese', zh_CN: '加芝士' } },
+      ]);
     });
 
     it('is a no-op when the modifier is valid but not present', async () => {

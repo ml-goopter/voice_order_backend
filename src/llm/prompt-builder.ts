@@ -24,6 +24,7 @@ export function buildPrompt(input: OrderGraphInput): LlmPrompt {
     'A conversation_history turn may carry suggested_items — items you recommended earlier (each a real menu_item_key + name). If the current customer_text refers to one (e.g. "the first one", "the chicken one", "sure, add that"), you MAY use that menu_item_key in an add_item even if it is not in this turn\'s candidate_items.',
     'When a `clarification` object is present, you previously asked its `question`; the current customer_text is the answer to it — combine them to resolve the original request. If the utterance plainly does not answer that question, ignore the clarification and treat customer_text as a new request.',
     'Only add_item omits line_id. If ambiguous, set needs_clarification=true with a question.',
+    'Customer utterance may not be English, ask the clarification question in the same language if that is the case',
     `Allowed operations: ${ALLOWED_OPERATIONS.join(', ')}.`,
     '',
     'Example — "one sweet and sour chicken with added broccoli" (keys shown are placeholders; use the real keys from candidate_items):',

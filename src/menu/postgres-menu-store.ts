@@ -24,6 +24,12 @@ function firstName(t: Translatable, fallback = ''): string {
   return t.en_US ?? Object.values(t)[0] ?? fallback;
 }
 
+/** The full translatable map, falling back to `alt` when `t` is null/empty (mirrors `firstName`). */
+function namesOf(t: Translatable, alt: Translatable): Record<string, string> {
+  if (t && Object.keys(t).length > 0) return t;
+  return alt ?? {};
+}
+
 /** Pack a vector into the pgvector text literal `[a,b,c]` (cast `::vector` in SQL). */
 export function encodeVector(vector: number[]): string {
   return `[${vector.join(',')}]`;
@@ -237,6 +243,9 @@ export class PostgresMenuStore implements MenuStore {
         modifier_key: String(m.ptav_id),
         ptav_id: m.ptav_id,
         name: firstName(m.names, firstName(m.attr_name)),
+        // Full translatable map for the client; falls back to the attribute's names
+        // when the value itself has none (mirrors the `name` fallback chain).
+        names: namesOf(m.names, m.attr_name),
       });
       modsByTmpl.set(m.product_tmpl_id, list);
     }
