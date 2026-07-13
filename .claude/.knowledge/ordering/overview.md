@@ -31,8 +31,9 @@ proposer**; the Cart Module validates and applies.
   `junk` → straight to `END` (skips `finalize`, so a non-orderable utterance is NOT
   recorded to history and can't pollute later `parse` context). The suggest node writes a
   `Suggestion` (`reply` + the real `items` it named, filtered to the candidates — each item's
-  `name` is taken from the matched candidate, NOT the model's echo, and keys are deduped, so the
-  menu is the source of truth for what reaches the client and history) to the `suggestion`
+  `name` plus its all-language `names` map is taken from the matched candidate, NOT the model's
+  echo, and keys are deduped, so the menu is the source of truth for what reaches the client and
+  history) to the `suggestion`
   state channel; the façade surfaces it as `{ status: 'suggest', reply, items }` and the service
   emits `order.suggestion_ready`. `finalize` records the suggested items into the turn's
   `HistoryTurn.suggested_items` (and `normalize` clears the `suggestion` channel each fresh turn)

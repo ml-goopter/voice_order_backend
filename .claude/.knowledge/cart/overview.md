@@ -18,7 +18,11 @@ bumps the version, persists, and broadcasts `cart.updated`. Rejected ops surface
 - **Applier** (`cart-operation-applier.ts`) is validate-and-apply in one: resolves
   `menu_item_key`→`product_tmpl_id` and `modifier_key`→`ptav_id`, assigns a fresh
   `line_id` on `add_item` and captures display `name`s on the line and each modifier
-  (snapshot at add time), edits target an existing `line_id`, and returns a new
+  (snapshot at add time). Both the line and each modifier also snapshot their full `names`
+  map (all `res.lang` translations) so the client can display in any locale; `name` stays
+  the en_US-fallback default. Modifiers use a `toCartModifier` helper to carry `names`
+  through both the `add_item` and `add_modifier` paths.
+  Edits target an existing `line_id`, and the applier returns a new
   priced `Cart` or a `CartRejectedError` (`unavailable_item` / `line_gone` /
   `invalid_modifier` / `invalid_quantity`). `cart-validator.ts` is a dry-run of the
   applier so validation and application never drift.

@@ -4,14 +4,18 @@ import type { LangCode, ProductTmplId, PtavId } from '../shared/types.js';
 export interface CandidateModifier {
   modifier_key: string; // maps to ptav_id
   ptav_id: PtavId;
-  name: string;
+  name: string; // default display name (en_US-first), the single-string fallback
+  /** All translatable names by Odoo res.lang code, when the source carries them. */
+  names?: Record<LangCode, string>;
 }
 
 /** A menu item the Candidate Matcher surfaced for a transcript chunk (design §7). */
 export interface CandidateItem {
   menu_item_key: string; // maps to product_tmpl_id
   product_tmpl_id: ProductTmplId;
-  name: string;
+  name: string; // default display name (en_US-first), the single-string fallback
+  /** All translatable names by Odoo res.lang code, when the source carries them. */
+  names?: Record<LangCode, string>;
   matched_text?: string;
   score?: number;
   available_modifiers: CandidateModifier[];

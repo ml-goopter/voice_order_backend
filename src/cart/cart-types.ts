@@ -1,6 +1,7 @@
 import type {
   CartId,
   Cents,
+  LangCode,
   LineId,
   PosConfigId,
   ProductId,
@@ -11,7 +12,9 @@ import type {
 /** A selected modifier on a cart line — an Odoo product_template_attribute_value. */
 export interface CartModifier {
   ptav_id: PtavId;
-  name: string; // display name captured at add time (see CartLine.name)
+  name: string; // default display name captured at add time (see CartLine.name)
+  /** All translatable names by res.lang code, snapshotted at add time; the client picks a locale. */
+  names?: Record<LangCode, string>;
 }
 
 /** One line in the cart. `line_id` is stable and assigned by the Cart Module (§8). */
@@ -19,7 +22,11 @@ export interface CartLine {
   line_id: LineId;
   product_tmpl_id: ProductTmplId;
   product_id?: ProductId; // resolved sellable variant, if known
-  name: string; // display name captured at add time (en_US, falling back per §menu)
+  name: string; // default display name captured at add time (en_US, falling back per §menu)
+  // All translatable names by Odoo res.lang code, snapshotted at add time (e.g.
+  // { en_US: "Chicken Burger", zh_CN: "鸡肉汉堡" }). The client picks which to
+  // display; `name` above is the single-string fallback.
+  names: Record<LangCode, string>;
   quantity: number;
   modifiers: CartModifier[];
   combo_id?: number;

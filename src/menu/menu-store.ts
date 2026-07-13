@@ -41,12 +41,14 @@ export interface StoredMenuItem {
 const itemsSetKey = (pos: PosConfigId): string => `menu:items:${pos}`;
 const itemKey = (pos: PosConfigId, id: number): string => `menu:item:${pos}:${id}`;
 
-/** A modifier record → the single-`name` shape the matcher/LLM consume (en_US first). */
+/** A modifier record → the candidate shape the matcher/LLM/cart consume (en_US-first `name`). */
 export function toCandidateModifier(m: StoredModifier): CandidateModifier {
   return {
     modifier_key: m.modifier_key,
     ptav_id: m.ptav_id,
     name: m.names?.en_US ?? Object.values(m.names ?? {})[0] ?? m.attribute,
+    // Full translatable map for the client; `name` above stays the single-string fallback.
+    names: m.names ?? {},
   };
 }
 

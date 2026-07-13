@@ -42,16 +42,20 @@ export async function generateSuggestion(llm: LlmProvider, input: SuggestionProm
   }
 
   // Keep only recommended keys that are among this turn's candidates (so a hallucinated item can
-  // never reach the customer), take the NAME from the candidate — the menu is the source of truth,
-  // not the model's echo — and dedup so a repeated key is surfaced once.
-  const byKey = new Map(input.candidate_items.map((c) => [c.menu_item_key, c.name]));
+  // never reach the customer), take the NAME(s) from the candidate — the menu is the source of
+  // truth, not the model's echo — and dedup so a repeated key is surfaced once.
+  const byKey = new Map(input.candidate_items.map((c) => [c.menu_item_key, c]));
   const seen = new Set<string>();
   const items: SuggestedItem[] = [];
   for (const i of result.value.items) {
-    const name = byKey.get(i.menu_item_key);
-    if (name === undefined || seen.has(i.menu_item_key)) continue;
+    const cand = byKey.get(i.menu_item_key);
+    if (cand === undefined || seen.has(i.menu_item_key)) continue;
     seen.add(i.menu_item_key);
-    items.push({ menu_item_key: i.menu_item_key, name });
+    items.push({
+      menu_item_key: i.menu_item_key,
+      name: cand.name,
+      ...(cand.names !== undefined ? { names: cand.names } : {}),
+    });
   }
   return { reply: result.value.reply, items };
 }

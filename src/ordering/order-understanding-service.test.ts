@@ -436,7 +436,7 @@ describe('OrderUnderstandingService', () => {
       conversation_history: Array<{ customer_text: string; suggested_items?: unknown }>;
     };
     expect(p2.conversation_history).toEqual([
-      { customer_text: 'what should I get, maybe a coke', suggested_items: [{ menu_item_key: 'coke', name: 'Coke' }] },
+      { customer_text: 'what should I get, maybe a coke', suggested_items: [{ menu_item_key: 'coke', name: 'Coke', names: { en_US: 'Coke' } }] },
     ]);
   });
 

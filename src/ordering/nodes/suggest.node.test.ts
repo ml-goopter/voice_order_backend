@@ -13,7 +13,7 @@ function fakeLlm(reply: string | (() => Promise<string>)): LlmProvider {
 }
 
 const CANDIDATES: CandidateItem[] = [
-  { menu_item_key: 'chicken_burger', product_tmpl_id: 10, name: 'Chicken Burger', available_modifiers: [] },
+  { menu_item_key: 'chicken_burger', product_tmpl_id: 10, name: 'Chicken Burger', names: { en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' }, available_modifiers: [] },
   { menu_item_key: 'coke', product_tmpl_id: 12, name: 'Coke', available_modifiers: [] },
 ];
 
@@ -34,7 +34,8 @@ describe('generateSuggestion', () => {
     );
     expect(await generateSuggestion(llm, input())).toEqual({
       reply: 'The chicken burger is great.',
-      items: [{ menu_item_key: 'chicken_burger', name: 'Chicken Burger' }],
+      // All-language names are carried from the candidate so the client can localize.
+      items: [{ menu_item_key: 'chicken_burger', name: 'Chicken Burger', names: { en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' } }],
     });
   });
 
