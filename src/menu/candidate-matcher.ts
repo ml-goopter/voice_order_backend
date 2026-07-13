@@ -22,7 +22,7 @@ const KNN_K = 24;
 /**
  * Finds likely items before the LLM call (design §7) so the whole menu is never
  * sent. Retrieve-then-rerank: chunk transcript → embed each phrase once → retrieve
- * a candidate union (Redis KNN ∪ lexical name search, so items the vector recall
+ * a candidate union (vector KNN ∪ lexical name search, so items the vector recall
  * misses but that lexically match are still surfaced) → hybrid-rank (embedding +
  * fuzzy + modifier) → top-N. With no embeddings (stub embedder or an unbuilt index)
  * it falls back to a fuzzy/modifier scan over the full menu.

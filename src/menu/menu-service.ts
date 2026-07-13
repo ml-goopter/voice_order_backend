@@ -15,7 +15,7 @@ export interface MenuLookup {
 
 /**
  * Facade over the menu store + candidate matcher (design §7). Every method reads
- * Redis at request time — matching runs a KNN vector search per call and item
+ * the store at request time — matching runs a KNN vector search per call and item
  * lookups are direct reads; there is no in-memory menu cache.
  */
 export class MenuService implements MenuLookup {
@@ -28,7 +28,7 @@ export class MenuService implements MenuLookup {
     this.matcher = new CandidateMatcher(store, embedder);
   }
 
-  /** Ensure the RediSearch vector index exists (called once at boot). */
+  /** Ensure the vector index exists (called once at boot). */
   ensureIndex(): Promise<void> {
     return this.store.ensureIndex();
   }
