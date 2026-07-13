@@ -8,6 +8,7 @@ import type { MenuItem } from '../menu/menu-types.js';
 import type { Cart } from '../cart/cart-types.js';
 import type { LlmPrompt, LlmProvider } from '../llm/llm-provider.js';
 import { buildIntentPrompt } from '../llm/intent-prompt-builder.js';
+import { buildSuggestionPrompt } from '../llm/suggestion-prompt-builder.js';
 import type { Intent } from './graph/intents.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
@@ -15,6 +16,17 @@ import { OrderUnderstandingService } from './order-understanding-service.js';
 /** The intent classifier's system prompt is text-independent, so this exactly identifies the
  *  classifier hop without coupling the test to the prompt's wording. */
 const INTENT_SYSTEM = buildIntentPrompt('').system;
+/** The suggestion prompt's system text is likewise text-independent — it identifies the
+ *  recommender hop so its call doesn't consume the parse script. */
+const SUGGEST_SYSTEM = buildSuggestionPrompt({
+  customer_text: '',
+  current_cart: { cart_id: 'cart_1', pos_config_id: 1, version: 0, items: [] },
+  candidate_items: [],
+  history: [],
+}).system;
+/** Scripted recommender reply for the suggest hop. `coke` is a real menu item, so it survives
+ *  the suggest node's candidate filter when the utterance retrieves it. */
+const SUGGESTION = { reply: 'How about a Coke?', items: [{ menu_item_key: 'coke', name: 'Coke' }] };
 
 const POS = 1;
 const MENU: MenuItem[] = [
@@ -57,6 +69,9 @@ class ScriptedLlm implements LlmProvider {
       const { customer_text } = JSON.parse(prompt.user) as { customer_text: string };
       return JSON.stringify({ intent: this.intentFor(customer_text) });
     }
+    // The recommender hop is separate (a different system prompt); answer it from a fixed
+    // suggestion so it neither consumes the parse script nor counts toward `prompts`/`calls`.
+    if (prompt.system === SUGGEST_SYSTEM) return JSON.stringify(SUGGESTION);
     this.prompts.push(prompt);
     const next = this.responses.shift();
     if (next === undefined) throw new Error('ScriptedLlm: no response left');
@@ -378,16 +393,51 @@ describe('OrderUnderstandingService', () => {
     expect(llm.calls).toBe(0); // routed classify → finalize, skipping load_cart/retrieve/parse
   });
 
-  it('short-circuits a suggest utterance without proposing or failing', async () => {
+  it('emits a suggestion (and no proposal/failure) for a suggest utterance', async () => {
     const { service, bus, llm } = await makeService([], cartWith(0), () => 'suggest');
     const proposed = collect(bus, 'order.operations_proposed');
     const failed = collect(bus, 'voice.session_failed');
+    const suggestions = collect(bus, 'order.suggestion_ready');
 
-    await service.handleFinalTranscript(transcript('what do you recommend'));
+    // "a coke" retrieves the coke candidate, so the recommended coke survives the node's filter.
+    await service.handleFinalTranscript(transcript('what do you recommend, maybe a coke'));
 
     expect(proposed).toHaveLength(0);
     expect(failed).toHaveLength(0);
-    expect(llm.calls).toBe(0); // routed classify → suggest → finalize, no parse call
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({
+      cart_id: 'cart_1',
+      request_id: 'req_1',
+      reply: 'How about a Coke?',
+      items: [{ menu_item_key: 'coke', name: 'Coke' }],
+    });
+    expect(llm.calls).toBe(0); // classify + suggest hops are their own prompts; no parse call
+  });
+
+  it('records the suggestion to history so the next turn can resolve a reference to it', async () => {
+    // Turn 1 suggests a coke; turn 2 ("that one") is an ordinary order whose parse must see the
+    // recommended item in conversation_history to resolve the reference.
+    const orderOut = JSON.stringify({
+      operations: [{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }],
+      needs_clarification: false,
+      clarification_question: null,
+    });
+    const { service, llm } = await makeService(
+      [orderOut],
+      cartWith(0),
+      (t) => (t === 'that one' ? 'order' : 'suggest'),
+    );
+
+    await service.handleFinalTranscript(transcript('what should I get, maybe a coke', { request_id: 'req_1' }));
+    await service.handleFinalTranscript(transcript('that one', { request_id: 'req_2' }));
+
+    // The order turn's parse prompt carries the prior suggestion, items and all.
+    const p2 = JSON.parse(llm.prompts[0]!.user) as {
+      conversation_history: Array<{ customer_text: string; suggested_items?: unknown }>;
+    };
+    expect(p2.conversation_history).toEqual([
+      { customer_text: 'what should I get, maybe a coke', suggested_items: [{ menu_item_key: 'coke', name: 'Coke' }] },
+    ]);
   });
 
   it('forces order (skips the classifier) when a clarification is pending, so the answer is not dropped', async () => {

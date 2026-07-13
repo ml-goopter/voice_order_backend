@@ -26,10 +26,20 @@ proposer**; the Cart Module validates and applies.
   `nodes/classify-intent.node.ts`), routing on it via ONE table-driven conditional edge
   (`INTENT_ROUTE` in `graph/intents.ts`, the single source of truth for the intent set →
   destination). `order` continues the proposer spine `normalize → classify → load_cart →
-  retrieve → parse → finalize → END`; `suggest` → a v1 stub node (`nodes/suggest.node.ts`) →
-  `finalize`; `junk` → straight to `END` (skips `finalize`, so a non-orderable utterance is NOT
-  recorded to history and can't pollute later `parse` context). Non-order turns short-circuit (no
-  cart load, no parse). Adding/routing a new intent is a one-row edit to `intentSchema` +
+  retrieve → parse → finalize → END`; `suggest` → a recommender node (`nodes/suggest.node.ts`)
+  that loads the cart + retrieves candidates and asks the LLM for a recommendation → `finalize`;
+  `junk` → straight to `END` (skips `finalize`, so a non-orderable utterance is NOT
+  recorded to history and can't pollute later `parse` context). The suggest node writes a
+  `Suggestion` (`reply` + the real `items` it named, filtered to the candidates — each item's
+  `name` is taken from the matched candidate, NOT the model's echo, and keys are deduped, so the
+  menu is the source of truth for what reaches the client and history) to the `suggestion`
+  state channel; the façade surfaces it as `{ status: 'suggest', reply, items }` and the service
+  emits `order.suggestion_ready`. `finalize` records the suggested items into the turn's
+  `HistoryTurn.suggested_items` (and `normalize` clears the `suggestion` channel each fresh turn)
+  so a follow-up ("the first one") resolves against them on the next `parse`. The node DEGRADES to
+  a safe fallback reply (empty items) on any LLM failure — a bad recommendation never fails the
+  turn. Junk turns still short-circuit (no cart load, no parse); suggest turns load the cart and
+  retrieve but never call the proposer `parse`. Adding/routing a new intent is a one-row edit to `intentSchema` +
   `INTENT_ROUTE`. The classifier DEGRADES TO `order` on any failure (transport error, non-JSON,
   non-object payload, unknown label) so a real order is never dropped (the `stub` provider
   therefore always yields `order`); when a clarification is pending it forces `order` and skips
@@ -99,8 +109,10 @@ proposer**; the Cart Module validates and applies.
   correlation ids) on any node throw, passing through LangGraph control-flow bubbles.
 - `nodes/*.node.ts` — `classify-intent` (LLM intent classifier, defaults to `order`),
   `normalize`, `load-cart`, `retrieve-candidates`, `parse-order`, `validate-operations`,
-  `parse-and-validate` (parse + repair loop), and `suggest` (v1 stub handler).
-- `schemas/*.ts` — operation/input/output/clarification/proposal types + zod validators.
+  `parse-and-validate` (parse + repair loop), and `suggest` (`generateSuggestion` — LLM
+  recommender over the candidates, degrades to a fallback reply).
+- `schemas/*.ts` — operation/input/output/clarification/proposal/suggestion types + zod
+  validators (`suggestion.schema.ts` = `Suggestion`/`SuggestedItem` + `parseSuggestion`).
 - `order-understanding-service.test.ts` — happy path, edits, fire-and-forget clarify
   (question then answered by the next transcript), consecutive-clarification cap, repair
   (retry + exhaustion), per-cart FIFO ordering.

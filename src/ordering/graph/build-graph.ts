@@ -13,7 +13,7 @@ import { normalizeTranscript } from '../nodes/normalize-transcript.node.js';
 import { loadCart, buildCartView } from '../nodes/load-cart.node.js';
 import { retrieveCandidates } from '../nodes/retrieve-candidates.node.js';
 import { parseAndValidate } from '../nodes/parse-and-validate.node.js';
-import { suggestReply } from '../nodes/suggest.node.js';
+import { generateSuggestion } from '../nodes/suggest.node.js';
 
 export interface GraphDeps {
   menu: MenuService;
@@ -61,7 +61,9 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
       const customer_text = normalizeTranscript(s.customer_text);
       const last = s.history.at(-1);
       const pendingQuestion = last?.clarification_question;
-      return { customer_text, clarification_question: pendingQuestion };
+      // Clear any prior turn's suggestion so it can't leak into THIS turn's finalize (the
+      // suggest node re-sets it only when the turn actually recommends something).
+      return { customer_text, clarification_question: pendingQuestion, suggestion: null };
     }))
     // Then label the NORMALIZED utterance so the graph can route it (design §6). If normalize
     // carried a pending clarification into `clarification_question`, THIS utterance is the answer
@@ -94,20 +96,34 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
     // records only its utterance, breaking the clarification run (design §6).
     .addNode('finalize', node('finalize', (s) => {
       const raised = s.output?.needs_clarification ? s.output.clarification_question ?? undefined : undefined;
+      // Record what was recommended (if anything) so a follow-up ("the first one") can resolve
+      // against it on the next turn's parse. Empty suggestions add nothing.
+      const suggested = s.suggestion?.items;
       return {
         history: [
           {
             customer_text: s.customer_text,
             ...(raised !== undefined ? { clarification_question: raised } : {}),
+            ...(suggested !== undefined && suggested.length > 0 ? { suggested_items: suggested } : {}),
           },
         ],
       };
     }))
-    // Suggest-intent handler (v1 stub). Runs, records nothing new, and routes to finalize so the
-    // turn is recorded like any other; the façade surfaces it as { status: 'suggest' }.
-    .addNode('suggest', node('suggest', () => {
-      suggestReply();
-      return {};
+    // Suggest-intent handler: load the cart (for upsell) and this turn's candidates, then ask the
+    // LLM for a recommendation. Routes to finalize so the turn (and its suggestion) is recorded;
+    // the façade surfaces it as { status: 'suggest' }.
+    .addNode('suggest', node('suggest', async (s) => {
+      const cart = await loadCart(carts, s.cart_id, s.pos_config_id);
+      const cart_view = await buildCartView(menu, cart);
+      const candidates = await retrieveCandidates(menu, s.pos_config_id, s.customer_text);
+      const suggestion = await generateSuggestion(llm, {
+        customer_text: s.customer_text,
+        current_cart: cart_view,
+        candidate_items: candidates.items,
+        history: s.history,
+        ...(s.language !== undefined ? { language: s.language } : {}),
+      });
+      return { suggestion };
     }))
     .addEdge(START, 'normalize')
     .addEdge('normalize', 'classify')

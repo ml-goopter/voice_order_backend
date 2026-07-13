@@ -4,6 +4,7 @@ import type { LlmProvider } from '../llm/llm-provider.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import type { OrderGraphOutput } from './schemas/order-graph-output.schema.js';
 import type { HistoryTurn } from './schemas/order-graph-input.schema.js';
+import type { Suggestion, SuggestedItem } from './schemas/suggestion.schema.js';
 import type { Intent } from './graph/intents.js';
 import { buildOrderGraph } from './graph/build-graph.js';
 import { trailingClarificationRun } from './graph/state.js';
@@ -22,16 +23,22 @@ export interface OrderGraphParams {
  * Outcome of a graph turn. `complete` — a proposal is ready; `clarify` — the model asked a
  * question (does NOT pause; `round` is how many consecutive unanswered clarifications precede
  * it, including this one, so the caller can cap runaways); `suggest`/`junk` — the classifier
- * routed the utterance away from the proposer pipeline (a recommendation request, or a
- * non-orderable utterance) and there is nothing to propose.
+ * routed the utterance away from the proposer pipeline: `suggest` carries a spoken
+ * recommendation + the items it named; `junk` is a non-orderable utterance with nothing to say.
  */
 export type GraphTurnResult =
   | { status: 'complete'; output: OrderGraphOutput; base_version: number }
   | { status: 'clarify'; question: string; round: number; options?: string[] }
-  | { status: 'suggest' }
+  | { status: 'suggest'; reply: string; items: SuggestedItem[] }
   | { status: 'junk' };
 
-type InvokeReturn = { intent: Intent; output: OrderGraphOutput | null; base_version: number; history: HistoryTurn[] };
+type InvokeReturn = {
+  intent: Intent;
+  output: OrderGraphOutput | null;
+  base_version: number;
+  history: HistoryTurn[];
+  suggestion: Suggestion | null;
+};
 
 /**
  * Turns a final transcript into proposed operations or a clarification (design §6),
@@ -69,7 +76,12 @@ export class OrderGraph {
     // Non-order intents short-circuit the proposer pipeline: `output` was never produced,
     // so branch on the classified intent before reading it.
     if (out.intent === 'junk') return { status: 'junk' };
-    if (out.intent === 'suggest') return { status: 'suggest' };
+    if (out.intent === 'suggest') {
+      // The suggest node always writes a suggestion (a fallback reply on failure), but default
+      // defensively so a null can never surface as an undefined reply.
+      const suggestion = out.suggestion ?? { reply: '', items: [] };
+      return { status: 'suggest', reply: suggestion.reply, items: suggestion.items };
+    }
     const output = out.output!;
     if (output.needs_clarification) {
       return {

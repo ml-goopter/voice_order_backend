@@ -45,6 +45,17 @@ export class RealtimeGateway {
       });
     });
 
+    this.bus.on('order.suggestion_ready', (e) => {
+      const c = this.registry.getBySession(e.session_id);
+      c?.send({
+        type: 'order.suggestion_ready',
+        cart_id: e.cart_id,
+        request_id: e.request_id,
+        reply: e.reply,
+        items: e.items,
+      });
+    });
+
     this.bus.on('cart.operation_rejected', (e) => {
       const targets = e.session_id
         ? [this.registry.getBySession(e.session_id)].filter((c): c is ClientConnection => c !== undefined)

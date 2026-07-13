@@ -3,6 +3,7 @@ import type { CartId, LangCode, PosConfigId, RequestId, SessionId } from '../../
 import type { CandidateItem } from '../../menu/menu-types.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import type { CartView, HistoryTurn } from '../schemas/order-graph-input.schema.js';
+import type { Suggestion } from '../schemas/suggestion.schema.js';
 import { DEFAULT_INTENT } from './intents.js';
 import type { Intent } from './intents.js';
 import { LIMITS } from '../../config/constants.js';
@@ -74,6 +75,10 @@ export const OrderState = Annotation.Root({
   candidates: lww<CandidateItem[]>(() => []),
   history: appendHistory(),
   output: lww<OrderGraphOutput | null>(() => null),
+  // Cleared to null by `normalize` each fresh turn, set by the `suggest` node, read by
+  // `finalize` (to record `suggested_items`) and the façade (to emit the suggestion). Clearing
+  // it in normalize is what stops a prior turn's suggestion leaking into a later order turn.
+  suggestion: lww<Suggestion | null>(() => null),
 });
 
 export type OrderStateType = typeof OrderState.State;

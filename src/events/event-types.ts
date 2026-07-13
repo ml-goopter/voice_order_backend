@@ -6,6 +6,7 @@ import type { CartId, LangCode, PosConfigId, RequestId, SessionId } from '../sha
 import type { Cart } from '../cart/cart-types.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 import type { OrderProposal } from '../ordering/schemas/proposal.js';
+import type { SuggestedItem } from '../ordering/schemas/suggestion.schema.js';
 
 export interface SttFinalTranscriptReceived {
   request_id: RequestId;
@@ -30,6 +31,16 @@ export interface OrderClarificationNeeded {
   request_id: RequestId;
   question: string;
   options?: string[];
+}
+
+export interface OrderSuggestionReady {
+  cart_id: CartId;
+  session_id: SessionId;
+  request_id: RequestId;
+  /** The spoken recommendation. */
+  reply: string;
+  /** The real menu items the reply named (may be empty). */
+  items: SuggestedItem[];
 }
 
 export interface CartUpdated {
@@ -66,6 +77,7 @@ export interface AppEventMap {
   'stt.final_transcript.received': SttFinalTranscriptReceived;
   'order.operations_proposed': OrderOperationsProposed;
   'order.clarification_needed': OrderClarificationNeeded;
+  'order.suggestion_ready': OrderSuggestionReady;
   'cart.updated': CartUpdated;
   'cart.operation_rejected': CartOperationRejected;
   'voice.session_failed': VoiceSessionFailed;
