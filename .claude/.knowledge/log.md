@@ -7,6 +7,33 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-13 — Suggest node: real LLM recommender (replaces the stub)
+- **What:** Turned the `suggest` graph node from a log-only stub into a recommender. The node now
+  loads the cart (for upsell) + retrieves candidates, then calls the proposer `llm` via a new
+  `buildSuggestionPrompt` (`llm/suggestion-prompt-builder.ts`) and validates the reply with a new
+  `parseSuggestion` (`schemas/suggestion.schema.ts` → `Suggestion`/`SuggestedItem`). Output is
+  filtered to the candidates (no hallucinated items) and degrades to a safe fallback reply on any
+  failure. Each surviving item's `name` is taken from the matched candidate (the menu), not the
+  model's echo, and keys are deduped — so a right-key/wrong-name or repeated recommendation can't
+  reach the client or `suggested_items` history. The result rides a new `suggestion` state channel (cleared by `normalize` each fresh
+  turn); the façade surfaces `{ status: 'suggest', reply, items }` and the service emits a new
+  `order.suggestion_ready` event, forwarded to the client by `realtime-gateway` (new
+  `SuggestionReadyMsg`). `finalize` records the recommended items into
+  `HistoryTurn.suggested_items`, and the parse prompt gained one instruction allowing a recalled
+  suggested `menu_item_key` in a follow-up `add_item`, so "the first one" resolves next turn.
+- **Why:** Ship the recommender the intent classifier already routes to, and make it conversational
+  (follow-ups referencing a suggestion resolve) rather than fire-and-forget.
+- **Where:** `ordering/nodes/suggest.node.ts` (+ test), `ordering/graph/{build-graph,state}.ts`,
+  `ordering/order-graph.ts`, `ordering/order-understanding-service.ts` (+ test),
+  `ordering/schemas/{suggestion.schema,order-graph-input.schema}.ts`,
+  `llm/{suggestion-prompt-builder,prompt-builder}.ts`, `events/event-types.ts`,
+  `realtime/{realtime-message-types,realtime-gateway}.ts`.
+- **Notes:** Suggest reuses the proposer `llm` (no separate creds). With the `stub` LLM the
+  classifier always degrades to `order`, so this path only activates against a real LLM.
+  `docs/LLM-graph.md` §4 `suggest` / state table / file map updated. Two PRE-EXISTING failures in
+  `order-understanding-service.test.ts` (repair-exhausted call count, clarification cap) are
+  unrelated to this change.
+
 ## 2026-07-10 — Intent classifier: run after normalize, own creds, hardening
 - **What:** Follow-ups to the intent classifier. (1) Moved `classify` to run AFTER `normalize`
   instead of being the entry point — the graph is now `START → normalize → classify → (route)`,

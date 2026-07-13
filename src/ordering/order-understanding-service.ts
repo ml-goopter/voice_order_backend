@@ -58,9 +58,17 @@ export class OrderUnderstandingService {
       }
 
       if (result.status === 'suggest') {
-        // Recommendation request. The recommender is future work (v1 stub); acknowledge and
-        // end the turn without proposing. TODO: emit a suggestion event once it exists.
+        // Recommendation request: fire-and-forget like a clarification — emit the spoken reply
+        // (and the items it named) and end the turn without proposing. The suggestion is already
+        // recorded to history so a follow-up ("the first one") resolves on the next turn.
         log.info('order.intent_suggest');
+        this.bus.emit('order.suggestion_ready', {
+          cart_id: e.cart_id,
+          session_id: e.session_id,
+          request_id: e.request_id,
+          reply: result.reply,
+          items: result.items,
+        });
         return null;
       }
 

@@ -67,7 +67,7 @@ Defined in `graph/build-graph.ts` → `buildOrderGraph({ menu, llm, carts })`.
   path map is `INTENT_ROUTE` (`graph/intents.ts`). The router returns `s.intent`; `INTENT_ROUTE`
   maps it to the next node, so routing and the intent set can't drift.
   - `order` → `load_cart` (the rest of the proposer spine — `normalize` already ran).
-  - `suggest` → the `suggest` stub node → `finalize`.
+  - `suggest` → the `suggest` recommender node → `finalize`.
   - `junk` → `END` directly.
 - Order spine: `normalize → classify → load_cart → retrieve → parse → finalize`. A clarification
   is not a branch/pause — `parse` sets `needs_clarification` and `finalize` records the question;
@@ -75,8 +75,9 @@ Defined in `graph/build-graph.ts` → `buildOrderGraph({ menu, llm, carts })`.
 - `finalize → END` records the completed turn to history. The `order` and `suggest` routes pass
   through it; **`junk` skips it and goes straight to `END`**, so a non-orderable utterance
   (greeting, noise) is never recorded and can't pollute the context later fed to `parse`.
-- Non-order intents **short-circuit**: `suggest`/`junk` never touch `load_cart`/`retrieve`/`parse`,
-  so no cart is loaded and no LLM parse call is made for them.
+- Non-order intents **skip the proposer `parse`**: `junk` touches nothing; `suggest` loads the
+  cart and retrieves candidates inside its own node (for the recommendation) but never runs the
+  `parse`/repair pipeline, so no cart operations are ever proposed for them.
 - **Extensibility:** adding an intent is a one-row edit — a value in `intentSchema` and a row in
   `INTENT_ROUTE` (+ a handler node only if it needs its own behavior).
 
@@ -143,6 +144,7 @@ pure + deterministic).
 | `candidates` | lww | `[]` | `retrieve` | per-turn candidate items for the prompt |
 | `history` | append (capped) | `[]` | `finalize` | prior turns, resent for reference resolution |
 | `output` | lww | `null` | `parse` (set), `clarify` (clear to `null`) | the parsed LLM result |
+| `suggestion` | lww | `null` | `suggest` (set), `normalize` (clear to `null`) | `{ reply, items }` recommendation for a `suggest` turn |
 
 Three lifetimes are in play:
 
@@ -307,15 +309,28 @@ history: [{
 ### `suggest`
 
 ```ts
-suggestReply();   // v1: logs order.suggest_stub
-return {};
+const cart = await loadCart(carts, s.cart_id, s.pos_config_id);
+const cart_view = await buildCartView(menu, cart);
+const candidates = await retrieveCandidates(menu, s.pos_config_id, s.customer_text);
+const suggestion = await generateSuggestion(llm, { customer_text, current_cart: cart_view,
+  candidate_items: candidates.items, history, language? });
+return { suggestion };
 ```
 
-- **v1 stub** and the seam for a future recommender (`nodes/suggest.node.ts`). The `suggest`
-  intent is surfaced to the caller purely via the `intent` state channel (read by
-  `OrderGraph.interpret` → `{ status: 'suggest' }`), so the node itself only needs to exist as the
-  routing target and pass through to `finalize`. Replace the body with real suggestion logic when
-  the recommender lands.
+- The recommender for the `suggest` intent (`nodes/suggest.node.ts` → `generateSuggestion`). It
+  loads the cart (for upsell context) and retrieves this turn's candidates, then asks the proposer
+  `llm` (via `buildSuggestionPrompt`) for a `{ reply, items }` and validates it with
+  `parseSuggestion`. Recommended items are **filtered to the candidates**, so the model can't
+  surface anything off-menu. It **degrades to a safe fallback reply** (empty items) on any failure
+  — a bad recommendation must not fail the turn.
+- Writes the result to the `suggestion` state channel. `OrderGraph.interpret` reads both the
+  `intent` and this channel → `{ status: 'suggest', reply, items }`; the service emits
+  `order.suggestion_ready`.
+- `finalize` records `suggestion.items` into the turn's `HistoryTurn.suggested_items`, so a
+  follow-up ("the first one", "add that") resolves against them on the next turn's `parse` (the
+  parse prompt permits a recalled suggested key even when it's not in that turn's candidates).
+  `normalize` clears the `suggestion` channel each fresh turn so a prior suggestion can't leak
+  into a later order turn's `finalize`.
 
 ---
 
@@ -548,7 +563,8 @@ the loop): a `TIMEOUTS.clarificationMs = 30_000` stall timeout and a
 | `graph/state.ts` | `OrderState` annotations, `lww`/`appendHistory` reducers, `mergeHistory`. |
 | `graph/instrument.ts` | `node(name, fn)` — per-node error logging, bubble-up passthrough. |
 | `nodes/classify-intent.node.ts` | LLM intent classifier; defaults to `order` on any failure. |
-| `nodes/suggest.node.ts` | v1 stub handler for the `suggest` intent (recommender seam). |
+| `nodes/suggest.node.ts` | `generateSuggestion` — LLM recommender for the `suggest` intent; filters to candidates, degrades to a fallback reply. |
+| `schemas/suggestion.schema.ts` | `Suggestion`/`SuggestedItem` types + `parseSuggestion` (zod). |
 | `nodes/normalize-transcript.node.ts` | Whitespace normalization. |
 | `nodes/load-cart.node.ts` | `loadCart` + `buildCartView` (self-describing projection). |
 | `nodes/retrieve-candidates.node.ts` | Candidate retrieval wrapper. |

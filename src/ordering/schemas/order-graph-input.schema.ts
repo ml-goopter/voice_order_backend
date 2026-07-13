@@ -1,6 +1,7 @@
 /** LangGraph input assembled before the LLM call (design §6/§8). */
 import type { CartId, LangCode, LineId, PosConfigId, RequestId, SessionId } from '../../shared/types.js';
 import type { CandidateItem } from '../../menu/menu-types.js';
+import type { SuggestedItem } from './suggestion.schema.js';
 
 /** A modifier on a self-describing cart line — keys/names only, no numeric ids (Plan A). */
 export interface CartModifierView {
@@ -37,6 +38,8 @@ export interface HistoryTurn {
   customer_text: string;
   /** Present when the turn was clarified — the question is kept so the answer has context. */
   clarification_question?: string;
+  /** Present when the turn recommended items — so a follow-up ("the first one") can resolve. */
+  suggested_items?: SuggestedItem[];
 }
 
 export interface OrderGraphInput {
