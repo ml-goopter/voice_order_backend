@@ -21,7 +21,9 @@ export const LIMITS = {
   /** Plan A — turns of prior (utterance + clarification answer) resent to the model as context. */
   maxHistoryTurns: 6,
   /** §11.3 — schema-repair re-prompts on invalid LLM JSON before falling back to clarify/manual. */
-  llmMaxRetries: 1,
+  llmMaxRetries: 3,
   /** Transport-level retries (429/5xx/network) the OpenAI SDK performs per request. */
-  llmTransportMaxRetries: 1,
+  llmTransportMaxRetries: 3,
+  /** Safety valve: cap consecutive clarifications so a looping model can't freeze a cart. */
+  maxClarifications: 10
 } as const;

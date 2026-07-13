@@ -6,9 +6,9 @@ import { OrderGraph } from './order-graph.js';
 import { CartTurnQueue } from './cart-turn-queue.js';
 import { logger } from '../config/logger.js';
 import { messageOf } from '../shared/errors.js';
-
+import { LIMITS } from '../config/constants.js';
 /** Safety valve: cap consecutive clarifications so a looping model can't freeze a cart. */
-const MAX_CLARIFICATION_ROUNDS = 3;
+const MAX_CLARIFICATION_ROUNDS = LIMITS.maxClarifications;
 
 /**
  * Order Understanding module (design §6). A PURE proposer — it never mutates the
@@ -22,7 +22,7 @@ export class OrderUnderstandingService {
   constructor(
     private readonly graph: OrderGraph,
     private readonly bus: EventBus,
-  ) {}
+  ) { }
 
   async handleFinalTranscript(e: SttFinalTranscriptReceived): Promise<void> {
     await this.queue.enqueue(e.cart_id, async () => {
@@ -58,9 +58,17 @@ export class OrderUnderstandingService {
       }
 
       if (result.status === 'suggest') {
-        // Recommendation request. The recommender is future work (v1 stub); acknowledge and
-        // end the turn without proposing. TODO: emit a suggestion event once it exists.
+        // Recommendation request: fire-and-forget like a clarification — emit the spoken reply
+        // (and the items it named) and end the turn without proposing. The suggestion is already
+        // recorded to history so a follow-up ("the first one") resolves on the next turn.
         log.info('order.intent_suggest');
+        this.bus.emit('order.suggestion_ready', {
+          cart_id: e.cart_id,
+          session_id: e.session_id,
+          request_id: e.request_id,
+          reply: result.reply,
+          items: result.items,
+        });
         return null;
       }
 
