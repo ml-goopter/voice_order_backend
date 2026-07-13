@@ -5,9 +5,10 @@ import { defineConfig } from 'vitest/config';
  * vitest.config.ts so the e2e never runs with the unit tests: the default config
  * only includes `*.test.ts`, and these files are named `*.e2e.ts`.
  *
- * The suite drives the final-transcript pipeline against a LIVE Redis Stack and a
- * LIVE Ollama LLM, with real Jina query embeddings so retrieval uses the vector
- * KNN path (the whole point of the real stack).
+ * The suite drives the final-transcript pipeline against a LIVE Postgres/pgvector
+ * (the menu backend), a LIVE Redis (cart cache), and a LIVE Ollama LLM, with real
+ * Jina query embeddings so retrieval uses the vector KNN path (the whole point of
+ * the real stack).
  *
  * .env supplies JINA_API_KEY + provider settings; we load it here and then FORCE
  * the LLM to Ollama (the .env ships LLM_PROVIDER=stub from .env.example, which would
@@ -25,6 +26,8 @@ const pick = (name: string, fallback: string) => process.env[name] || fallback;
 
 const env = {
   REDIS_URL: pick('REDIS_URL', 'redis://localhost:6379'),
+  // Menu backend. Password (if any) comes from .env; the db service binds localhost:5432.
+  ODOO_DATABASE_URL: pick('ODOO_DATABASE_URL', 'postgres://odoo@localhost:5432/postgres'),
   LLM_PROVIDER: pick('LLM_PROVIDER', 'openai'),
   LLM_MODEL: pick('LLM_MODEL', 'qwen3:14b'),
   LLM_BASE_URL: pick('LLM_BASE_URL', 'http://localhost:11434/v1'),

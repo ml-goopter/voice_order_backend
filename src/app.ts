@@ -4,9 +4,10 @@ import { messageOf } from './shared/errors.js';
 import { eventBus } from './events/event-bus.js';
 
 import { createRedisClient, closeRedisClient } from './redis/redis-client.js';
+import { createPgPool, closePgPool } from './db/postgres-client.js';
 import { RedisCartCache } from './redis/cart-cache.js';
 import { MenuService } from './menu/menu-service.js';
-import { RedisMenuStore } from './menu/menu-store.js';
+import { PostgresMenuStore } from './menu/postgres-menu-store.js';
 import { createSttProvider } from './stt/stt-client.js';
 import { createLlmProvider, createIntentLlmProvider } from './llm/llm-client.js';
 
@@ -38,8 +39,10 @@ export function createApp(): App {
 
   // Infrastructure.
   const redis = createRedisClient();
+  const pgPool = createPgPool();
   const carts = new RedisCartCache(redis);
-  const menu = new MenuService(new RedisMenuStore(redis));
+  // Menu is Postgres/pgvector-backed; cart state stays on Redis.
+  const menu = new MenuService(new PostgresMenuStore(pgPool));
   const stt = createSttProvider();
   const llm = createLlmProvider();
   const intentLlm = createIntentLlmProvider();
@@ -64,9 +67,9 @@ export function createApp(): App {
   return {
     gateway,
     async start() {
-      // Ensure the RediSearch vector index exists; matching queries it per request
-      // (no menu is loaded into memory). Requires the RediSearch module (Redis
-      // Stack); on plain Redis this warns and the matcher falls back to fuzzy scan.
+      // Ensure the pgvector table + index exist; matching queries them per request
+      // (no menu is loaded into memory). Requires the pgvector extension; without
+      // it this warns and the matcher falls back to a fuzzy scan.
       try {
         await menu.ensureIndex();
         logger.info('menu.index_ready');
@@ -80,6 +83,7 @@ export function createApp(): App {
     async stop() {
       ws?.close();
       await closeRedisClient();
+      await closePgPool();
       logger.info('app.stopped');
     },
   };

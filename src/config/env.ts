@@ -21,6 +21,7 @@ export interface AppConfig {
   readonly logLevel: string;
 
   readonly redisUrl: string;
+  readonly odooDatabaseUrl: string; // Postgres (Odoo POS DB) that also holds our `item_vector` table
   readonly cartIdempotencyTtlSeconds: number; // TTL on the cart idempotency ledger (design §9)
 
   readonly sttProvider: string; // 'assemblyai' | 'deepgram' | ...
@@ -52,6 +53,7 @@ export const config: AppConfig = {
   logLevel: str('LOG_LEVEL', 'info'),
 
   redisUrl: str('REDIS_URL', 'redis://localhost:6379'),
+  odooDatabaseUrl: str('ODOO_DATABASE_URL', 'postgres://localhost:5432/odoo'),
   cartIdempotencyTtlSeconds: int('CART_IDEMPOTENCY_TTL_SECONDS', 86_400),
 
   sttProvider: str('STT_PROVIDER', 'assemblyai'),

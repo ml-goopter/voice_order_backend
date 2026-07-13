@@ -4,8 +4,9 @@
  *
  * Trigger:  emit the event on a real EventBus (the true pipeline entry — where STT
  *           hands off; see voice/voice-message-handler.ts).
- * Stack:    LIVE Redis Stack (real Jade Garden menu + idx:menuvec KNN index), LIVE
- *           Jina query embeddings (real vector retrieval), and a LIVE Ollama LLM.
+ * Stack:    LIVE Postgres/pgvector (real Jade Garden menu in `item_vector` + Odoo
+ *           JOINs for the KNN candidate path), LIVE Redis (cart cache), LIVE Jina
+ *           query embeddings (real vector retrieval), and a LIVE Ollama LLM.
  *           Nothing is mocked; the wiring mirrors app.ts minus the Cart module,
  *           voice/realtime/WS.
  * Assert:   the operations proposed by Order Understanding (via `order.operations_proposed`)
@@ -23,19 +24,24 @@
  *     order-understanding-service.test.ts.
  *
  * Prereqs (self-checked in beforeAll; the suite skips if missing):
- *   - Redis Stack at REDIS_URL, populated with pos_config_id 1's menu + index.
+ *   - Postgres/pgvector at ODOO_DATABASE_URL, with pos_config_id 1's `item_vector`
+ *     rows seeded (npm run seed:menu:pg) and the Odoo menu tables present.
+ *   - Redis at REDIS_URL for the cart cache.
  *   - Ollama at LLM_BASE_URL serving LLM_MODEL (default qwen3:14b).
  *   - JINA_API_KEY for query embeddings (EMBEDDING_PROVIDER=jina).
  * Run with: npm run test:e2e   (see vitest.e2e.config.ts)
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import { Redis } from 'ioredis';
+import pg from 'pg';
 import { config } from '../src/config/env.js';
 import { EventBus } from '../src/events/event-bus.js';
 import type { AppEventMap, AppEventName } from '../src/events/event-types.js';
 import { RedisCartCache } from '../src/redis/cart-cache.js';
 import { MenuService } from '../src/menu/menu-service.js';
-import { RedisMenuStore } from '../src/menu/menu-store.js';
+import { PostgresMenuStore } from '../src/menu/postgres-menu-store.js';
+
+const { Pool } = pg;
 import { createLlmProvider, createIntentLlmProvider } from '../src/llm/llm-client.js';
 import type { LlmProvider, LlmPrompt } from '../src/llm/llm-provider.js';
 import { OrderGraph } from '../src/ordering/order-graph.js';
@@ -52,6 +58,7 @@ const TURN_MS = 500_000;
 
 // ---- live pipeline (built once in beforeAll) --------------------------------
 let redis: Redis;
+let pool: pg.Pool;
 let carts: RedisCartCache;
 let menu: MenuService;
 let bus: EventBus;
@@ -336,23 +343,33 @@ function emitFinal(
 
 beforeAll(async () => {
   redis = new Redis(config.redisUrl, { maxRetriesPerRequest: 1, lazyConnect: true });
+  pool = new Pool({ connectionString: config.odooDatabaseUrl });
 
-  // Preflight: Redis reachable + populated, Jina key present, Ollama reachable.
-  // Skip (don't fail) the whole suite if the live stack isn't there.
+  // Preflight: Redis reachable (cart cache), Postgres/pgvector reachable and seeded
+  // with pos 1's item_vector rows, Jina key present. Skip (don't fail) the whole
+  // suite if the live stack isn't there.
   try {
     await redis.connect();
     await redis.ping();
-    if ((await redis.scard(`menu:items:${POS}`)) === 0) {
-      infraSkipReason = `Redis has no menu for pos ${POS} (populate it + npm run index:menu)`;
-      return;
-    }
-    if (config.embeddingProvider === 'jina' && !config.jinaApiKey) {
-      infraSkipReason = 'EMBEDDING_PROVIDER=jina but JINA_API_KEY is empty';
-      return;
-    }
-
   } catch (err) {
     infraSkipReason = `Redis not reachable at ${config.redisUrl}: ${(err as Error).message}`;
+    return;
+  }
+  try {
+    const { rows } = await pool.query<{ n: number }>(
+      'SELECT count(*)::int AS n FROM item_vector WHERE pos_config_id = $1',
+      [POS],
+    );
+    if ((rows[0]?.n ?? 0) === 0) {
+      infraSkipReason = `Postgres has no item_vector rows for pos ${POS} (run npm run seed:menu:pg)`;
+      return;
+    }
+  } catch (err) {
+    infraSkipReason = `Postgres not reachable at ${config.odooDatabaseUrl} (or item_vector missing): ${(err as Error).message}`;
+    return;
+  }
+  if (config.embeddingProvider === 'jina' && !config.jinaApiKey) {
+    infraSkipReason = 'EMBEDDING_PROVIDER=jina but JINA_API_KEY is empty';
     return;
   }
 
@@ -360,7 +377,7 @@ beforeAll(async () => {
   // voice/realtime/WS). The Cart module is intentionally NOT wired: this suite asserts
   // the LLM output (order.operations_proposed), not the applied cart.
   carts = new RedisCartCache(redis);
-  menu = new MenuService(new RedisMenuStore(redis));
+  menu = new MenuService(new PostgresMenuStore(pool));
   const llm = recordingLlm(createLlmProvider());
   bus = new EventBus();
 
@@ -403,6 +420,7 @@ afterAll(async () => {
     process.stdout.write(lines.join('\n') + '\n');
   }
   if (redis) await redis.quit();
+  if (pool) await pool.end();
 });
 
 // ---- tests ------------------------------------------------------------------
