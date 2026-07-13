@@ -69,7 +69,7 @@ describe('menu record mapping', () => {
       names: { en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' },
       base_price_cents: 1299,
       available: true,
-      modifiers: [{ modifier_key: '5', ptav_id: 5, name: 'Large' }],
+      modifiers: [{ modifier_key: '5', ptav_id: 5, name: 'Large', names: { en_US: 'Large' } }],
     });
   });
 

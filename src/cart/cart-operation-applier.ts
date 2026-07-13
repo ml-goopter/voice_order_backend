@@ -5,11 +5,19 @@ import { CartRejectedError } from '../shared/errors.js';
 import { newLineId } from '../shared/ids.js';
 import { nowIso } from '../shared/time.js';
 import type { MenuLookup } from '../menu/menu-service.js';
+import type { CandidateModifier } from '../menu/menu-types.js';
 import type { Cart, CartLine, CartModifier } from './cart-types.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 
 const reject = (reason: string, message: string): Result<Cart, CartRejectedError> =>
   err(new CartRejectedError(reason, message));
+
+/** Snapshot a resolved menu modifier onto a cart line, capturing all-language names when present. */
+const toCartModifier = (mod: CandidateModifier): CartModifier => ({
+  ptav_id: mod.ptav_id,
+  name: mod.name,
+  ...(mod.names !== undefined ? { names: mod.names } : {}),
+});
 
 /** Recompute totals from menu prices. TODO: modifier price deltas + tax (§9). */
 async function priced(cart: Cart, items: CartLine[], menu: MenuLookup, pos: PosConfigId): Promise<Cart> {
@@ -44,12 +52,15 @@ export async function applyOperation(
       for (const ref of op.modifiers) {
         const mod = item.modifiers.find((m) => m.modifier_key === ref.modifier_key);
         if (!mod) return reject('invalid_modifier', `${item.names['en_US'] ?? item.menu_item_key} does not support that option.`);
-        modifiers.push({ ptav_id: mod.ptav_id, name: mod.name });
+        modifiers.push(toCartModifier(mod));
       }
       const line: CartLine = {
         line_id: newLineId(),
         product_tmpl_id: item.product_tmpl_id,
         name: item.names['en_US'] ?? Object.values(item.names)[0] ?? item.menu_item_key,
+        // Snapshot every language's name so the client can display in the customer's
+        // locale; `name` above stays the single-string default/fallback.
+        names: item.names,
         quantity: op.quantity,
         modifiers,
       };
@@ -79,7 +90,7 @@ export async function applyOperation(
         op.action === 'add_modifier'
           ? line.modifiers.some((m) => m.ptav_id === mod.ptav_id)
             ? line.modifiers
-            : [...line.modifiers, { ptav_id: mod.ptav_id, name: mod.name }]
+            : [...line.modifiers, toCartModifier(mod)]
           : line.modifiers.filter((m) => m.ptav_id !== mod.ptav_id);
       const items = cart.items.map((l) => (l.line_id === op.line_id ? { ...l, modifiers } : l));
       return ok(await priced(cart, items, menu, pos));

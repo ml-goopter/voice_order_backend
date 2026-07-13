@@ -30,6 +30,7 @@ export function buildSuggestionPrompt(input: SuggestionPromptInput): LlmPrompt {
     'List each item you mention in the customer_text of "reply" in the "items" array, in the order you mention them.',
     'Use current_cart to avoid recommending something already in the order and to suggest complementary items (an upsell).',
     'If nothing fits, return a helpful "reply" and an empty "items" array.',
+    'If you receive a language other than English, your "reply" should be in the same language'
   ].join('\n');
 
   const user = JSON.stringify(

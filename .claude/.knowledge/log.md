@@ -7,6 +7,32 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-13 — All-language names for the client (cart, modifiers, suggestions)
+- **What:** Added an all-language `names` map alongside the single-string `name` on every
+  client-facing item/modifier, so the frontend picks the display locale.
+  - **Cart items** — required `names: Record<LangCode, string>` on `CartLine`, snapshotted
+    from `item.names` in the applier.
+  - **Modifiers** — optional `names?` on `CandidateModifier` (`menu-types.ts`) and
+    `CartModifier` (`cart-types.ts`); both stores emit it (`PostgresMenuStore.hydrate` via
+    new `namesOf` helper, `toCandidateModifier` in `menu-store.ts`); the applier snapshots
+    it via a `toCartModifier` helper.
+  - **Suggestions** — optional `names?` on `CandidateItem` (`menu-types.ts`, populated in
+    `candidate-matcher.ts`) and `SuggestedItem` (`suggestion.schema.ts`); `suggest.node.ts`
+    carries it from the matched candidate into `order.suggestion_ready`.
+- **Why:** `cart.updated` and `order.suggestion_ready` only carried one display name (en_US
+  w/ fallback). The frontend needs every translated name to display in the customer's chosen
+  locale — language selection is a client concern.
+- **Where:** `menu` (`menu-types.ts`, `postgres-menu-store.ts`, `menu-store.ts`,
+  `candidate-matcher.ts`), `cart` (`cart-types.ts`, `cart-operation-applier.ts`), `ordering`
+  (`schemas/suggestion.schema.ts`, `nodes/suggest.node.ts`) + their tests. Frontend contract
+  doc updated (`shared/docs/frontend-integration-guide.md`).
+- **Notes:** Additive — flows to the client automatically since the events forward the stored
+  shapes. Multilingual data was already fetched from Odoo (`product_template.name` /
+  `product_attribute_value.name` jsonb); the read paths previously flattened it. The `names`
+  maps on modifiers/candidates/suggestions are optional (legacy data / minimal fixtures may
+  omit them); `name` stays the required single-string fallback. The LLM's `CartView`
+  (`load-cart.node.ts`) is unaffected (rebuilt from the menu, still en_US).
+
 ## 2026-07-13 — Menu backend: Postgres/pgvector replaces Redis
 - **What:** Added `PostgresMenuStore` (`src/menu/postgres-menu-store.ts`) implementing the
   `MenuStore` interface over an `item_vector` table (pgvector) that lives IN the Odoo Postgres DB.

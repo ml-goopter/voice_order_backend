@@ -33,7 +33,8 @@ and keeps its tests, but is no longer wired into the app.
   phrase, `k·4` over-fetch, best sim per DISTINCT tmpl); `lexicalSearch` is
   `name ILIKE ANY(%term%)`; hydration maps `base_price_cents = round(list_price·100)`,
   `available = available_in_pos AND active`, `modifier_key = String(ptav_id)`,
-  modifier `name` en_US-first. `ensureIndex()` runs idempotent DDL (`CREATE EXTENSION
+  modifier `name` en_US-first plus a full `names` map (`namesOf`, value-names else the
+  attribute's, for the client). `ensureIndex()` runs idempotent DDL (`CREATE EXTENSION
   vector`, `CREATE TABLE item_vector`, a `(pos,tmpl)` btree + an HNSW
   `vector_cosine_ops` index); no-ops when `dims <= 0`. Any query error degrades to
   empty → the matcher's fuzzy fallback. Uses a shared `pg.Pool`
@@ -51,7 +52,7 @@ and keeps its tests, but is no longer wired into the app.
   (hydrate), `getItem` (by tmpl id), `getItemByKey` (via the `menu:key:*` secondary
   index, falling back to an item scan if it is absent). `toMenuItem`/
   `toCandidateModifier` map stored JSON → runtime `MenuItem` (en_US-first modifier
-  name). Holds no state between calls. `InMemoryMenuStore` (`in-memory-menu-store.ts`)
+  name plus the full `names` map). Holds no state between calls. `InMemoryMenuStore` (`in-memory-menu-store.ts`)
   is the test double / Redis-free local option (KNN as an in-process cosine scan,
   lexical as substring+fuzzy); it is NOT wired into the production app.
 - **Index** (`menu-index.ts`): `idx:menuvec`, a RediSearch index over prefix
