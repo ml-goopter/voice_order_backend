@@ -7,6 +7,111 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-14 — Unify turn-failure logging under `order.turn_failed`
+- **What:** `order-understanding-service.ts` `dispatch()` now logs the `fail` outcome as
+  `order.turn_failed` (with `reason`) instead of `order.agent_no_terminal`. The event name is now
+  the same for every failure mode (node throw → `order_parse_failed`, and the agent loop's
+  `agent_step_limit` / `agent_no_terminal`); the `reason` field distinguishes the cause.
+- **Why:** Code-review finding — the old name mislabeled step-limit and node-throw failures as
+  "no terminal", muddying observability.
+- **Where:** `ordering/order-understanding-service.ts`.
+
+## 2026-07-13 — Embed the propose_cart operation JSON Schema in the agent system prompt
+- **What:** `agent-prompt-builder.ts` now generates a JSON Schema from `cartOperationSchema`
+  (`z.toJSONSchema` + a `scrubSchema` pass that drops zod's sentinel `maximum` and `$schema`) and
+  embeds it in the system prompt as the exact per-operation shape for `propose_cart`.
+- **Why:** Give the model the precise structural contract (fields/types/required per action),
+  derived from the source of truth so it can't drift from validation. It complements — does NOT
+  replace — the prose KEY RULES, which still carry the semantics a schema can't express (key
+  provenance, inline-modifier rule, matching a cart line by name).
+- **Where:** `llm/agent-prompt-builder.ts`. Knowledge: `llm/overview.md`.
+- **Notes:** The `propose_cart` tool spec `parameters` stays intentionally loose; the contract
+  lives in the system prompt per the existing design.
+
+## 2026-07-13 — Agent-loop review fixes (step budget, empty-propose guard, emit safety, dead config)
+- **What:**
+  - `LIMITS.maxAgentSteps` 4 → **8** so a model that searches one item per turn can still finish a
+    multi-item order before the loop bails (`agent_step_limit`).
+  - `run-tools.ts` `propose_cart` now rejects an **empty/absent `operations`** list as a retriable
+    tool error instead of validating it to an empty proposal (`operations` defaults to `[]`, which
+    previously let a malformed call silently "succeed" and drop the customer's request).
+  - `order-understanding-service.ts` restructured: `runTurn` now returns the full `GraphTurnResult`
+    (mapping a node throw to `{status:'fail'}`) and a new `dispatch` emits the outcome **outside**
+    the try/catch — so a throwing event subscriber can't be swallowed and re-reported as a turn
+    failure (double-emit). Previously only the proposal was emitted outside; reply/fail were inside.
+  - Removed dead `LIMITS.llmMaxRetries` (its consumer, the old schema-repair loop, was deleted).
+- **Why:** Findings from the post-rework code review (correctness + robustness + cleanup).
+- **Where:** `config/constants.ts`, `ordering/tools/run-tools.ts`,
+  `ordering/order-understanding-service.ts`, plus tests. Knowledge: `ordering/overview.md`.
+- **Notes:** New tests — empty-`propose_cart` loops then proposes; step-limit test now keys off
+  `LIMITS.maxAgentSteps` so it can't drift. NOT addressed: the loss of structured recommended-item
+  keys in history (a deliberate rework tradeoff — follow-ups resolve via re-search) is left as-is
+  pending a product decision.
+
+## 2026-07-13 — Fix: preserve provider tool-call payload so Gemini agent loop doesn't 400
+- **What:** `ToolCall` now carries an opaque `raw` field holding the provider's original
+  tool-call object; `parseToolCall` stashes it and `toOpenAiMessage` replays it VERBATIM
+  instead of rebuilding `{id,type,function}` from `id`/`name`/`arguments`. The
+  tool-calls-only assistant turn also now OMITS `content` (was `content: null`).
+- **Why:** Gemini 3.x attaches a `thought_signature` to every function call that its
+  OpenAI-compatible endpoint requires echoed back on the follow-up request; rebuilding the
+  call dropped it, so the SECOND `chat()` (the first to replay an assistant tool-call turn)
+  failed with a bare `400`, ending every multi-step turn as `voice.session_failed`. The
+  agent loop could never take more than one step against Gemini.
+- **Where:** `llm/llm-provider.ts` (ToolCall.raw), `llm/openai-compatible-provider.ts`
+  (`parseToolCall`, `toOpenAiMessage`), `llm/openai-compatible-provider.test.ts`.
+- **Notes:** Root cause isolated by replaying against the live endpoint — verbatim replay
+  succeeds, rebuilt call 400s regardless of `content` (null vs omitted). `raw` stays opaque
+  to the rest of the system; only the producing provider reads it.
+
+## 2026-07-13 — Agent tool-calling: graph rework replaces the pipeline (Phase 2)
+- **What:** Replaced the fixed `retrieve → parse → suggest` order pipeline with an LLM
+  **agent tool-calling loop** (`normalize → classify → load_cart → agent ⇄ tools → finalize`).
+  - `classify` demoted to a **junk-gate**: `order` and `suggest` both route to `load_cart` →
+    `agent`; `junk` → END. Force-order next turn now keys off the prior turn's `agent_reply`.
+  - Two tools (`ordering/tools/`): `search_menu_semantic` (wraps `menu.getCandidates`) and
+    `propose_cart` (validates against the zod output schema; a failure is a repair-friendly
+    tool error retried within `LIMITS.maxAgentSteps` = 4). New `llm/agent-prompt-builder.ts`.
+  - **Clarify and suggest merged into one `reply` outcome**: the agent ends a turn either by
+    calling `propose_cart` OR by replying with plain text (no tool call). The spoken reply is
+    fire-and-forget. New event **`order.reply`** replaces `order.clarification_needed` +
+    `order.suggestion_ready` (updates the WS gateway + `realtime-message-types`). **This changes
+    the client-facing WS protocol.**
+  - New turn-scoped state channels (`agent_messages`, `agent_steps`, `failure_reason`, `reply`),
+    all cleared in `normalize`; `GraphTurnResult` is now `complete | reply | junk | fail`.
+  - **Dropped the consecutive-clarification cap** (`maxClarifications`, `clarification_unresolved`,
+    `trailingClarificationRun`) — a merged reply outcome shouldn't cap multi-turn conversations;
+    within-turn runaway is bounded by `maxAgentSteps`.
+  - **Deleted** `retrieve-candidates`/`parse-order`/`parse-and-validate`/`validate-operations`/
+    `suggest` nodes, `prompt-builder`, `suggestion-prompt-builder`, `suggestion.schema`; simplified
+    `order-graph-output` to operations-only and removed the orphaned `OrderGraphInput` type.
+  - Migrated `order-understanding-service.test.ts` (reply outcome, force-order, propose retry,
+    step-limit fail), `realtime-gateway.test.ts`, `state.test.ts`, `intents.test.ts`.
+- **Why:** Let the model drive retrieval and decide the outcome, per docs/agent-tools.md — and,
+  per follow-up, express clarify/suggest as a plain spoken reply rather than as tools.
+- **Where:** ordering (`src/ordering/`), llm (`src/llm/agent-prompt-builder.ts`), events, realtime,
+  config.
+- **Notes:** Production now requires a tool-capable model (stub scripts tool calls for tests).
+  Prompted-ReAct fallback for weak models is still deferred.
+
+## 2026-07-13 — Agent tool-calling: provider `chat()` (Phase 1)
+- **What:** Added native tool-calling to the LLM provider abstraction. New types in
+  `llm-provider.ts` (`ToolSpec`, `ToolCall`, `AgentMessage`, `ChatResult`) and a
+  `chat(messages, tools)` method on `LlmProvider`. Implemented `chat` in
+  `OpenAiCompatibleLlmProvider` (maps `AgentMessage[]`/`ToolSpec[]` onto the OpenAI
+  `tools` API, parses `tool_calls` with JSON-decoded arguments, malformed args → `{}`).
+  `StubLlmProvider.chat` replays an optional scripted `ChatResult[]`. Added provider
+  `chat` unit tests; added throwaway `chat` stubs to the three existing test fakes so
+  the widened interface still compiles.
+- **Why:** First phase of the agent-tools rework (`docs/agent-tools.md`) — turn the
+  passive `retrieve → parse` pipeline into an LLM agent that drives retrieval by
+  calling tools. Phase 1 is provider plumbing only; no graph/behavior change yet.
+- **Where:** llm module (`src/llm/`).
+- **Notes:** `complete()` is unchanged and still used by the parser/classifier. No
+  agent graph yet — that's Phase 2 (agent/tools nodes, delete `retrieve`/`parse`/
+  `suggest`). Pre-existing 2 failures in `order-understanding-service.test.ts`
+  (consecutive-clarification cap) are unrelated to this change.
+
 ## 2026-07-13 — Remove Redis code from the menu module
 - **What:** Deleted `RedisMenuStore`, the RediSearch index (`menu-index.ts`), and their
   tests. Reduced `menu-store.ts` to just the `MenuStore` interface; dropped the now-unused

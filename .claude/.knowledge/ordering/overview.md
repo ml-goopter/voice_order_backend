@@ -1,17 +1,17 @@
 ---
 type: Concept
 title: Order Understanding (LangGraph-style)
-description: Serialized per-cart turns → node pipeline → operations_proposed or clarification_needed.
+description: Serialized per-cart turns → agent tool-calling loop → operations_proposed / reply.
 resource: src/ordering
-timestamp: 2026-07-07
+timestamp: 2026-07-13
 ---
 
 # Order Understanding
 
 ## Purpose
 Turns `stt.final_transcript.received` into an `OrderProposal` (operations +
-`base_version`) or an `order.clarification_needed` (design §6). It is a **pure
-proposer**; the Cart Module validates and applies.
+`base_version`) or an `order.reply` (a spoken clarification/recommendation), design §6.
+It is a **pure proposer**; the Cart Module validates and applies.
 
 ## Mechanics
 - **Tier-1 per-cart FIFO** (`cart-turn-queue.ts`, backed by `shared/async-lock`):
@@ -19,107 +19,101 @@ proposer**; the Cart Module validates and applies.
   turn 2 sees turn 1's result and loads a fresh `base_version` (design §9). Sits
   **in front of** the graph.
 - **Graph** (`order-graph.ts` + `graph/`) is a real `@langchain/langgraph`
-  `StateGraph`. The entry point is `normalize`; `classify` (intent classification, design §6)
-  runs right after it and labels the NORMALIZED utterance `order` | `suggest` | `junk` (a cheap
-  first-hop LLM call on its OWN provider/creds — `INTENT_LLM_*` env, falling back to `LLM_*`;
-  built by `createIntentLlmProvider`, threaded as `GraphDeps.intentLlm` →
-  `nodes/classify-intent.node.ts`), routing on it via ONE table-driven conditional edge
-  (`INTENT_ROUTE` in `graph/intents.ts`, the single source of truth for the intent set →
-  destination). `order` continues the proposer spine `normalize → classify → load_cart →
-  retrieve → parse → finalize → END`; `suggest` → a recommender node (`nodes/suggest.node.ts`)
-  that loads the cart + retrieves candidates and asks the LLM for a recommendation → `finalize`;
-  `junk` → straight to `END` (skips `finalize`, so a non-orderable utterance is NOT
-  recorded to history and can't pollute later `parse` context). The suggest node writes a
-  `Suggestion` (`reply` + the real `items` it named, filtered to the candidates — each item's
-  `name` plus its all-language `names` map is taken from the matched candidate, NOT the model's
-  echo, and keys are deduped, so the menu is the source of truth for what reaches the client and
-  history) to the `suggestion`
-  state channel; the façade surfaces it as `{ status: 'suggest', reply, items }` and the service
-  emits `order.suggestion_ready`. `finalize` records the suggested items into the turn's
-  `HistoryTurn.suggested_items` (and `normalize` clears the `suggestion` channel each fresh turn)
-  so a follow-up ("the first one") resolves against them on the next `parse`. The node DEGRADES to
-  a safe fallback reply (empty items) on any LLM failure — a bad recommendation never fails the
-  turn. Junk turns still short-circuit (no cart load, no parse); suggest turns load the cart and
-  retrieve but never call the proposer `parse`. Adding/routing a new intent is a one-row edit to `intentSchema` +
-  `INTENT_ROUTE`. The classifier DEGRADES TO `order` on any failure (transport error, non-JSON,
-  non-object payload, unknown label) so a real order is never dropped (the `stub` provider
-  therefore always yields `order`); when a clarification is pending it forces `order` and skips
-  the classifier so the answer is never mislabeled `junk`. A clarification is NOT a
-  branch/pause — `parse` simply sets `needs_clarification` and `finalize` records the question;
-  the order path always runs to `END`. Compiled with a `MemorySaver` checkpointer keyed by
-  `thread_id = ${pos_config_id}:${cart_id}` — context follows the CART, not a
-  session, so multiple sessions on one cart share conversational memory (§6). State
-  channels live in `graph/state.ts` (`Annotation.Root`, last-write-wins with
-  defaults); `base_version` is captured at `load_cart` (= `cart.version`). Two channels carry information across turns beyond a single
-  invoke (Plan A); `candidates` is per-turn (last-write-wins — `retrieve` fully
-  replaces it each turn, capped at `LIMITS.maxCandidatesToLlm`):
-  - **`cart_view`** (Plan A): `load_cart` projects the stored cart into a
-    self-describing `CartView` (`buildCartView`) — each line carries `line_id`, `name`,
-    `menu_item_key`, its current modifiers, and the item's `available_modifiers`
-    (keys/names only; numeric ids omitted) so an edit by reference resolves from the
-    cart alone. This is the prompt's `current_cart`; the stored `Cart` shape is untouched.
-    It supersedes the earlier candidate-accumulation idea (Plan B, removed): a
-    cart-resident item's `line_id` + modifier vocabulary now come from the cart itself,
-    not from keeping stale candidates alive.
-  - **`history`** (Plan A): the `finalize` node appends each completed turn's
-    `customer_text`, plus — when THIS turn raised a clarification — the newly asked
-    `clarification_question` (`mergeHistory`, capped at `LIMITS.maxHistoryTurns`). Re-sent
-    to the next turn's `parse` as `conversation_history` so references ("that", "the same")
-    resolve. Reference-only — the prompt forbids re-executing a past request; `current_cart`
-    is the source of truth.
+  `StateGraph` implementing an **agent tool-calling loop** (docs/agent-tools.md), NOT a
+  fixed retrieve→parse pipeline: `normalize → classify → load_cart → agent ⇄ tools →
+  finalize → END`.
+  - **classify** is a **junk-gate** only. It labels the utterance `order`/`suggest`/`junk`
+    via a cheap first-hop LLM call on its OWN provider/creds (`INTENT_LLM_*` env, falling
+    back to `LLM_*`; `createIntentLlmProvider` → `GraphDeps.intentLlm` →
+    `nodes/classify-intent.node.ts`), routing via the one table-driven conditional edge
+    `INTENT_ROUTE` (`graph/intents.ts`, single source of truth). `order` AND `suggest`
+    both route into the pipeline (`load_cart` → `agent`) — the agent decides the outcome;
+    `junk` → straight to `END` (a non-orderable utterance is NOT recorded to history, so it
+    can't pollute later context). The classifier DEGRADES to `order` on any failure (so a
+    real order is never dropped; the `stub` provider therefore always yields `order`). When
+    the previous turn ended in a spoken reply (the last `history` entry has `agent_reply`),
+    classify **forces `order`** and skips the LLM call, so a terse follow-up isn't misrouted
+    to junk.
+  - **agent** (`nodes` inline in `build-graph.ts`) runs one LLM tool-calling turn via
+    `LlmProvider.chat`. On first entry it seeds the transcript with the system prompt +
+    user context (`buildAgentMessages` in `llm/agent-prompt-builder.ts`: `customer_text`,
+    `current_cart`, `conversation_history` — candidates are NOT pre-fetched). It ends the
+    turn one of two ways: by calling **`propose_cart`** (structured operations), or by
+    **replying with plain text** (no tool call) — a single "reply" outcome serving as both
+    a clarifying question and a recommendation. Bounded by `LIMITS.maxAgentSteps` (8, sized to
+    allow several sequential per-item searches before a propose);
+    exhaustion → `failure_reason='agent_step_limit'`; an empty reply → `agent_no_terminal`.
+  - **tools** (`tools/run-tools.ts`) executes the requested tool calls, appends their
+    results to the turn scratchpad, and loops back to the agent. Two tools
+    (`tools/tool-specs.ts`): `search_menu_semantic` (wraps `menu.getCandidates`, loopable)
+    and `propose_cart` (validates args against `order-graph-output` zod schema; a failure —
+    including an **empty/absent `operations`** list — is a repair-friendly **tool error** the
+    agent retries within `maxAgentSteps`, rather than a silent empty proposal; this replaces
+    the old separate schema-repair round). A successful `propose_cart` writes the `output`
+    channel and ends the loop.
+  - **finalize** records the completed turn to `history`: always `customer_text`, plus
+    `agent_reply` when the agent ended by speaking (so the next turn has the context and
+    force-orders). Committed/failed turns record only the utterance.
+- **State** (`graph/state.ts`, `Annotation.Root`, last-write-wins with defaults):
+  `base_version` captured at `load_cart` (= `cart.version`). The agent's two mutually
+  exclusive terminal channels are `output` (propose_cart) and `reply` (spoken). Turn-scoped
+  channels reset by `normalize` each turn (the checkpointer persists everything, so anything
+  left would leak): `output`, `reply`, `agent_messages` (the tool-calling scratchpad — NEVER
+  persisted across turns), `agent_steps`, `failure_reason`. Two channels carry across turns:
+  - **`cart_view`** (Plan A): `load_cart` projects the stored cart into a self-describing
+    `CartView` (`buildCartView`) — each line carries `line_id`, `name`, `menu_item_key`, its
+    modifiers, and the item's `available_modifiers` (keys/names only; numeric ids omitted) so
+    an edit by reference resolves from the cart alone. This is the prompt's `current_cart`.
+  - **`history`** (Plan A): `finalize` appends each turn's `customer_text` + `agent_reply`
+    (`mergeHistory`, capped at `LIMITS.maxHistoryTurns`). Re-sent to the next turn's agent as
+    `conversation_history` so references ("that", answers to a prior reply) resolve.
+    Reference-only — `current_cart` is the source of truth.
 
-  The `OrderGraph` façade exposes `start()` returning a `GraphTurnResult`
-  (`complete` with `{output, base_version}` | `clarify` with `{question, round, options?}` |
-  `suggest` | `junk` — the last two mean the classifier routed the utterance away from the
-  proposer; the service logs and ends the turn with no proposal and no failure).
-- **Clarification is fire-and-forget** (§6, no pause): when `parse` sets
-  `needs_clarification`, `finalize` records the question to `history` and the turn ENDS —
-  the service emits `order.clarification_needed` and releases its FIFO slot (nothing
-  blocks, no timeout). The customer's answer arrives as the **next** `stt.final_transcript`;
-  that turn's `normalize` sees the pending question as the last `history` entry
-  `clarification_question` and carries it into `parse`
-  (the current utterance is the answer) so it resolves the original request. `trailingClarificationRun(history)`
-  counts consecutive unanswered clarifications; the service fails the turn
-  (`voice.session_failed` reason `clarification_unresolved`) once it exceeds
-  `MAX_CLARIFICATION_ROUNDS`, so a looping model can't freeze the cart. There is no
-  `order.clarification_answered` inbound message anymore — the answer is just the next turn.
-- **Schema-repair retry** (§11.3 stages 2/3): `nodes/parse-and-validate.node.ts`
-  validates the LLM JSON and, on failure, re-prompts once (`LIMITS.llmMaxRetries`)
-  with `buildRepairPrompt` (rejected output + validation error). Exhaustion throws →
-  the `parse` node rejects → service emits `voice.session_failed` (`order_parse_failed`).
-- **Service** (`order-understanding-service.ts`) enqueues the turn, runs the graph once,
-  then emits `order.operations_proposed` (with the `OrderProposal`) or
-  `order.clarification_needed`, or `voice.session_failed`.
-- **Contracts** in `schemas/`: `cart-operation` + `order-graph-output` are **zod**
-  schemas (types inferred; `parse*` return `Result` with a repair-friendly message
-  via `zod-error.ts`); `order-graph-input`, `clarification`, `proposal` are types.
-  The LLM speaks in `menu_item_key`/`modifier_key`; edits target a `line_id`.
+  Compiled with a `MemorySaver` checkpointer keyed by `thread_id =
+  ${pos_config_id}:${cart_id}` — context follows the CART, not a session.
+- **`OrderGraph` façade** exposes `start()` → `GraphTurnResult`: `complete` (`{output,
+  base_version}`) | `reply` (`{reply}`) | `junk` | `fail` (`{reason}`). `interpret()` is
+  channel-driven: junk → junk; `failure_reason` → fail; `output` → complete; `reply` → reply.
+- **Reply is fire-and-forget** (no pause): the service emits `order.reply` and releases its
+  FIFO slot; the customer's answer arrives as the **next** transcript, whose `classify`
+  force-orders because the last history turn carries `agent_reply`. There is no consecutive-
+  clarification cap anymore (clarify and suggest are one outcome; a legitimate multi-turn
+  conversation shouldn't trip a cap, and within-turn runaway is bounded by `maxAgentSteps`).
+- **Service** (`order-understanding-service.ts`) enqueues the turn, runs the graph once, then
+  emits `order.operations_proposed` (with the `OrderProposal`), `order.reply`, or
+  `voice.session_failed` (reason `agent_step_limit` / `agent_no_terminal` / `order_parse_failed`).
+- **Contracts** in `schemas/`: `cart-operation` + `order-graph-output` are **zod** schemas
+  (`order-graph-output` is now operations-only — clarification is a reply, not an output);
+  `order-graph-input` holds prompt-facing `CartView`/`CartLineView`/`HistoryTurn` types; the
+  LLM speaks in `menu_item_key`/`modifier_key`; edits target a `line_id`.
 
 ## Dependencies
 - `@langchain/langgraph` (graph + checkpointer), `zod` (schemas).
-- `menu` (candidates + key resolution), `llm` (parse), `persistence` (CartCache
-  load), `events` (EventBus). `register-handlers.ts` binds to the bus.
+- `menu` (candidate search via the agent's `search_menu_semantic` tool + key resolution),
+  `llm` (`chat` tool-calling + intent `complete`), `redis` (CartCache load), `events`
+  (EventBus). `register-handlers.ts` binds to the bus.
 
 ## Key files
 - `order-understanding-service.ts`, `order-graph.ts` (façade), `cart-turn-queue.ts`,
   `register-handlers.ts`.
-- `graph/state.ts`, `graph/build-graph.ts` — LangGraph state + graph wiring.
-- `graph/intents.ts` — `intentSchema` (`order`/`suggest`/`junk`) + `INTENT_ROUTE` table: the
-  single source of truth the classifier prompt, its validation, and the routing edge derive from.
-- `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` (with node name +
-  correlation ids) on any node throw, passing through LangGraph control-flow bubbles.
+- `graph/state.ts`, `graph/build-graph.ts` — LangGraph state + graph wiring (agent/tools nodes).
+- `graph/intents.ts` — `intentSchema` (`order`/`suggest`/`junk`) + `INTENT_ROUTE` junk-gate
+  (order/suggest → load_cart, junk → END).
+- `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` on any node throw.
 - `nodes/*.node.ts` — `classify-intent` (LLM intent classifier, defaults to `order`),
-  `normalize`, `load-cart`, `retrieve-candidates`, `parse-order`, `validate-operations`,
-  `parse-and-validate` (parse + repair loop), and `suggest` (`generateSuggestion` — LLM
-  recommender over the candidates, degrades to a fallback reply).
-- `schemas/*.ts` — operation/input/output/clarification/proposal/suggestion types + zod
-  validators (`suggestion.schema.ts` = `Suggestion`/`SuggestedItem` + `parseSuggestion`).
-- `order-understanding-service.test.ts` — happy path, edits, fire-and-forget clarify
-  (question then answered by the next transcript), consecutive-clarification cap, repair
-  (retry + exhaustion), per-cart FIFO ordering.
+  `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)
+- `tools/tool-specs.ts` — `search_menu_semantic` + `propose_cart` specs; `tools/run-tools.ts` —
+  the `tools` node executing them.
+- `schemas/*.ts` — `cart-operation` (zod), `order-graph-output` (operations-only, zod),
+  `order-graph-input` (CartView/HistoryTurn types), `clarification`/`proposal`, `zod-error`.
+- `order-understanding-service.test.ts` — happy path, edits, spoken-reply fire-and-forget
+  (reply then answered next transcript), force-order after a reply, propose validation retry,
+  step-limit fail, per-cart FIFO, history persistence, junk short-circuit.
 
 ## Not done yet
-- Business validation of operations against candidates (unknown key → clarify,
-  §11.3 stage 4) is deferred to the Cart Validator. `supported_languages` is still
-  hardcoded `[]` (TODO: source from `voice_restaurant_settings`). `MemorySaver` is
-  in-process only — a durable (Redis/Postgres) checkpointer would survive restarts.
+- Business validation of operations against candidates (unknown key → clarify) is deferred to
+  the Cart Validator. `supported_languages` is still hardcoded `[]` (TODO: source from
+  `voice_restaurant_settings`). `MemorySaver` is in-process only — a durable checkpointer would
+  survive restarts. Production requires a **tool-capable** model (the stub scripts tool calls;
+  a non-tool-calling runtime model cannot drive the agent). A prompted-ReAct fallback for weak
+  models is deferred (docs/agent-tools.md §4).

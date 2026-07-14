@@ -56,7 +56,6 @@ Direct calls inside modules.
 ```
 
 ### End-to-end flow
-
 ```mermaid
 flowchart TD
     A[Mobile App] <-->|One WebSocket connection| B[Realtime Gateway]
@@ -78,17 +77,31 @@ flowchart TD
     subgraph Ordering[Ordering / LangGraph]
         F --> G[Normalize Transcript]
         G --> H[Load Current Cart]
-        H --> I[Menu Candidate Matcher]
-        I --> J[LLM Parser]
-        J --> K[Validate Structured Output]
-        K --> L{Clear?}
+        H --> I[LLM Agent]
+
+        I --> J[Tools]
+        J --> K[Semantic Search]
+        J --> M[Filtering Search]
+        J --> N[Popularity Search]
+        J --> U[Answer / Ask Question]
+        J --> V[Propose Cart]
+
+        K --> I
+        M --> I
+        N --> I
+
+        U --> L[Validate Structured Output]
+        V --> L
+        L --> W{Clear?}
     end
 
-    I <--> M[Menu Cache / Embeddings]
-    J <--> N[Cloud LLM]
+    K <--> X[Menu Cache / Embeddings]
+    M <--> X
+    N <--> X
+    I <--> Y[Cloud LLM]
 
-    L -.->|No: order.clarification_needed| E
-    L -.->|Yes: order.operations_proposed| E
+    W -.->|No: order.clarification_needed| E
+    W -.->|Yes: order.operations_proposed| E
 
     E -.->|Clarification needed| B
     B -->|Ask customer| A
@@ -110,7 +123,6 @@ flowchart TD
     Q -->|On customer confirmation| S[Odoo endpoints]
     R <-->|Sync db data on change| S
 ```
-
 ### Core internal events
 
 ```
