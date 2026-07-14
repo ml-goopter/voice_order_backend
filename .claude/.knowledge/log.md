@@ -7,6 +7,51 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-14 — TTS: standalone mp3 per sentence segment (progressive playback)
+- **What:** Reworked TTS so each `tts.audio_chunk` is a **complete, standalone** audio file
+  rather than a byte slice of one continuous mp3 stream. `TtsService` now splits the reply
+  into ≈sentence segments (`segment-text.ts`) and synthesizes each as its own Deepgram request,
+  emitting one chunk per segment as it completes. The `TtsProvider` contract changed from
+  callback-streaming (`synthesize(text, handlers) → TtsSynthesis` with `onAudio`/`onDone`/
+  `onError`) to one-shot `synthesize(text, signal) → Promise<Buffer>`; `DeepgramTtsProvider`
+  drains the streamed body into one buffer. Removed `TtsStreamHandlers`/`TtsSynthesis`.
+- **Why:** The frontend needs each chunk to be independently decodable/playable — mid-stream
+  slices of a single mp3 aren't (Layer III bit reservoir). Per-segment synthesis yields an
+  independent mp3 per sentence and lets the client play segment 1 while segment 2 synthesizes
+  (low time-to-first-audio). Deepgram bills per character, so N requests cost the same as one.
+- **Where:** `src/tts/` (`tts-types.ts`, `tts-service.ts`, `deepgram-tts-provider.ts`,
+  `tts-client.ts`, new `segment-text.ts`, + tests); `realtime/realtime-message-types.ts` (chunk
+  doc); `docs/text-to-speech.md`, `.claude/.knowledge/tts/overview.md`.
+- **Notes:** Wire message shapes are unchanged (same `tts.*` types); only the *meaning* of a
+  chunk changed (standalone file, not a stream slice) — a coordinated frontend/backend contract
+  change. `seq` is now the segment index. Barge-in/cancel still per-session `AbortController`
+  (now aborts the in-flight segment and halts the loop).
+
+## 2026-07-14 — Cancel in-flight TTS on client disconnect
+- **What:** Added `TtsService.cancel(session_id)` and call it from the Realtime Gateway's
+  `onDisconnect` (next to the existing STT teardown). It aborts any in-flight synthesis for
+  the session and drops the handle.
+- **Why:** A client that dropped mid-reply left the Deepgram synthesis running — a paid
+  request streaming frames into a closed socket — with no symmetric teardown (STT already
+  cancelled on disconnect).
+- **Where:** `src/tts/tts-service.ts`, `realtime/realtime-gateway.ts` (+ tests).
+
+## 2026-07-14 — Stream TTS audio for spoken replies (Deepgram)
+- **What:** New `tts` module. The Realtime Gateway now, on `order.reply`, both sends the reply
+  text and drives `TtsService` to synthesize it via Deepgram Aura and stream the audio back over
+  the same socket as new `tts.audio_start` / `tts.audio_chunk` (base64) / `tts.audio_end` /
+  `tts.error` outbound messages. Provider abstraction mirrors STT (`TtsProvider` + factory +
+  `NoopTtsProvider` fallback); Deepgram REST speak (`@deepgram/sdk`) streamed frame by frame with
+  an injectable `SpeakFn`. Barge-in is cancel-previous-only (per-session `AbortController`).
+- **Why:** Speak the agent's clarifying questions/recommendations to the customer, not just show
+  them (`docs/text-to-speech.md`).
+- **Where:** `src/tts/` (new); `realtime/realtime-gateway.ts`, `realtime/realtime-message-types.ts`,
+  `app.ts`, `config/env.ts`, `.env.example`.
+- **Notes:** Config `TTS_PROVIDER` (default `deepgram`), `DEEPGRAM_API_KEY`, `TTS_MODEL`
+  (`aura-2-thalia-en`), `TTS_ENCODING` (`mp3` default), `TTS_SAMPLE_RATE` (linear16 only). New dep
+  `@deepgram/sdk`. Frontend contract documented in `../shared/docs/frontend-integration-guide.md`.
+  Full barge-in on `voice.start` remains out of scope.
+
 ## 2026-07-14 — Unify turn-failure logging under `order.turn_failed`
 - **What:** `order-understanding-service.ts` `dispatch()` now logs the `fail` outcome as
   `order.turn_failed` (with `reason`) instead of `order.agent_no_terminal`. The event name is now

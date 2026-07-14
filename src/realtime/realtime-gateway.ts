@@ -1,6 +1,7 @@
 import type { EventBus } from '../events/event-bus.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import type { VoiceMessageHandler } from '../voice/voice-message-handler.js';
+import type { TtsService } from '../tts/tts-service.js';
 import { ClientRegistry, type ClientConnection } from './client-registry.js';
 import { MessageRouter } from './message-router.js';
 import { parseInbound, type ConnectionResumeMsg } from './realtime-message-types.js';
@@ -20,6 +21,7 @@ export class RealtimeGateway {
     private readonly bus: EventBus,
     private readonly voice: VoiceMessageHandler,
     private readonly carts: CartCache,
+    private readonly tts: TtsService,
   ) {
     this.router = new MessageRouter(voice);
     this.subscribe();
@@ -36,12 +38,15 @@ export class RealtimeGateway {
 
     this.bus.on('order.reply', (e) => {
       const c = this.registry.getBySession(e.session_id);
-      c?.send({
+      if (!c) return;
+      c.send({
         type: 'order.reply',
         cart_id: e.cart_id,
         request_id: e.request_id,
         reply: e.reply,
       });
+      // Speak the reply: synthesize with TTS and stream the audio back over the same socket.
+      this.tts.speak(c, { session_id: e.session_id, request_id: e.request_id }, e.reply);
     });
 
     this.bus.on('cart.operation_rejected', (e) => {
@@ -68,6 +73,7 @@ export class RealtimeGateway {
   onDisconnect(conn: ClientConnection): void {
     this.registry.remove(conn);
     this.voice.handleDisconnect(conn.session_id);
+    this.tts.cancel(conn.session_id);
     logger.info('ws.disconnect', { session_id: conn.session_id });
   }
 

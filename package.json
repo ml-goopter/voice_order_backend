@@ -25,6 +25,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "@deepgram/sdk": "^5.5.0",
     "@langchain/langgraph": "^1.4.7",
     "assemblyai": "^4.35.3",
     "ioredis": "^5.11.1",
