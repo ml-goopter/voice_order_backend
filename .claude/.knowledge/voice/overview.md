@@ -35,8 +35,10 @@ that may eventually touch the cart (§11 invariant).
   speech progress (a growing partial or a final; empty/keepalive and verbatim-repeat
   partials are ignored via `lastPartialText`). It is never reset by `voice.audio_chunk`,
   since the mic keeps streaming audio during silence. If no progress arrives within
-  `TIMEOUTS.partialIdleMs` (2.5 s) while `listening`, it auto-invokes `handleStop` — the
-  same flush/grace path as a client `voice.stop`. Cleared on stop, disconnect, and STT
+  `TIMEOUTS.partialIdleMs` while `listening`, it first sends the client a `voice.stopped`
+  (`reason: 'idle'`) notice — a server-initiated stop echoes back so the client can drop its
+  listening UI; a client-sent `voice.stop` gets no such echo — then auto-invokes `handleStop`,
+  the same flush/grace path as a client `voice.stop`. Cleared on stop, disconnect, and STT
   error; `unref`'d so it never holds the process open. This is the shorter turn-level
   end-of-turn signal; the separate ~20–30 s session-idle "walked away" backstop
   (`docs/voice-idle-timeout.md`) is still only proposed.

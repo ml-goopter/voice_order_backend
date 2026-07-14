@@ -7,6 +7,16 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-14 — Notify client on server-initiated (idle) voice stop
+- **What:** Added outbound WS message `voice.stopped` (`{ session_id; reason: 'idle' }`) and
+  send it when the stopped-talking idle timer fires, just before `handleStop`. A client-sent
+  `voice.stop` gets no echo. Reviewed existing outbounds first — none fit (`voice.final_transcript`
+  is conditional/display, `voice.error` would mislabel a normal end-of-turn as a failure).
+- **Why:** On a server-initiated stop the client had no signal that the backend closed the mic,
+  so it couldn't drop its listening UI or stop capturing audio.
+- **Where:** `realtime/realtime-message-types.ts` (new `VoiceStoppedMsg` + union),
+  `voice/voice-message-handler.ts` (`armIdleStop` emit), `docs/design.md` §17.7, `voice` bundle.
+
 ## 2026-07-14 — TTS: standalone mp3 per sentence segment (progressive playback)
 - **What:** Reworked TTS so each `tts.audio_chunk` is a **complete, standalone** audio file
   rather than a byte slice of one continuous mp3 stream. `TtsService` now splits the reply

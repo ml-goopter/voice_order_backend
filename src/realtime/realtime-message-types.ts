@@ -105,6 +105,16 @@ export interface VoiceErrorMsg {
   reason: string;
   message: string;
 }
+/**
+ * Server→client notice that the backend closed the mic on its own (not in response to a
+ * client `voice.stop`). Sent when the stopped-talking idle timer fires so the client can
+ * drop its listening UI and stop capturing audio. Symmetric to the inbound `voice.stop`.
+ */
+export interface VoiceStoppedMsg {
+  type: 'voice.stopped';
+  session_id: SessionId;
+  reason: 'idle';
+}
 export interface ConnectionResumedMsg {
   type: 'connection.resumed';
   session_id: SessionId;
@@ -125,6 +135,7 @@ export type OutboundMessage =
   | CartUpdatedMsg
   | CartOperationRejectedMsg
   | VoiceErrorMsg
+  | VoiceStoppedMsg
   | ConnectionResumedMsg;
 
 export function parseInbound(raw: string): InboundMessage | null {
