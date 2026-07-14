@@ -25,6 +25,9 @@ It owns **no cart logic** — it only delivers what the Cart Module produces.
   to **every** socket on the `cart_id` — multi-device/reconnect, §9 Tier 2),
   `order.clarification_needed` (to the asking session), and `cart.operation_rejected`
   (to the originating session, else the whole cart).
+- **Spoken replies (`order.reply`):** the gateway sends the reply **text** to the session
+  socket **and** drives `TtsService.speak` to synthesize it and stream `tts.*` audio frames
+  back over the same socket (base64 in JSON). See the [tts](../tts/index.md) bundle.
 - **Partial transcripts** are sent to the client directly by the Voice module, not
   here — they never enter the backend event flow (§3).
 - **Client registry** indexes connections `bySession` and `byCart`.

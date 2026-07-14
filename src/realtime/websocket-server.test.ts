@@ -7,6 +7,8 @@ import { EventBus } from '../events/event-bus.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
 import { VoiceSessionManager } from '../voice/voice-session-manager.js';
 import { VoiceMessageHandler } from '../voice/voice-message-handler.js';
+import { TtsService } from '../tts/tts-service.js';
+import { createTtsProvider } from '../tts/tts-client.js';
 import type { SttProvider } from '../stt/stt-provider.js';
 import type { SttStream, SttStreamHandlers } from '../stt/stt-types.js';
 
@@ -21,7 +23,7 @@ class NoopSttProvider implements SttProvider {
 function buildGateway(): RealtimeGateway {
   const bus = new EventBus();
   const voice = new VoiceMessageHandler(new VoiceSessionManager(), new NoopSttProvider(), bus);
-  return new RealtimeGateway(bus, voice, new InMemoryCartCache());
+  return new RealtimeGateway(bus, voice, new InMemoryCartCache(), new TtsService(createTtsProvider()));
 }
 
 /** Gateway whose message handling always rejects, to exercise the transport's `.catch`. */
@@ -34,7 +36,7 @@ class RejectingGateway extends RealtimeGateway {
 function buildRejectingGateway(): RejectingGateway {
   const bus = new EventBus();
   const voice = new VoiceMessageHandler(new VoiceSessionManager(), new NoopSttProvider(), bus);
-  return new RejectingGateway(bus, voice, new InMemoryCartCache());
+  return new RejectingGateway(bus, voice, new InMemoryCartCache(), new TtsService(createTtsProvider()));
 }
 
 /** Resolve once the server is listening, returning its assigned ephemeral port. */

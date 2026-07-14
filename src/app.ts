@@ -9,6 +9,8 @@ import { RedisCartCache } from './redis/cart-cache.js';
 import { MenuService } from './menu/menu-service.js';
 import { PostgresMenuStore } from './menu/postgres-menu-store.js';
 import { createSttProvider } from './stt/stt-client.js';
+import { createTtsProvider } from './tts/tts-client.js';
+import { TtsService } from './tts/tts-service.js';
 import { createLlmProvider, createIntentLlmProvider } from './llm/llm-client.js';
 
 import { VoiceSessionManager } from './voice/voice-session-manager.js';
@@ -44,13 +46,14 @@ export function createApp(): App {
   // Menu is Postgres/pgvector-backed; cart state stays on Redis.
   const menu = new MenuService(new PostgresMenuStore(pgPool));
   const stt = createSttProvider();
+  const tts = new TtsService(createTtsProvider());
   const llm = createLlmProvider();
   const intentLlm = createIntentLlmProvider();
 
   // Voice + Realtime.
   const voiceManager = new VoiceSessionManager();
   const voice = new VoiceMessageHandler(voiceManager, stt, bus);
-  const gateway = new RealtimeGateway(bus, voice, carts);
+  const gateway = new RealtimeGateway(bus, voice, carts, tts);
 
   // Order Understanding (pure proposer).
   const graph = new OrderGraph(menu, llm, carts, intentLlm);

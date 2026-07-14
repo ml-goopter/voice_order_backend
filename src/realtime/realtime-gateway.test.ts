@@ -5,6 +5,7 @@ import { emptyCart } from '../cart/cart-types.js';
 import { RealtimeGateway } from './realtime-gateway.js';
 import type { ClientConnection } from './client-registry.js';
 import type { VoiceMessageHandler } from '../voice/voice-message-handler.js';
+import type { TtsService } from '../tts/tts-service.js';
 
 type FakeConn = ClientConnection & { send: ReturnType<typeof vi.fn> };
 
@@ -26,8 +27,12 @@ function makeGateway() {
     handleDisconnect: vi.fn(),
     handleStart: vi.fn(async () => {}),
   } as unknown as VoiceMessageHandler;
-  const gw = new RealtimeGateway(bus, voice, carts);
-  return { bus, carts, voice, gw };
+  const tts = { speak: vi.fn(), cancel: vi.fn() } as unknown as TtsService & {
+    speak: ReturnType<typeof vi.fn>;
+    cancel: ReturnType<typeof vi.fn>;
+  };
+  const gw = new RealtimeGateway(bus, voice, carts, tts);
+  return { bus, carts, voice, tts, gw };
 }
 
 describe('RealtimeGateway — cart.updated broadcast', () => {
@@ -77,8 +82,21 @@ describe('RealtimeGateway — order.reply', () => {
     });
   });
 
-  it('is a no-op when the session has no socket', () => {
-    const { bus } = makeGateway();
+  it('drives TTS with the reply text to speak it back', () => {
+    const { bus, gw, tts } = makeGateway();
+    const a = conn('s1', 'cart_1');
+    gw.onConnect(a);
+    bus.emit('order.reply', {
+      cart_id: 'cart_1',
+      session_id: 's1',
+      request_id: 'r1',
+      reply: 'How about a Coke?',
+    });
+    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, 'How about a Coke?');
+  });
+
+  it('is a no-op (no send, no TTS) when the session has no socket', () => {
+    const { bus, tts } = makeGateway();
     expect(() =>
       bus.emit('order.reply', {
         cart_id: 'c',
@@ -87,6 +105,18 @@ describe('RealtimeGateway — order.reply', () => {
         reply: 'q',
       }),
     ).not.toThrow();
+    expect(tts.speak).not.toHaveBeenCalled();
+  });
+});
+
+describe('RealtimeGateway — disconnect', () => {
+  it('cancels any in-flight TTS for the session', () => {
+    const { gw, voice, tts } = makeGateway();
+    const a = conn('s1', 'cart_1');
+    gw.onConnect(a);
+    gw.onDisconnect(a);
+    expect(voice.handleDisconnect).toHaveBeenCalledWith('s1');
+    expect(tts.cancel).toHaveBeenCalledWith('s1');
   });
 });
 

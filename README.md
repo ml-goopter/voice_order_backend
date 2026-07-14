@@ -23,6 +23,7 @@ server are stubbed and log a warning when used.
 realtime/   WebSocket gateway, client registry, message routing        (design §4)
 voice/      voice sessions, STT streaming, emits final transcript       (design §5)
 stt/        cloud STT provider interface (+ noop stub)                  (design §14)
+tts/        cloud TTS provider interface (+ noop stub); speaks order.reply (text-to-speech.md)
 ordering/   transcript → proposed ops / clarification (LangGraph-style)  (design §6/§8)
   ├ nodes/      normalize → load-cart → candidates → parse → validate
   ├ schemas/    cart-operation, graph input/output, proposal, clarify

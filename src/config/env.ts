@@ -27,6 +27,11 @@ export interface AppConfig {
   readonly sttProvider: string; // 'assemblyai' | 'deepgram' | ...
   readonly sttSampleRate: number; // Hz of the client PCM16 stream (design §5)
   readonly assemblyAiApiKey: string;
+  readonly ttsProvider: string; // 'deepgram' | 'noop'
+  readonly deepgramApiKey: string;
+  readonly ttsModel: string; // Deepgram Aura voice, e.g. 'aura-2-thalia-en'
+  readonly ttsEncoding: string; // audio encoding streamed to the client ('mp3' default; 'linear16' etc.)
+  readonly ttsSampleRate: number; // Hz for raw-PCM encodings (linear16); ignored for mp3
   readonly llmProvider: string; // 'stub' | 'ollama' | 'openai' | ...
   readonly llmModel: string;
   readonly llmBaseUrl: string; // OpenAI-compatible base URL (Ollama by default)
@@ -59,6 +64,11 @@ export const config: AppConfig = {
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
   sttSampleRate: int('STT_SAMPLE_RATE', 16_000),
   assemblyAiApiKey: str('ASSEMBLYAI_API_KEY', ''),
+  ttsProvider: str('TTS_PROVIDER', 'deepgram'),
+  deepgramApiKey: str('DEEPGRAM_API_KEY', ''),
+  ttsModel: str('TTS_MODEL', 'aura-2-thalia-en'),
+  ttsEncoding: str('TTS_ENCODING', 'mp3'),
+  ttsSampleRate: int('TTS_SAMPLE_RATE', 24_000),
   llmProvider: str('LLM_PROVIDER', 'stub'),
   llmModel: str('LLM_MODEL', 'llama3.1'),
   llmBaseUrl: str('LLM_BASE_URL', 'http://localhost:11434/v1'),
