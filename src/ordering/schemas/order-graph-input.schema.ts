@@ -1,7 +1,5 @@
-/** LangGraph input assembled before the LLM call (design §6/§8). */
-import type { CartId, LangCode, LineId, PosConfigId, RequestId, SessionId } from '../../shared/types.js';
-import type { CandidateItem } from '../../menu/menu-types.js';
-import type { SuggestedItem } from './suggestion.schema.js';
+/** Prompt-facing cart projections + conversation history for the agent (design §6/§8). */
+import type { CartId, LineId, PosConfigId } from '../../shared/types.js';
 
 /** A modifier on a self-describing cart line — keys/names only, no numeric ids (Plan A). */
 export interface CartModifierView {
@@ -33,27 +31,10 @@ export interface CartView {
   items: CartLineView[];
 }
 
-/** One prior turn resent to the model for reference resolution (Plan A). */
+/** One prior turn resent to the agent for reference resolution (Plan A). */
 export interface HistoryTurn {
   customer_text: string;
-  /** Present when the turn was clarified — the question is kept so the answer has context. */
-  clarification_question?: string;
-  /** Present when the turn recommended items — so a follow-up ("the first one") can resolve. */
-  suggested_items?: SuggestedItem[];
-}
-
-export interface OrderGraphInput {
-  request_id: RequestId;
-  session_id: SessionId;
-  cart_id: CartId;
-  pos_config_id: PosConfigId;
-  customer_text: string;
-  language?: LangCode;
-  current_cart: CartView;
-  candidate_items: CandidateItem[];
-  /** Prior turns (oldest → newest), for resolving references like "that" / "the same". */
-  history: HistoryTurn[];
-  supported_languages: LangCode[];
-  /** The question posed on the previous (unanswered) clarify; the current utterance answers it. */
-  clarification_question?: string;
+  /** Present when the agent ended the turn by SPEAKING (a question or a recommendation), so the
+   *  next turn — whose utterance may answer it — has the context. */
+  agent_reply?: string;
 }

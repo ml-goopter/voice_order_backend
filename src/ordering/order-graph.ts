@@ -3,11 +3,8 @@ import type { MenuService } from '../menu/menu-service.js';
 import type { LlmProvider } from '../llm/llm-provider.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import type { OrderGraphOutput } from './schemas/order-graph-output.schema.js';
-import type { HistoryTurn } from './schemas/order-graph-input.schema.js';
-import type { Suggestion, SuggestedItem } from './schemas/suggestion.schema.js';
 import type { Intent } from './graph/intents.js';
 import { buildOrderGraph } from './graph/build-graph.js';
-import { trailingClarificationRun } from './graph/state.js';
 
 export interface OrderGraphParams {
   request_id: RequestId;
@@ -20,33 +17,34 @@ export interface OrderGraphParams {
 }
 
 /**
- * Outcome of a graph turn. `complete` — a proposal is ready; `clarify` — the model asked a
- * question (does NOT pause; `round` is how many consecutive unanswered clarifications precede
- * it, including this one, so the caller can cap runaways); `suggest`/`junk` — the classifier
- * routed the utterance away from the proposer pipeline: `suggest` carries a spoken
- * recommendation + the items it named; `junk` is a non-orderable utterance with nothing to say.
+ * Outcome of a graph turn — determined by how the agent ended the turn (docs/agent-tools.md §3),
+ * not by an upstream router. `complete` — the agent committed operations via `propose_cart`;
+ * `reply` — the agent ended by speaking to the customer (a clarifying question OR a recommendation;
+ * fire-and-forget, no pause); `junk` — the classifier junk-gate short-circuited a non-orderable
+ * utterance (the agent never ran); `fail` — the agent loop ended without a terminal (e.g.
+ * `agent_step_limit`), which the façade surfaces as a session failure.
  */
 export type GraphTurnResult =
   | { status: 'complete'; output: OrderGraphOutput; base_version: number }
-  | { status: 'clarify'; question: string; round: number; options?: string[] }
-  | { status: 'suggest'; reply: string; items: SuggestedItem[] }
-  | { status: 'junk' };
+  | { status: 'reply'; reply: string }
+  | { status: 'junk' }
+  | { status: 'fail'; reason: string };
 
 type InvokeReturn = {
   intent: Intent;
   output: OrderGraphOutput | null;
   base_version: number;
-  history: HistoryTurn[];
-  suggestion: Suggestion | null;
+  reply: string | null;
+  failure_reason: string | undefined;
 };
 
 /**
- * Turns a final transcript into proposed operations or a clarification (design §6),
+ * Turns a final transcript into proposed operations or a spoken reply (docs/agent-tools.md),
  * backed by @langchain/langgraph with a cart-keyed checkpointer so conversation history
  * follows the CART across turns. The thread id is `${pos_config_id}:${cart_id}`, not a
- * single voice session (design §6). A clarification is fire-and-forget: the graph records
- * the question to history and ends; the answer arrives as the next transcript. The per-cart
- * FIFO that serializes turns lives in OrderUnderstandingService, in front of this graph.
+ * single voice session (design §6). A reply is fire-and-forget: the graph records it to history
+ * and ends; the answer arrives as the next transcript. The per-cart FIFO that serializes turns
+ * lives in OrderUnderstandingService, in front of this graph.
  */
 export class OrderGraph {
   private readonly graph: ReturnType<typeof buildOrderGraph>;
@@ -57,7 +55,8 @@ export class OrderGraph {
     this.graph = buildOrderGraph({ menu, llm, intentLlm, carts });
   }
 
-  /** Start a new turn. Rejects if parsing fails after repair (§11.3) — caller fails the turn. */
+  /** Start a new turn. A node throw rejects (caller fails the turn); the agent's own dead-ends
+   *  (step limit / empty reply) surface as a `fail` GraphTurnResult rather than a throw. */
   async start(p: OrderGraphParams): Promise<GraphTurnResult> {
     const input = {
       request_id: p.request_id,
@@ -73,25 +72,15 @@ export class OrderGraph {
   }
 
   private interpret(out: InvokeReturn): GraphTurnResult {
-    // Non-order intents short-circuit the proposer pipeline: `output` was never produced,
-    // so branch on the classified intent before reading it.
+    // The junk-gate short-circuits before the agent runs: nothing to propose or say.
     if (out.intent === 'junk') return { status: 'junk' };
-    if (out.intent === 'suggest') {
-      // The suggest node always writes a suggestion (a fallback reply on failure), but default
-      // defensively so a null can never surface as an undefined reply.
-      const suggestion = out.suggestion ?? { reply: '', items: [] };
-      return { status: 'suggest', reply: suggestion.reply, items: suggestion.items };
-    }
-    const output = out.output!;
-    if (output.needs_clarification) {
-      return {
-        status: 'clarify',
-        question: output.clarification_question!,
-        round: trailingClarificationRun(out.history),
-        ...(output.clarification_options !== undefined ? { options: output.clarification_options } : {}),
-      };
-    }
-    return { status: 'complete', output, base_version: out.base_version };
+    // The agent loop ended without a terminal (step-limit exhaustion, or an empty reply).
+    if (out.failure_reason !== undefined) return { status: 'fail', reason: out.failure_reason };
+    // Otherwise the outcome is however the agent ended the turn: committed operations, or spoke.
+    if (out.output !== null) return { status: 'complete', output: out.output, base_version: out.base_version };
+    if (out.reply !== null) return { status: 'reply', reply: out.reply };
+    // Defensive: the agent finished with neither a terminal nor a recorded failure reason.
+    return { status: 'fail', reason: 'agent_no_terminal' };
   }
 
   private threadConfig(pos_config_id: PosConfigId, cart_id: CartId) {

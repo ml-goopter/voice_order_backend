@@ -90,4 +90,137 @@ describe('OpenAiCompatibleLlmProvider', () => {
       /API key is required/,
     );
   });
+
+  describe('chat', () => {
+    const TOOLS = [
+      { name: 'search_menu_semantic', description: 'search', parameters: { type: 'object' } },
+    ];
+
+    it('sends model, temperature 0, mapped messages, and tool specs', async () => {
+      createMock.mockResolvedValue({ choices: [{ message: { content: null, tool_calls: [] } }] });
+      await new OpenAiCompatibleLlmProvider(CFG).chat(
+        [
+          { role: 'system', content: 'SYS' },
+          { role: 'user', content: 'a burger' },
+          { role: 'assistant', tool_calls: [{ id: 'c1', name: 'search_menu_semantic', arguments: { q: 'burger' } }] },
+          { role: 'tool', tool_call_id: 'c1', content: '[{"name":"Burger"}]' },
+        ],
+        TOOLS,
+      );
+      expect(createMock).toHaveBeenCalledWith({
+        model: 'test-model',
+        temperature: 0,
+        messages: [
+          { role: 'system', content: 'SYS' },
+          { role: 'user', content: 'a burger' },
+          {
+            role: 'assistant',
+            tool_calls: [
+              { id: 'c1', type: 'function', function: { name: 'search_menu_semantic', arguments: '{"q":"burger"}' } },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'c1', content: '[{"name":"Burger"}]' },
+        ],
+        tools: [
+          { type: 'function', function: { name: 'search_menu_semantic', description: 'search', parameters: { type: 'object' } } },
+        ],
+      });
+    });
+
+    it('parses tool_calls with JSON-decoded arguments', async () => {
+      createMock.mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [
+                { id: 'x1', type: 'function', function: { name: 'search_menu_semantic', arguments: '{"query":"fries"}' } },
+              ],
+            },
+          },
+        ],
+      });
+      const out = await new OpenAiCompatibleLlmProvider(CFG).chat([{ role: 'user', content: 'fries' }], TOOLS);
+      expect(out).toEqual({
+        toolCalls: [
+          {
+            id: 'x1',
+            name: 'search_menu_semantic',
+            arguments: { query: 'fries' },
+            raw: { id: 'x1', type: 'function', function: { name: 'search_menu_semantic', arguments: '{"query":"fries"}' } },
+          },
+        ],
+      });
+    });
+
+    it('preserves the raw tool call and replays it verbatim (keeps provider fields like a thought_signature)', async () => {
+      const rawToolCall = {
+        id: 'g1',
+        type: 'function',
+        function: { name: 'search_menu_semantic', arguments: '{"query":"coke"}' },
+        extra_content: { google: { thought_signature: 'SIG123' } },
+      };
+      createMock.mockResolvedValue({ choices: [{ message: { content: null, tool_calls: [rawToolCall] } }] });
+
+      // First turn: the provider parses the call and stashes the raw payload.
+      const first = await new OpenAiCompatibleLlmProvider(CFG).chat([{ role: 'user', content: 'a coke' }], TOOLS);
+      expect(first.toolCalls[0]?.raw).toEqual(rawToolCall);
+
+      // Second turn: replaying that assistant message must send the tool call back UNCHANGED,
+      // signature and all — not a rebuilt {id,type,function} that would drop extra_content.
+      createMock.mockResolvedValue({ choices: [{ message: { content: 'done' } }] });
+      await new OpenAiCompatibleLlmProvider(CFG).chat(
+        [
+          { role: 'user', content: 'a coke' },
+          { role: 'assistant', tool_calls: first.toolCalls },
+          { role: 'tool', tool_call_id: 'g1', content: '[{"name":"Coke"}]' },
+        ],
+        TOOLS,
+      );
+      const sent = createMock.mock.calls.at(-1)![0].messages[1];
+      expect(sent).toEqual({ role: 'assistant', tool_calls: [rawToolCall] });
+    });
+
+    it('returns assistant text when the model replies with prose', async () => {
+      createMock.mockResolvedValue({ choices: [{ message: { content: 'anything else?' } }] });
+      const out = await new OpenAiCompatibleLlmProvider(CFG).chat([{ role: 'user', content: 'hi' }], TOOLS);
+      expect(out).toEqual({ text: 'anything else?', toolCalls: [] });
+    });
+
+    it('warns and returns empty when there is neither text nor tool calls', async () => {
+      createMock.mockResolvedValue({ choices: [{ message: { content: '' } }] });
+      const warnSpy = vi.spyOn(logger, 'warn');
+      const out = await new OpenAiCompatibleLlmProvider(CFG).chat([{ role: 'user', content: 'hi' }], TOOLS);
+      expect(out).toEqual({ toolCalls: [] });
+      expect(warnSpy).toHaveBeenCalledWith('llm.openai_compatible.empty_chat', {
+        provider: 'openai',
+        model: 'test-model',
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('degrades malformed tool arguments to {} instead of throwing', async () => {
+      createMock.mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: null,
+              tool_calls: [{ id: 'b1', type: 'function', function: { name: 'search_menu_semantic', arguments: '{bad' } }],
+            },
+          },
+        ],
+      });
+      const out = await new OpenAiCompatibleLlmProvider(CFG).chat([{ role: 'user', content: 'x' }], TOOLS);
+      expect(out).toEqual({
+        toolCalls: [
+          {
+            id: 'b1',
+            name: 'search_menu_semantic',
+            arguments: {},
+            raw: { id: 'b1', type: 'function', function: { name: 'search_menu_semantic', arguments: '{bad' } },
+          },
+        ],
+      });
+    });
+  });
 });

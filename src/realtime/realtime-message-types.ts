@@ -4,7 +4,6 @@
  */
 import type { CartId, SessionId } from '../shared/types.js';
 import type { Cart } from '../cart/cart-types.js';
-import type { SuggestedItem } from '../ordering/schemas/suggestion.schema.js';
 
 // ── Inbound (mobile app → gateway) ────────────────────────────────────────────
 export interface VoiceStartMsg {
@@ -47,19 +46,12 @@ export interface FinalTranscriptMsg {
   text: string;
   language?: string;
 }
-export interface ClarificationNeededMsg {
-  type: 'order.clarification_needed';
+export interface OrderReplyMsg {
+  type: 'order.reply';
   cart_id: CartId;
   request_id: string;
-  question: string;
-  options?: string[];
-}
-export interface SuggestionReadyMsg {
-  type: 'order.suggestion_ready';
-  cart_id: CartId;
-  request_id: string;
+  /** The spoken reply — a clarifying question or a recommendation (one merged outcome). */
   reply: string;
-  items: SuggestedItem[];
 }
 export interface CartUpdatedMsg {
   type: 'cart.updated';
@@ -92,8 +84,7 @@ export interface ConnectionResumedMsg {
 export type OutboundMessage =
   | PartialTranscriptMsg
   | FinalTranscriptMsg
-  | ClarificationNeededMsg
-  | SuggestionReadyMsg
+  | OrderReplyMsg
   | CartUpdatedMsg
   | CartOperationRejectedMsg
   | VoiceErrorMsg

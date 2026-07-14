@@ -6,15 +6,12 @@ import { OrderGraph } from './order-graph.js';
 import { CartTurnQueue } from './cart-turn-queue.js';
 import { logger } from '../config/logger.js';
 import { messageOf } from '../shared/errors.js';
-import { LIMITS } from '../config/constants.js';
-/** Safety valve: cap consecutive clarifications so a looping model can't freeze a cart. */
-const MAX_CLARIFICATION_ROUNDS = LIMITS.maxClarifications;
 
 /**
  * Order Understanding module (design §6). A PURE proposer — it never mutates the
  * cart. Serializes turns per cart (Tier-1 FIFO, design §9) in front of the graph.
- * A clarification is fire-and-forget: the turn emits the question and ends (releasing
- * its FIFO slot); the customer's answer arrives as the next transcript, so nothing blocks.
+ * A spoken reply is fire-and-forget: the turn emits the reply and ends (releasing its
+ * FIFO slot); the customer's answer arrives as the next transcript, so nothing blocks.
  */
 export class OrderUnderstandingService {
   private readonly queue = new CartTurnQueue();
@@ -27,21 +24,19 @@ export class OrderUnderstandingService {
   async handleFinalTranscript(e: SttFinalTranscriptReceived): Promise<void> {
     await this.queue.enqueue(e.cart_id, async () => {
       const result = await this.runTurn(e);
-      // Emit the proposal OUTSIDE runTurn's try/catch: a throwing operations_proposed
-      // subscriber must not be mistaken for a parse failure (which would double-emit,
-      // reporting both a proposal and voice.session_failed for the same turn).
-      if (result !== null) this.propose(e, result);
+      // Emit the outcome OUTSIDE runTurn's try/catch: a throwing event subscriber must not be
+      // mistaken for a turn failure (which would double-emit — e.g. reporting both a proposal
+      // and voice.session_failed for the same turn).
+      this.dispatch(e, result);
     });
   }
 
-  /** Drive the graph to a complete proposal, or null if the turn already failed/timed out. */
-  private async runTurn(
-    e: SttFinalTranscriptReceived,
-  ): Promise<Extract<GraphTurnResult, { status: 'complete' }> | null> {
-    const log = logger.child({ request_id: e.request_id, cart_id: e.cart_id });
+  /** Drive the graph to a turn outcome. A node throw is caught and mapped to a `fail` result here;
+   *  all event emission is deferred to `dispatch`, which runs outside this try/catch. */
+  private async runTurn(e: SttFinalTranscriptReceived): Promise<GraphTurnResult> {
     try {
       // TODO: source supported_languages from voice_restaurant_settings.
-      const result = await this.graph.start({
+      return await this.graph.start({
         request_id: e.request_id,
         session_id: e.session_id,
         cart_id: e.cart_id,
@@ -50,56 +45,46 @@ export class OrderUnderstandingService {
         supported_languages: [],
         ...(e.language !== undefined ? { language: e.language } : {}),
       });
+    } catch (error) {
+      // The failing node already logged order.node_failed with which state threw; this is the
+      // turn-level fallback that fails the session.
+      logger.child({ request_id: e.request_id, cart_id: e.cart_id }).warn('order.turn_failed', {
+        error: messageOf(error),
+      });
+      return { status: 'fail', reason: 'order_parse_failed' };
+    }
+  }
 
-      if (result.status === 'junk') {
+  /** Emit the turn's outcome. Deliberately side-effecting and OUTSIDE runTurn's try/catch so a
+   *  throwing subscriber can't be swallowed and re-reported as a turn failure. */
+  private dispatch(e: SttFinalTranscriptReceived, result: GraphTurnResult): void {
+    const log = logger.child({ request_id: e.request_id, cart_id: e.cart_id });
+    switch (result.status) {
+      case 'junk':
         // Non-orderable utterance (greeting, noise, off-topic): nothing to propose, end quietly.
         log.info('order.intent_junk');
-        return null;
-      }
-
-      if (result.status === 'suggest') {
-        // Recommendation request: fire-and-forget like a clarification — emit the spoken reply
-        // (and the items it named) and end the turn without proposing. The suggestion is already
-        // recorded to history so a follow-up ("the first one") resolves on the next turn.
-        log.info('order.intent_suggest');
-        this.bus.emit('order.suggestion_ready', {
+        return;
+      case 'fail':
+        // The turn ended without a terminal (a node threw → `order_parse_failed`, or the agent
+        // loop exhausted maxAgentSteps / said nothing). Nothing to propose; fail with the reason,
+        // which distinguishes the cause (the event name is the same for all failure modes).
+        log.warn('order.turn_failed', { reason: result.reason });
+        this.fail(e, result.reason);
+        return;
+      case 'reply':
+        // The agent ended by speaking to the customer (a clarifying question or a recommendation).
+        // Fire-and-forget: emit the reply and end the turn. The customer's answer arrives as the
+        // next transcript; the reply is already recorded to history so the next turn resolves it.
+        this.bus.emit('order.reply', {
           cart_id: e.cart_id,
           session_id: e.session_id,
           request_id: e.request_id,
           reply: result.reply,
-          items: result.items,
         });
-        return null;
-      }
-
-      if (result.status === 'clarify') {
-        // A looping model that re-clarifies every turn would freeze the cart; give up after
-        // MAX_CLARIFICATION_ROUNDS consecutive unanswered clarifications.
-        if (result.round > MAX_CLARIFICATION_ROUNDS) {
-          log.warn('order.clarification_rounds_exceeded');
-          this.fail(e, 'clarification_unresolved');
-          return null;
-        }
-        // Fire-and-forget: send the question and end the turn. The customer's answer arrives
-        // as the next transcript; the pending question is already persisted to history so the
-        // next turn's parse has the context (design §6).
-        this.bus.emit('order.clarification_needed', {
-          cart_id: e.cart_id,
-          session_id: e.session_id,
-          request_id: e.request_id,
-          question: result.question,
-          ...(result.options !== undefined ? { options: result.options } : {}),
-        });
-        return null;
-      }
-
-      return result;
-    } catch (error) {
-      // The failing node already logged order.node_failed with which state threw; this is the
-      // turn-level fallback that fails the session.
-      log.warn('order.turn_failed', { error: messageOf(error) });
-      this.fail(e, 'order_parse_failed');
-      return null;
+        return;
+      case 'complete':
+        this.propose(e, result);
+        return;
     }
   }
 

@@ -1,0 +1,246 @@
+# Order Understanding — Agentic Tool-Calling (spec)
+
+Status: **implemented** (branch `feat/agent-rework`). Reworked the `order` path from a
+fixed `retrieve → parse` pipeline into an **LLM agent that calls tools**. The old pipeline
+is removed entirely — the agent graph is the only path; there is no feature flag.
+
+> **Revision (implemented):** clarify and suggest are **not tools**. The agent has two tools
+> (`search_menu_semantic`, `propose_cart`) and ends a turn either by proposing or by replying
+> with plain text (no tool call) — one merged **`reply`** outcome that serves as both a
+> clarifying question and a recommendation (spoken-only, no structured items). This replaces
+> the `ask_clarification`/`suggest_items` tools and collapses `order.clarification_needed` +
+> `order.suggestion_ready` into a single `order.reply` event. The consecutive-clarification cap
+> was dropped (a merged reply shouldn't cap multi-turn conversation; `maxAgentSteps` bounds
+> within-turn runaway). Sections below are kept for rationale; where they mention the four-tool
+> design, the two-tool + reply-outcome shape above is authoritative.
+
+Scope: `src/ordering/graph/`, `src/ordering/nodes/`, `src/ordering/tools/` (new),
+`src/llm/` (provider tool-calling), `src/config/`. The service loop, event
+contracts, cart module, and menu store queries are unchanged in Phase 1.
+
+---
+
+## 1. Problem
+
+Today the LLM is passive. `retrieve` (`nodes/retrieve-candidates.node.ts`) runs one
+hybrid KNN+lexical search over the raw transcript and drops the top‑N into the
+`candidates` channel; `parse` (`nodes/parse-order.node.ts`) hands the model *only*
+those candidates and asks for operations. The model **never decides what to search
+for** — if the right item isn't in the pre-computed candidate set, it can't recover.
+Recommendations (`suggest` node) and clarifications (parse's `needs_clarification`
+branch) are separate fixed routes chosen by an upstream classifier, not by the model
+reasoning over what it actually found.
+
+Goal: let the model **drive retrieval** — issue its own searches based on the
+customer's request — and **decide the outcome** (propose / clarify / suggest) from
+what it retrieves.
+
+## 2. Scope
+
+**In (Phase 1):**
+- A tool-calling `LlmProvider` abstraction (native OpenAI `tools`/`tool_calls`).
+- One retrieval tool: `search_menu_semantic` (wraps the existing
+  `menu.getCandidates`).
+- Three terminal tools: `propose_cart`, `ask_clarification`, `suggest_items`.
+- A LangGraph agent loop (`agent ⇄ tools`) that **replaces** `retrieve → parse` and
+  the `suggest` node outright. The old nodes are deleted; there is no feature flag.
+- The intent classifier demoted to a **junk-gate**.
+
+**Out (later phases / explicitly deferred):**
+- `filter_menu` (structured category/dietary/price search) — needs new `MenuStore`
+  queries.
+- `popular_items` — needs Odoo sales/popularity data not currently modeled.
+- Prompted-ReAct (non-native) tool-calling fallback — deferred; the agent uses native
+  tool-calling only, so production must run a tool-capable model (see §4).
+- Any change to event contracts, the cart module, or the STT/voice path.
+
+## 3. Target architecture
+
+The agent gathers candidates by calling `search_menu_semantic` (possibly several
+times), then **commits to exactly one terminal tool**. The terminal choice — not an
+upstream router — determines the turn's outcome.
+
+| Turn ends by… | Replaces | Façade `GraphTurnResult` → event |
+|---|---|---|
+| calling `propose_cart(operations)` | `parse` output | `complete` → `order.operations_proposed` |
+| replying with plain text (no tool call) | parse's `needs_clarification` branch **and** the `suggest` node | `reply` → `order.reply` |
+
+(As implemented — see the revision note at the top. `ask_clarification`/`suggest_items` were
+not built; a spoken reply is the single merged terminal alongside `propose_cart`.)
+
+The façade, `order-understanding-service.ts`, and all event contracts are
+**unchanged** — only *who* decides the outcome moves from fixed routing to the agent.
+
+### 3.1 Graph (agent path)
+
+```
+normalize → classify → load_cart → agent ⇄ tools → finalize → END
+                     └─(junk)──────────────────────────────────→ END
+```
+
+- **classify** — kept, but demoted to a **junk-gate**. `INTENT_ROUTE`
+  (`graph/intents.ts`) is edited so `order` **and** `suggest` both → `agent`, and
+  `junk` → `END`. This preserves the cheap first-hop LLM call that skips the whole
+  agent loop for non-orderable utterances, and keeps junk's "don't pollute history"
+  behavior. The classifier's degrade-to-`order` and force-`order`-when-clarification-
+  pending logic still apply (both simply route into the agent now). One-row table
+  edit; the classifier prompt/schema/set are otherwise untouched.
+- **load_cart** — unchanged, runs once before the agent (the agent needs
+  `cart_view`).
+- **agent** — new node. Sends the system prompt + user context (`customer_text`,
+  `current_cart`, `history`, pending `clarification_question`) + the tool schemas to
+  the LLM. If the model returns tool calls, they run in the `tools` node and loop
+  back; when it returns a terminal tool call, its result is written to the `output`
+  (or `suggestion`) channel and the graph proceeds to `finalize`.
+- **tools** — LangGraph `ToolNode` (or equivalent) executing the requested tool
+  calls, appending results to the turn-scoped scratchpad, and returning to `agent`.
+- **finalize** — unchanged. Records the turn to cross-turn `history` (see §5).
+
+### 3.2 Nodes deleted
+
+`retrieve`, `parse`, and `suggest` are **removed** (files deleted, not conditionally
+skipped). Their logic relocates:
+
+- **retrieve** → the `search_menu_semantic` tool handler.
+- **parse + schema-repair** → validating the `propose_cart` tool arguments against
+  the existing `order-graph-output` / `cart-operation` zod schemas. On failure, a
+  **tool error** (using `zod-error.ts`'s repair-friendly message) is returned to the
+  agent, which retries within `maxAgentSteps`. This reuses the repair contract
+  without the separate `buildRepairPrompt` round. **`maxAgentSteps` is the single
+  ceiling** — `LIMITS.llmMaxRetries` no longer applies on the agent path; a
+  validation failure is simply another tool-error step in the loop.
+- **suggest** → the `suggest_items` terminal tool handler (reuses the
+  candidate-echo filtering rules: item `name`/`names` come from the matched
+  candidate, keys deduped — the menu stays the source of truth).
+
+## 4. LLM provider changes (`src/llm/`)
+
+Add tool-calling alongside the existing single-shot `complete()`:
+
+```ts
+// llm-provider.ts (additive)
+interface ToolSpec { name: string; description: string; parameters: object; } // JSON Schema
+interface ToolCall { id: string; name: string; arguments: unknown; }          // parsed args
+type AgentMessage =
+  | { role: 'system' | 'user'; content: string }
+  | { role: 'assistant'; content?: string; tool_calls?: ToolCall[] }
+  | { role: 'tool'; tool_call_id: string; content: string };
+
+interface LlmProvider {
+  readonly name: string;
+  complete(prompt: LlmPrompt): Promise<string>;                 // unchanged
+  chat(messages: AgentMessage[], tools: ToolSpec[]): Promise<{  // new
+    text?: string;
+    toolCalls: ToolCall[];
+  }>;
+}
+```
+
+- **`OpenAiCompatibleLlmProvider`** — implement `chat` via the OpenAI SDK's `tools`
+  param and `response.choices[0].message.tool_calls`. `temperature: 0`. Same
+  base-URL/creds injection, so Ollama/OpenAI/Groq all work if the model supports
+  tool-calling.
+- **`StubLlmProvider`** — `chat` returns a **scripted** tool-call sequence so tests
+  stay deterministic (e.g. one `search_menu_semantic` then `propose_cart`).
+- `complete()` stays for the intent classifier and (if it remains) any non-agent
+  caller.
+
+**Mechanism decision:** native tool-calling only. With the old pipeline gone there is
+no non-agent fallback, so **production must run a tool-capable model** (Groq/OpenAI/
+qwen, etc.); the scripted `StubLlmProvider` covers tests. Tool *schemas* are
+transport-independent, so adding a prompted-ReAct loop later (for weak models) would
+not change the tool definitions — it is the deferred escape hatch, not the flag.
+
+## 5. State & conversation-history model
+
+The agent adds a second, finer memory scope. Keeping the two scopes separate is a
+**hard requirement** — otherwise the `MemorySaver` checkpoint balloons and stale
+menu data leaks across turns.
+
+| Scope | Contents | Lifetime | Persisted across turns? |
+|---|---|---|---|
+| **Within-turn scratchpad** | the `agent_messages` loop (assistant tool_calls ↔ tool results) + accumulated `candidates` | one graph invoke | **No** |
+| **Cross-turn history** | compact per-turn record | many turns (checkpointer) | **Yes** |
+
+- **`agent_messages`** — a new state channel holding the turn's tool-calling
+  transcript. It is **turn-scoped**: cleared in `normalize` each fresh turn, exactly
+  as `candidates` and `suggestion` already are (`build-graph.ts:66`). It exists only
+  so the model can search → read → search again *this turn*, then is discarded. It is
+  **never** written into cross-turn `history`.
+- **`candidates`** — stays per-turn (last-write-wins / accumulate within the turn),
+  capped at `LIMITS.maxCandidatesToLlm`.
+- **Cross-turn `history`** — unchanged. `finalize` records per turn:
+  - `customer_text` — always.
+  - `clarification_question` — if the terminal was `ask_clarification`.
+  - `suggested_items` — if the terminal was `suggest_items`.
+
+  Reference resolution ("the same", "another one of those") continues to resolve
+  against `current_cart` (the `cart_view`, sole source of truth) + the compact
+  history text — **not** against the tool transcript, which is stale by the next turn
+  (menu availability/prices are read fresh every turn). We deliberately do **not**
+  record the agent's proposed item names into history (redundant with `current_cart`,
+  and it risks the model replaying a past request). Revisit only if
+  reference-resolution tests show a gap.
+
+## 6. Config (`src/config/`)
+
+- **`LIMITS.maxAgentSteps = 4`** — cap on `agent ⇄ tools` iterations per turn
+  (cost/latency guard + runaway-loop backstop). On exhaustion the turn fails via
+  `voice.session_failed` with reason **`agent_step_limit`** (new, parallel to the
+  existing `order_parse_failed`).
+
+No `ORDERING_AGENT` flag: `build-graph` unconditionally builds the agent graph (§3.1).
+
+## 7. Tradeoffs / risks
+
+- **Latency.** An agent loop is multiple sequential LLM round-trips per turn vs. the
+  old single call — a real hit for a voice UX. Mitigations: `maxAgentSteps` ≈ 2–3,
+  allow parallel tool calls within one step, `temperature: 0`.
+- **No fallback path.** Removing the pipeline means a tool-calling failure has no
+  graceful degrade — the turn fails (or hits `maxAgentSteps`). Accepted for this
+  branch; the deferred prompted-ReAct loop (§4) is the future escape hatch for weak
+  models.
+- **Production requires a tool-capable model.** The stub keeps tests deterministic,
+  but a non-tool-calling runtime model cannot drive the graph at all.
+
+## 8. Phasing & verification
+
+- **Phase 1 — provider tool-calling.** `chat()` on the interface, real provider, and
+  scripted stub. *Verify:* a unit test round-trips `chat` (stub emits a tool call;
+  real provider parses `tool_calls` from a recorded response).
+- **Phase 2 — agent graph replaces the pipeline.** `agent` node, `tools` node,
+  `agent_messages` channel, `INTENT_ROUTE` junk-gate edit, the four tools,
+  `propose_cart` validation→tool-error retry. **Delete** `retrieve`, `parse`, and
+  `suggest` nodes (and their now-orphaned tests/helpers). *Verify:* the existing
+  behaviors in `order-understanding-service.test.ts` (happy path, edits,
+  fire-and-forget clarify, consecutive-clarify cap, per-cart FIFO) plus
+  `suggest.node`-equivalent recommendation behavior are migrated to and pass on the
+  agent graph. No pipeline path remains to keep green.
+- **Later:** `filter_menu` (+ store queries), `popular_items` (+ Odoo popularity
+  data), optional prompted-ReAct fallback for weak models.
+
+## 9. Resolved decisions
+
+- **`maxAgentSteps = 4`**; exhaustion fails the turn via `voice.session_failed`
+  reason `agent_step_limit` (§6).
+- **Single retry ceiling.** `propose_cart` validation failures retry as ordinary
+  tool-error steps bounded by `maxAgentSteps`; `LIMITS.llmMaxRetries` does not apply
+  on the agent path (§3.2).
+- **Clarify + suggest merged into one `reply` outcome (revision).** The agent has two tools
+  (`search_menu_semantic`, `propose_cart`); it ends a turn either by proposing or by replying
+  with plain text. The reply is spoken-only (no structured `suggested_items`). One event
+  `order.reply` replaces `order.clarification_needed` + `order.suggestion_ready` (WS protocol
+  change). `GraphTurnResult` = `complete | reply | junk | fail`.
+- **Consecutive-clarification cap dropped (revision).** With clarify/suggest merged, a
+  multi-turn conversation shouldn't trip a cap; within-turn runaway is bounded by
+  `maxAgentSteps`. Removed `LIMITS.maxClarifications`, `clarification_unresolved`,
+  `trailingClarificationRun`.
+- **Force-order after a reply.** A reply is fire-and-forget; the next turn's `classify`
+  force-orders when the last history turn carries `agent_reply`, so a terse follow-up isn't
+  misrouted to junk. (Generalizes the old pending-clarification behavior.)
+
+## 10. Knowledge-base updates (on implementation)
+
+Per repo convention, the implementing change must update
+`.claude/.knowledge/ordering/overview.md` and `llm/overview.md` (new node/tool set,
+`agent_messages` channel, provider `chat`) and append a `log.md` entry.

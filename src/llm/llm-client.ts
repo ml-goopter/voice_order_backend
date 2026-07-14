@@ -1,4 +1,10 @@
-import type { LlmPrompt, LlmProvider } from './llm-provider.js';
+import type {
+  AgentMessage,
+  ChatResult,
+  LlmPrompt,
+  LlmProvider,
+  ToolSpec,
+} from './llm-provider.js';
 import { OpenAiCompatibleLlmProvider } from './openai-compatible-provider.js';
 import type { LlmClientConfig } from './openai-compatible-provider.js';
 import { config } from '../config/env.js';
@@ -6,14 +12,26 @@ import { logger } from '../config/logger.js';
 
 /**
  * Placeholder LLM that returns a valid, empty proposal so the ordering pipeline
- * runs end-to-end without a provider key.
+ * runs end-to-end without a provider key. `chat` replays an optional scripted
+ * sequence of {@link ChatResult}s (one per call) so agent-loop tests stay
+ * deterministic; with no script it returns no tool calls (a degenerate fallback —
+ * production must run a tool-capable model, see docs/agent-tools.md §4).
  */
 class StubLlmProvider implements LlmProvider {
   readonly name = 'stub';
+  private chatCalls = 0;
+
+  constructor(private readonly chatScript: ChatResult[] = []) {}
 
   async complete(_prompt: LlmPrompt): Promise<string> {
     logger.warn('llm.stub_provider_in_use');
     return JSON.stringify({ operations: [], needs_clarification: false, clarification_question: null });
+  }
+
+  async chat(_messages: AgentMessage[], _tools: ToolSpec[]): Promise<ChatResult> {
+    logger.warn('llm.stub_provider_in_use');
+    const scripted = this.chatScript[this.chatCalls++];
+    return scripted ?? { toolCalls: [] };
   }
 }
 

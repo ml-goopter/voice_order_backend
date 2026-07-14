@@ -6,7 +6,6 @@ import type { CartId, LangCode, PosConfigId, RequestId, SessionId } from '../sha
 import type { Cart } from '../cart/cart-types.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 import type { OrderProposal } from '../ordering/schemas/proposal.js';
-import type { SuggestedItem } from '../ordering/schemas/suggestion.schema.js';
 
 export interface SttFinalTranscriptReceived {
   request_id: RequestId;
@@ -25,22 +24,17 @@ export interface OrderOperationsProposed {
   proposal: OrderProposal;
 }
 
-export interface OrderClarificationNeeded {
+/**
+ * The agent ended a turn by speaking to the customer instead of committing operations — one
+ * merged outcome that covers both a clarifying question and a recommendation (docs/agent-tools.md
+ * §3). Fire-and-forget: the customer's answer arrives as the next transcript.
+ */
+export interface OrderReply {
   cart_id: CartId;
   session_id: SessionId;
   request_id: RequestId;
-  question: string;
-  options?: string[];
-}
-
-export interface OrderSuggestionReady {
-  cart_id: CartId;
-  session_id: SessionId;
-  request_id: RequestId;
-  /** The spoken recommendation. */
+  /** The spoken reply (a question or a recommendation). */
   reply: string;
-  /** The real menu items the reply named (may be empty). */
-  items: SuggestedItem[];
 }
 
 export interface CartUpdated {
@@ -76,8 +70,7 @@ export interface VoiceSessionEnded {
 export interface AppEventMap {
   'stt.final_transcript.received': SttFinalTranscriptReceived;
   'order.operations_proposed': OrderOperationsProposed;
-  'order.clarification_needed': OrderClarificationNeeded;
-  'order.suggestion_ready': OrderSuggestionReady;
+  'order.reply': OrderReply;
   'cart.updated': CartUpdated;
   'cart.operation_rejected': CartOperationRejected;
   'voice.session_failed': VoiceSessionFailed;

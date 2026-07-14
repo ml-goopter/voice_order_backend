@@ -18,12 +18,13 @@ export const LIMITS = {
   inMemoryEmbeddingCap: 2_000,
   /** §7 — candidate set size returned to the LLM per turn. */
   maxCandidatesToLlm: 8,
-  /** Plan A — turns of prior (utterance + clarification answer) resent to the model as context. */
+  /** Plan A — turns of prior (utterance + agent reply) resent to the model as context. */
   maxHistoryTurns: 6,
-  /** §11.3 — schema-repair re-prompts on invalid LLM JSON before falling back to clarify/manual. */
-  llmMaxRetries: 3,
+  /** Agent tool-calling: cap on `agent ⇄ tools` iterations per turn (cost/latency guard +
+   *  runaway-loop backstop). Exhaustion fails the turn (`agent_step_limit`). Sized to allow
+   *  several sequential per-item searches before a `propose_cart` — a model that searches
+   *  one item per turn must still be able to finish a multi-item order. See docs/agent-tools.md. */
+  maxAgentSteps: 8,
   /** Transport-level retries (429/5xx/network) the OpenAI SDK performs per request. */
   llmTransportMaxRetries: 3,
-  /** Safety valve: cap consecutive clarifications so a looping model can't freeze a cart. */
-  maxClarifications: 10
 } as const;

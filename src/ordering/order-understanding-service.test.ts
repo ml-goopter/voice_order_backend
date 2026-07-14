@@ -6,27 +6,11 @@ import { MenuService } from '../menu/menu-service.js';
 import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
 import type { Cart } from '../cart/cart-types.js';
-import type { LlmPrompt, LlmProvider } from '../llm/llm-provider.js';
-import { buildIntentPrompt } from '../llm/intent-prompt-builder.js';
-import { buildSuggestionPrompt } from '../llm/suggestion-prompt-builder.js';
+import type { AgentMessage, ChatResult, LlmPrompt, LlmProvider, ToolCall, ToolSpec } from '../llm/llm-provider.js';
 import type { Intent } from './graph/intents.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
-
-/** The intent classifier's system prompt is text-independent, so this exactly identifies the
- *  classifier hop without coupling the test to the prompt's wording. */
-const INTENT_SYSTEM = buildIntentPrompt('').system;
-/** The suggestion prompt's system text is likewise text-independent — it identifies the
- *  recommender hop so its call doesn't consume the parse script. */
-const SUGGEST_SYSTEM = buildSuggestionPrompt({
-  customer_text: '',
-  current_cart: { cart_id: 'cart_1', pos_config_id: 1, version: 0, items: [] },
-  candidate_items: [],
-  history: [],
-}).system;
-/** Scripted recommender reply for the suggest hop. `coke` is a real menu item, so it survives
- *  the suggest node's candidate filter when the utterance retrieves it. */
-const SUGGESTION = { reply: 'How about a Coke?', items: [{ menu_item_key: 'coke', name: 'Coke' }] };
+import { LIMITS } from '../config/constants.js';
 
 const POS = 1;
 const MENU: MenuItem[] = [
@@ -48,46 +32,71 @@ const MENU: MenuItem[] = [
   },
 ];
 
+// ── scripted agent turns ─────────────────────────────────────────────────────
+let idCounter = 0;
+const call = (name: string, args: unknown): ToolCall => ({ id: `c${idCounter++}`, name, arguments: args });
+const search = (query: string): ChatResult => ({ toolCalls: [call('search_menu_semantic', { query })] });
+const propose = (operations: unknown[]): ChatResult => ({ toolCalls: [call('propose_cart', { operations })] });
+/** The agent ends the turn by SPEAKING (no tool call): a clarifying question or a recommendation. */
+const reply = (text: string): ChatResult => ({ text, toolCalls: [] });
+
+/** Captured agent user-context (the seed `user` message JSON) for one turn. */
+interface TurnContext {
+  customer_text: string;
+  current_cart: { items: unknown[] };
+  conversation_history: Array<{ customer_text: string; agent_reply?: string }>;
+}
+
 /**
- * A fake LLM that replays scripted PARSE responses in order and records its parse calls.
- * The intent classifier is a separate first-hop call (a different system prompt); it is
- * answered from `intentFor(text)` — default `order` — and does NOT consume the parse script
- * or count toward `prompts`/`calls`, so these parse-focused tests stay index-aligned.
+ * A fake LLM that (a) answers the intent classifier via `complete` from `intentFor`, and (b) drives
+ * the tool-calling agent via `chat`, replaying one scripted `ChatResult[]` per AGENT turn. A fresh
+ * agent turn is detected by the seed transcript carrying no assistant message yet; within a turn,
+ * successive `chat` calls consume successive entries of that turn's script. Junk turns never reach
+ * the agent, so they consume no script. The seed `user` context of each agent turn is captured for
+ * assertions.
  */
 class ScriptedLlm implements LlmProvider {
   readonly name = 'scripted';
-  readonly prompts: LlmPrompt[] = [];
+  readonly contexts: TurnContext[] = [];
+  chatCalls = 0;
+  private turnIdx = -1;
+  private stepIdx = 0;
+
   constructor(
-    private readonly responses: string[],
+    private readonly turnScripts: ChatResult[][],
     private readonly intentFor: (text: string) => Intent = () => 'order',
   ) {}
-  get calls(): number {
-    return this.prompts.length;
-  }
+
   async complete(prompt: LlmPrompt): Promise<string> {
-    if (prompt.system === INTENT_SYSTEM) {
-      const { customer_text } = JSON.parse(prompt.user) as { customer_text: string };
-      return JSON.stringify({ intent: this.intentFor(customer_text) });
+    const { customer_text } = JSON.parse(prompt.user) as { customer_text: string };
+    return JSON.stringify({ intent: this.intentFor(customer_text) });
+  }
+
+  async chat(messages: AgentMessage[], _tools: ToolSpec[]): Promise<ChatResult> {
+    this.chatCalls += 1;
+    const firstOfTurn = !messages.some((m) => m.role === 'assistant');
+    if (firstOfTurn) {
+      this.turnIdx += 1;
+      this.stepIdx = 0;
+      const userMsg = messages.find((m) => m.role === 'user') as { content: string } | undefined;
+      if (userMsg) this.contexts.push(JSON.parse(userMsg.content) as TurnContext);
     }
-    // The recommender hop is separate (a different system prompt); answer it from a fixed
-    // suggestion so it neither consumes the parse script nor counts toward `prompts`/`calls`.
-    if (prompt.system === SUGGEST_SYSTEM) return JSON.stringify(SUGGESTION);
-    this.prompts.push(prompt);
-    const next = this.responses.shift();
-    if (next === undefined) throw new Error('ScriptedLlm: no response left');
-    return next;
+    const script = this.turnScripts[this.turnIdx] ?? [];
+    const res = script[this.stepIdx] ?? { toolCalls: [] };
+    this.stepIdx += 1;
+    return res;
   }
 }
 
 async function makeService(
-  responses: string[],
+  turnScripts: ChatResult[][],
   seedCart?: Cart,
   intentFor: (text: string) => Intent = () => 'order',
 ) {
   const menu = new MenuService(InMemoryMenuStore.of(POS, MENU));
   const carts = new InMemoryCartCache();
   if (seedCart) await carts.set(seedCart);
-  const llm = new ScriptedLlm(responses, intentFor);
+  const llm = new ScriptedLlm(turnScripts, intentFor);
   const bus = new EventBus();
   const graph = new OrderGraph(menu, llm, carts);
   const service = new OrderUnderstandingService(graph, bus);
@@ -127,15 +136,11 @@ function cartWith(version: number, lines: Cart['items'] = []): Cart {
 
 describe('OrderUnderstandingService', () => {
   it('proposes operations on the happy path with base_version from the loaded cart', async () => {
-    const llmOut = JSON.stringify({
-      operations: [
-        { action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [] },
-        { action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [{ modifier_key: 'no_mayo' }] },
-      ],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    const { service, bus } = await makeService([llmOut], cartWith(6));
+    const ops = [
+      { action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [] },
+      { action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [{ modifier_key: 'no_mayo' }] },
+    ];
+    const { service, bus, llm } = await makeService([[search('chicken burger'), propose(ops)]], cartWith(6));
     const proposed = collect(bus, 'order.operations_proposed');
 
     await service.handleFinalTranscript(transcript('add two chicken burgers, one without mayo'));
@@ -150,18 +155,15 @@ describe('OrderUnderstandingService', () => {
       menu_item_key: 'chicken_burger',
       modifiers: [{ modifier_key: 'no_mayo' }],
     });
+    expect(llm.chatCalls).toBe(2); // one search, one propose
   });
 
   it('passes edit operations that target a line_id straight through', async () => {
-    const seeded = cartWith(3, [
-      { line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [] },
-    ]);
-    const llmOut = JSON.stringify({
-      operations: [{ action: 'update_quantity', line_id: 'ln_1', quantity: 2 }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    const { service, bus } = await makeService([llmOut], seeded);
+    const seeded = cartWith(3, [{ line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [] }]);
+    const { service, bus } = await makeService(
+      [[propose([{ action: 'update_quantity', line_id: 'ln_1', quantity: 2 }])]],
+      seeded,
+    );
     const proposed = collect(bus, 'order.operations_proposed');
 
     await service.handleFinalTranscript(transcript('make that a double'));
@@ -170,27 +172,20 @@ describe('OrderUnderstandingService', () => {
     expect(proposed[0]!.proposal.operations[0]).toEqual({ action: 'update_quantity', line_id: 'ln_1', quantity: 2 });
   });
 
-  it('emits a clarification and ends the turn without waiting; the next transcript answers it', async () => {
-    const clarifyOut = JSON.stringify({
-      operations: [],
-      needs_clarification: true,
-      clarification_question: 'One without mayo, or both?',
-      clarification_options: ['one', 'both'],
-    });
-    const resolvedOut = JSON.stringify({
-      operations: [{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    const { service, bus, llm } = await makeService([clarifyOut, resolvedOut], cartWith(1));
-    const clarifications = collect(bus, 'order.clarification_needed');
+  it('emits a spoken reply (clarify/suggest) and ends the turn without waiting; the next transcript answers it', async () => {
+    const resolved = propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }]);
+    const { service, bus, llm } = await makeService(
+      [[reply('One without mayo, or both?')], [resolved]],
+      cartWith(1),
+    );
+    const replies = collect(bus, 'order.reply');
     const proposed = collect(bus, 'order.operations_proposed');
     const failed = collect(bus, 'voice.session_failed');
 
-    // Turn 1: clarify. It emits the question and returns — no blocking, no proposal, no timeout.
+    // Turn 1: the agent speaks. It emits the reply and returns — no blocking, no proposal, no timeout.
     await service.handleFinalTranscript(transcript('two burgers no mayo', { request_id: 'req_1' }));
-    expect(clarifications).toHaveLength(1);
-    expect(clarifications[0]).toMatchObject({ question: 'One without mayo, or both?', options: ['one', 'both'] });
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ reply: 'One without mayo, or both?' });
     expect(proposed).toHaveLength(0);
     expect(failed).toHaveLength(0);
 
@@ -199,26 +194,19 @@ describe('OrderUnderstandingService', () => {
 
     expect(proposed).toHaveLength(1);
     expect(proposed[0]!.proposal.operations[0]).toMatchObject({ action: 'add_item', quantity: 2 });
-    expect(llm.calls).toBe(2);
-    // The resolving turn's prompt carries the original question (the current utterance is its
-    // answer), and the pending question also rode across in conversation_history.
-    const p2 = JSON.parse(llm.prompts[1]!.user) as {
-      clarification?: { question: string };
-      conversation_history: Array<{ customer_text: string; clarification_question?: string }>;
-    };
-    expect(p2.clarification).toEqual({ question: 'One without mayo, or both?' });
-    expect(p2.conversation_history).toEqual([
-      { customer_text: 'two burgers no mayo', clarification_question: 'One without mayo, or both?' },
+    // The resolving turn's agent context carries the prior reply in conversation_history so the
+    // agent can resolve the current utterance against it.
+    expect(llm.contexts[1]!.conversation_history).toEqual([
+      { customer_text: 'two burgers no mayo', agent_reply: 'One without mayo, or both?' },
     ]);
   });
 
-  it('repairs invalid JSON with one retry, then proposes', async () => {
-    const valid = JSON.stringify({
-      operations: [{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    const { service, bus, llm } = await makeService(['not valid json{{', valid], cartWith(0));
+  it('retries a schema-invalid propose_cart as a tool error, then proposes', async () => {
+    // First propose has an invalid operation (missing quantity); the tool error loops the agent,
+    // which then proposes a valid operation — all within maxAgentSteps.
+    const bad = propose([{ action: 'add_item', menu_item_key: 'coke', modifiers: [] }]);
+    const good = propose([{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }]);
+    const { service, bus, llm } = await makeService([[bad, good]], cartWith(0));
     const proposed = collect(bus, 'order.operations_proposed');
     const failed = collect(bus, 'voice.session_failed');
 
@@ -226,12 +214,32 @@ describe('OrderUnderstandingService', () => {
 
     expect(failed).toHaveLength(0);
     expect(proposed).toHaveLength(1);
-    expect(llm.calls).toBe(2); // initial + one repair
-    expect(llm.prompts[1]!.user).toContain('VALIDATION_ERROR');
+    expect(llm.chatCalls).toBe(2); // invalid propose + valid propose
   });
 
-  it('fails the turn when repair is exhausted', async () => {
-    const { service, bus, llm } = await makeService(['garbage', 'still garbage'], cartWith(0));
+  it('rejects an empty propose_cart as a tool error instead of proposing nothing', async () => {
+    // A propose_cart with no operations must not "succeed" as an empty proposal (which would
+    // silently drop the customer's request); it loops the agent, which then proposes for real.
+    const empty = propose([]);
+    const good = propose([{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }]);
+    const { service, bus, llm } = await makeService([[empty, good]], cartWith(0));
+    const proposed = collect(bus, 'order.operations_proposed');
+    const failed = collect(bus, 'voice.session_failed');
+
+    await service.handleFinalTranscript(transcript('a coke'));
+
+    expect(failed).toHaveLength(0);
+    expect(proposed).toHaveLength(1);
+    expect(proposed[0]!.proposal.operations).toHaveLength(1);
+    expect(llm.chatCalls).toBe(2); // empty propose (tool error) + valid propose
+  });
+
+  it('fails the turn when the agent never commits a valid terminal (step limit)', async () => {
+    const bad = propose([{ action: 'add_item', menu_item_key: 'coke', modifiers: [] }]); // always invalid
+    // One more invalid propose than the step budget, so every agent turn makes a (rejected) tool
+    // call and the loop bails on the step limit rather than on an empty reply.
+    const script = Array.from({ length: LIMITS.maxAgentSteps + 1 }, () => bad);
+    const { service, bus, llm } = await makeService([script], cartWith(0));
     const proposed = collect(bus, 'order.operations_proposed');
     const failed = collect(bus, 'voice.session_failed');
 
@@ -239,18 +247,13 @@ describe('OrderUnderstandingService', () => {
 
     expect(proposed).toHaveLength(0);
     expect(failed).toHaveLength(1);
-    expect(failed[0]!.reason).toBe('order_parse_failed');
-    expect(llm.calls).toBe(2); // initial + one repair (llmMaxRetries = 1)
+    expect(failed[0]!.reason).toBe('agent_step_limit');
+    expect(llm.chatCalls).toBe(LIMITS.maxAgentSteps); // maxAgentSteps LLM turns, then the loop bails
   });
 
   it('serializes turns per cart: turn 2 loads the base_version turn 1 produced', async () => {
-    const out = (key: string) =>
-      JSON.stringify({
-        operations: [{ action: 'add_item', menu_item_key: key, quantity: 1, modifiers: [] }],
-        needs_clarification: false,
-        clarification_question: null,
-      });
-    const { service, bus, carts } = await makeService([out('chicken_burger'), out('coke')], cartWith(5));
+    const add = (key: string) => propose([{ action: 'add_item', menu_item_key: key, quantity: 1, modifiers: [] }]);
+    const { service, bus, carts } = await makeService([[add('chicken_burger')], [add('coke')]], cartWith(5));
 
     // Simulate the Cart Module applying turn 1: bump the cart version synchronously
     // when its proposal lands, before the FIFO releases to turn 2.
@@ -269,84 +272,49 @@ describe('OrderUnderstandingService', () => {
     expect(versions).toEqual([5, 6]); // turn 2 saw turn 1's bump → FIFO held
   });
 
-  it('does not treat a later unrelated turn as a clarification answer', async () => {
-    const clarifyOut = JSON.stringify({
-      operations: [],
-      needs_clarification: true,
-      clarification_question: 'one or both?',
-    });
-    const resolvedOut = JSON.stringify({
-      operations: [{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    const plainOut = JSON.stringify({
-      operations: [{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    const { service, llm } = await makeService([clarifyOut, resolvedOut, plainOut], cartWith(0));
+  it('force-orders only the turn immediately after a reply; a later fresh junk utterance still short-circuits', async () => {
+    const resolve = propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }]);
+    // Turn 1 replies; turn 2 answers it (proposes, recording NO agent_reply); turn 3 is fresh.
+    // The classifier calls turn 3 'junk' — and since turn 2 left no pending reply, that stands.
+    const { service, bus, llm } = await makeService(
+      [[reply('one or both?')], [resolve]],
+      cartWith(0),
+      (t) => (t === 'a coke' ? 'junk' : 'order'),
+    );
+    const proposed = collect(bus, 'order.operations_proposed');
 
-    await service.handleFinalTranscript(transcript('two burgers no mayo', { request_id: 'req_1' })); // clarify
-    await service.handleFinalTranscript(transcript('both', { request_id: 'req_2' })); // resolves it
-    await service.handleFinalTranscript(transcript('a coke', { request_id: 'req_3' })); // fresh, unrelated
+    await service.handleFinalTranscript(transcript('two burgers no mayo', { request_id: 'req_1' })); // reply
+    await service.handleFinalTranscript(transcript('both', { request_id: 'req_2' })); // answers it → propose
+    await service.handleFinalTranscript(transcript('a coke', { request_id: 'req_3' })); // fresh, junk
 
-    // Turn 2 answered the question; turn 3 has nothing pending, so no clarification is attached.
-    const p3 = JSON.parse(llm.prompts[2]!.user) as { clarification?: unknown };
-    expect(p3.clarification ?? null).toBeNull();
-  });
-
-  it('fails the session after too many consecutive clarifications', async () => {
-    const ask = (n: number) =>
-      JSON.stringify({ operations: [], needs_clarification: true, clarification_question: `q${n}?` });
-    // Rounds 1-3 emit a question; round 4 exceeds MAX_CLARIFICATION_ROUNDS and fails the turn.
-    const { service, bus } = await makeService([ask(1), ask(2), ask(3), ask(4)], cartWith(0));
-    const clarifications = collect(bus, 'order.clarification_needed');
-    const failed = collect(bus, 'voice.session_failed');
-
-    await service.handleFinalTranscript(transcript('a', { request_id: 'req_1' }));
-    await service.handleFinalTranscript(transcript('b', { request_id: 'req_2' }));
-    await service.handleFinalTranscript(transcript('c', { request_id: 'req_3' }));
-    await service.handleFinalTranscript(transcript('d', { request_id: 'req_4' }));
-
-    expect(clarifications).toHaveLength(3);
-    expect(failed).toHaveLength(1);
-    expect(failed[0]!.reason).toBe('clarification_unresolved');
+    // Turn 2 proposed (no pending reply), so turn 3 is classified normally: junk → the agent never
+    // runs for it. Only turns 1 and 2 reached the agent.
+    expect(proposed).toHaveLength(1);
+    expect(llm.contexts).toHaveLength(2);
   });
 
   it('persists each turn to conversation history and sends it to the next turn', async () => {
-    const out = (key: string) =>
-      JSON.stringify({
-        operations: [{ action: 'add_item', menu_item_key: key, quantity: 1, modifiers: [] }],
-        needs_clarification: false,
-        clarification_question: null,
-      });
-    const { service, llm } = await makeService([out('chicken_burger'), out('coke')], cartWith(0));
+    const add = (key: string) => propose([{ action: 'add_item', menu_item_key: key, quantity: 1, modifiers: [] }]);
+    const { service, llm } = await makeService([[add('chicken_burger')], [add('coke')]], cartWith(0));
 
     await service.handleFinalTranscript(transcript('a chicken burger', { request_id: 'req_1' }));
     await service.handleFinalTranscript(transcript('and a coke', { request_id: 'req_2' }));
 
     // Turn 1 saw no history; turn 2 sees turn 1's utterance (no clarification answer).
-    expect((JSON.parse(llm.prompts[0]!.user) as { conversation_history: unknown[] }).conversation_history).toEqual([]);
-    expect(
-      (JSON.parse(llm.prompts[1]!.user) as { conversation_history: unknown[] }).conversation_history,
-    ).toEqual([{ customer_text: 'a chicken burger' }]);
+    expect(llm.contexts[0]!.conversation_history).toEqual([]);
+    expect(llm.contexts[1]!.conversation_history).toEqual([{ customer_text: 'a chicken burger' }]);
   });
 
   it('renders a self-describing cart line (name + keys + modifiers, no numeric ids)', async () => {
-    const seeded = cartWith(2, [
-      { line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [{ ptav_id: 1 }] },
-    ]);
-    const out = JSON.stringify({
-      operations: [{ action: 'update_quantity', line_id: 'ln_1', quantity: 2 }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    const { service, llm } = await makeService([out], seeded);
+    const seeded = cartWith(2, [{ line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [{ ptav_id: 1 }] }]);
+    const { service, llm } = await makeService(
+      [[propose([{ action: 'update_quantity', line_id: 'ln_1', quantity: 2 }])]],
+      seeded,
+    );
 
     await service.handleFinalTranscript(transcript('make the chicken burger two'));
 
-    const cart = (JSON.parse(llm.prompts[0]!.user) as { current_cart: { items: unknown[] } }).current_cart;
+    const cart = llm.contexts[0]!.current_cart;
     expect(cart.items).toEqual([
       {
         line_id: 'ln_1',
@@ -362,26 +330,22 @@ describe('OrderUnderstandingService', () => {
     expect(JSON.stringify(cart)).not.toContain('ptav_id');
   });
 
-  it('does not report a parse failure when a proposal subscriber throws', async () => {
-    const valid = JSON.stringify({
-      operations: [{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    const { service, bus } = await makeService([valid], cartWith(0));
+  it('does not report a failure when a proposal subscriber throws', async () => {
+    const good = propose([{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }]);
+    const { service, bus } = await makeService([[good]], cartWith(0));
     const failed = collect(bus, 'voice.session_failed');
     bus.on('order.operations_proposed', () => {
       throw new Error('subscriber boom');
     });
 
-    // The throw propagates out of the turn; it must NOT be caught as a parse failure.
+    // The throw propagates out of the turn; it must NOT be caught as a turn failure.
     await service.handleFinalTranscript(transcript('a coke')).catch(() => undefined);
 
     expect(failed).toHaveLength(0);
   });
 
-  it('short-circuits a junk utterance: no proposal, no failure, and parse never runs', async () => {
-    // No parse responses scripted — if the pipeline were not short-circuited it would fail.
+  it('short-circuits a junk utterance: no proposal, no failure, and the agent never runs', async () => {
+    // No agent script — if the utterance were not short-circuited the agent would have nothing to do.
     const { service, bus, llm } = await makeService([], cartWith(0), () => 'junk');
     const proposed = collect(bus, 'order.operations_proposed');
     const failed = collect(bus, 'voice.session_failed');
@@ -390,71 +354,53 @@ describe('OrderUnderstandingService', () => {
 
     expect(proposed).toHaveLength(0);
     expect(failed).toHaveLength(0);
-    expect(llm.calls).toBe(0); // routed classify → finalize, skipping load_cart/retrieve/parse
+    expect(llm.chatCalls).toBe(0); // routed classify → END, the agent never ran
   });
 
-  it('emits a suggestion (and no proposal/failure) for a suggest utterance', async () => {
-    const { service, bus, llm } = await makeService([], cartWith(0), () => 'suggest');
+  it('emits a spoken reply (and no proposal/failure) when the agent recommends instead of proposing', async () => {
+    const { service, bus, llm } = await makeService(
+      [[search('coke'), reply('How about a Coke?')]],
+      cartWith(0),
+      () => 'suggest',
+    );
     const proposed = collect(bus, 'order.operations_proposed');
     const failed = collect(bus, 'voice.session_failed');
-    const suggestions = collect(bus, 'order.suggestion_ready');
+    const replies = collect(bus, 'order.reply');
 
-    // "a coke" retrieves the coke candidate, so the recommended coke survives the node's filter.
     await service.handleFinalTranscript(transcript('what do you recommend, maybe a coke'));
 
     expect(proposed).toHaveLength(0);
     expect(failed).toHaveLength(0);
-    expect(suggestions).toHaveLength(1);
-    expect(suggestions[0]).toMatchObject({
-      cart_id: 'cart_1',
-      request_id: 'req_1',
-      reply: 'How about a Coke?',
-      items: [{ menu_item_key: 'coke', name: 'Coke' }],
-    });
-    expect(llm.calls).toBe(0); // classify + suggest hops are their own prompts; no parse call
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ cart_id: 'cart_1', request_id: 'req_1', reply: 'How about a Coke?' });
+    expect(llm.chatCalls).toBe(2); // one search, then the spoken reply
   });
 
-  it('records the suggestion to history so the next turn can resolve a reference to it', async () => {
-    // Turn 1 suggests a coke; turn 2 ("that one") is an ordinary order whose parse must see the
-    // recommended item in conversation_history to resolve the reference.
-    const orderOut = JSON.stringify({
-      operations: [{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
+  it("records the agent's reply to history so the next turn can resolve a reference to it", async () => {
+    // Turn 1 recommends a coke (spoken reply); turn 2 ("that one") is an ordinary order whose agent
+    // must see the prior reply in conversation_history to resolve the reference.
+    const order = propose([{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }]);
     const { service, llm } = await makeService(
-      [orderOut],
+      [[search('coke'), reply('How about a Coke?')], [order]],
       cartWith(0),
-      (t) => (t === 'that one' ? 'order' : 'suggest'),
+      () => 'order', // turn 2 is force-ordered anyway (turn 1 left a pending reply)
     );
 
     await service.handleFinalTranscript(transcript('what should I get, maybe a coke', { request_id: 'req_1' }));
     await service.handleFinalTranscript(transcript('that one', { request_id: 'req_2' }));
 
-    // The order turn's parse prompt carries the prior suggestion, items and all.
-    const p2 = JSON.parse(llm.prompts[0]!.user) as {
-      conversation_history: Array<{ customer_text: string; suggested_items?: unknown }>;
-    };
-    expect(p2.conversation_history).toEqual([
-      { customer_text: 'what should I get, maybe a coke', suggested_items: [{ menu_item_key: 'coke', name: 'Coke', names: { en_US: 'Coke' } }] },
+    // The order turn's agent context carries the prior spoken reply.
+    expect(llm.contexts[1]!.conversation_history).toEqual([
+      { customer_text: 'what should I get, maybe a coke', agent_reply: 'How about a Coke?' },
     ]);
   });
 
-  it('forces order (skips the classifier) when a clarification is pending, so the answer is not dropped', async () => {
-    const clarifyOut = JSON.stringify({
-      operations: [],
-      needs_clarification: true,
-      clarification_question: 'one or both?',
-    });
-    const resolvedOut = JSON.stringify({
-      operations: [{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }],
-      needs_clarification: false,
-      clarification_question: null,
-    });
-    // The classifier would label the terse answer "both" as junk; the pending clarification
-    // must override that and run the parse pipeline so the answer resolves the order.
+  it('forces order (skips the classifier) after a reply, so a terse answer is not dropped as junk', async () => {
+    const resolve = propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }]);
+    // The classifier would label the terse answer "both" as junk; the pending reply must override
+    // that and run the agent so the answer resolves the order.
     const { service, bus } = await makeService(
-      [clarifyOut, resolvedOut],
+      [[reply('one or both?')], [resolve]],
       cartWith(0),
       (t) => (t === 'both' ? 'junk' : 'order'),
     );
@@ -466,5 +412,4 @@ describe('OrderUnderstandingService', () => {
     expect(proposed).toHaveLength(1);
     expect(proposed[0]!.proposal.operations[0]).toMatchObject({ action: 'add_item', quantity: 2 });
   });
-
 });

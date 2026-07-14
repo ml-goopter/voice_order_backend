@@ -34,25 +34,13 @@ export class RealtimeGateway {
       }
     });
 
-    this.bus.on('order.clarification_needed', (e) => {
+    this.bus.on('order.reply', (e) => {
       const c = this.registry.getBySession(e.session_id);
       c?.send({
-        type: 'order.clarification_needed',
-        cart_id: e.cart_id,
-        request_id: e.request_id,
-        question: e.question,
-        ...(e.options !== undefined ? { options: e.options } : {}),
-      });
-    });
-
-    this.bus.on('order.suggestion_ready', (e) => {
-      const c = this.registry.getBySession(e.session_id);
-      c?.send({
-        type: 'order.suggestion_ready',
+        type: 'order.reply',
         cart_id: e.cart_id,
         request_id: e.request_id,
         reply: e.reply,
-        items: e.items,
       });
     });
 

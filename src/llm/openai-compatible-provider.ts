@@ -1,5 +1,12 @@
 import OpenAI from 'openai';
-import type { LlmPrompt, LlmProvider } from './llm-provider.js';
+import type {
+  AgentMessage,
+  ChatResult,
+  LlmPrompt,
+  LlmProvider,
+  ToolCall,
+  ToolSpec,
+} from './llm-provider.js';
 import { logger } from '../config/logger.js';
 import { LIMITS } from '../config/constants.js';
 
@@ -60,5 +67,91 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
       logger.warn('llm.openai_compatible.empty_content', { provider: this.name, model: this.model });
     }
     return content;
+  }
+
+  /**
+   * Tool-calling turn (docs/agent-tools.md §4). Maps our transport-independent {@link AgentMessage}
+   * transcript and {@link ToolSpec} list onto the OpenAI `tools` API, and parses the response's
+   * `tool_calls` back into {@link ToolCall}s (arguments JSON-decoded to objects). `temperature: 0`
+   * for determinism; no `response_format` — tool mode governs the output shape.
+   */
+  async chat(messages: AgentMessage[], tools: ToolSpec[]): Promise<ChatResult> {
+    const res = await this.client.chat.completions.create({
+      model: this.model,
+      temperature: 0,
+      messages: messages.map(toOpenAiMessage),
+      tools: tools.map((t) => ({
+        type: 'function' as const,
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      })),
+    });
+
+    const message = res.choices[0]?.message;
+    const toolCalls = (message?.tool_calls ?? [])
+      .filter((tc) => tc.type === 'function')
+      .map((tc) => this.parseToolCall(tc));
+    if (!message?.content && toolCalls.length === 0) {
+      logger.warn('llm.openai_compatible.empty_chat', { provider: this.name, model: this.model });
+    }
+    return {
+      ...(message?.content ? { text: message.content } : {}),
+      toolCalls,
+    };
+  }
+
+  /** Decode one OpenAI tool call. The API returns `arguments` as a JSON string; we parse it to an
+   *  object here so callers validate a real value, not text. Malformed JSON surfaces `{}` (the tool
+   *  handler's zod validation then rejects it as a normal tool error). */
+  private parseToolCall(tc: OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall): ToolCall {
+    let args: unknown = {};
+    try {
+      args = JSON.parse(tc.function.arguments || '{}');
+    } catch {
+      logger.warn('llm.openai_compatible.tool_args_parse_failed', {
+        provider: this.name,
+        model: this.model,
+        tool: tc.function.name,
+      });
+    }
+    // Keep the SDK's original tool call so it can be replayed verbatim (preserves provider-specific
+    // fields like Gemini's thought_signature, which the follow-up request requires — see ToolCall.raw).
+    return { id: tc.id, name: tc.function.name, arguments: args, raw: tc };
+  }
+}
+
+/** Map our {@link AgentMessage} onto the OpenAI SDK's message shape (assistant tool_calls are
+ *  re-serialized: arguments back to a JSON string, wrapped in the `function` envelope). */
+function toOpenAiMessage(
+  m: AgentMessage,
+): OpenAI.Chat.Completions.ChatCompletionMessageParam {
+  switch (m.role) {
+    case 'system':
+      return { role: 'system', content: m.content };
+    case 'user':
+      return { role: 'user', content: m.content };
+    case 'tool':
+      return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content };
+    case 'assistant':
+      // Omit `content` when the turn was tool-calls-only (a null content alongside tool_calls is
+      // rejected by some OpenAI-compatible endpoints). Replay each tool call from its opaque `raw`
+      // payload when present — rebuilding it from id/name/arguments drops provider fields (e.g.
+      // Gemini's thought_signature) that the follow-up request requires (see ToolCall.raw).
+      return {
+        role: 'assistant',
+        ...(m.content !== undefined && m.content !== null ? { content: m.content } : {}),
+        ...(m.tool_calls && m.tool_calls.length > 0
+          ? {
+              tool_calls: m.tool_calls.map((tc) =>
+                tc.raw !== undefined
+                  ? (tc.raw as OpenAI.Chat.Completions.ChatCompletionMessageToolCall)
+                  : {
+                      id: tc.id,
+                      type: 'function' as const,
+                      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+                    },
+              ),
+            }
+          : {}),
+      };
   }
 }

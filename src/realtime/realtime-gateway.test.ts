@@ -58,53 +58,33 @@ describe('RealtimeGateway — cart.updated broadcast', () => {
   });
 });
 
-describe('RealtimeGateway — order.clarification_needed', () => {
-  it('sends to the session socket, including options when present', () => {
+describe('RealtimeGateway — order.reply', () => {
+  it('sends the spoken reply to the session socket', () => {
     const { bus, gw } = makeGateway();
     const a = conn('s1', 'cart_1');
     gw.onConnect(a);
-    bus.emit('order.clarification_needed', {
+    bus.emit('order.reply', {
       cart_id: 'cart_1',
       session_id: 's1',
       request_id: 'r1',
-      question: 'Which size?',
-      options: ['S', 'L'],
+      reply: 'How about a Coke?',
     });
     expect(a.send).toHaveBeenCalledWith({
-      type: 'order.clarification_needed',
+      type: 'order.reply',
       cart_id: 'cart_1',
       request_id: 'r1',
-      question: 'Which size?',
-      options: ['S', 'L'],
-    });
-  });
-
-  it('omits options when undefined', () => {
-    const { bus, gw } = makeGateway();
-    const a = conn('s1', 'cart_1');
-    gw.onConnect(a);
-    bus.emit('order.clarification_needed', {
-      cart_id: 'cart_1',
-      session_id: 's1',
-      request_id: 'r1',
-      question: 'Which one?',
-    });
-    expect(a.send).toHaveBeenCalledWith({
-      type: 'order.clarification_needed',
-      cart_id: 'cart_1',
-      request_id: 'r1',
-      question: 'Which one?',
+      reply: 'How about a Coke?',
     });
   });
 
   it('is a no-op when the session has no socket', () => {
     const { bus } = makeGateway();
     expect(() =>
-      bus.emit('order.clarification_needed', {
+      bus.emit('order.reply', {
         cart_id: 'c',
         session_id: 'missing',
         request_id: 'r',
-        question: 'q',
+        reply: 'q',
       }),
     ).not.toThrow();
   });
