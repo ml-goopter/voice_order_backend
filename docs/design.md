@@ -166,10 +166,11 @@ voice.session_ended
 ### WebSocket message types
 
 ```
-voice.start                   order.clarification_needed
-voice.audio_chunk             order.clarification_answered
-voice.stop                    cart.updated
-voice.partial_transcript      cart.operation_rejected
+voice.start                   order.clarification_needed     tts.audio_start
+voice.audio_chunk             order.clarification_answered    tts.audio_chunk
+voice.stop                    order.reply                     tts.audio_end
+voice.partial_transcript      cart.updated                    tts.error
+                              cart.operation_rejected
                               voice.error
 ```
 
@@ -1090,10 +1091,17 @@ Payloads for the core events in §2. Modules communicate ONLY through these.
 { type: 'voice.partial_transcript'; session_id; text }        // display-only
 { type: 'voice.final_transcript';   session_id; text; language? }
 { type: 'order.clarification_needed'; cart_id; request_id; question; options? }
+{ type: 'order.reply';              cart_id; request_id; reply }         // spoken clarify/recommend (one merged outcome)
 { type: 'cart.updated';             cart_id; version; cart: Cart }
 { type: 'cart.operation_rejected';  cart_id; request_id; reason; message }
 { type: 'voice.error';              session_id; reason; message }
 { type: 'connection.resumed';       session_id; cart_id; cart_version; cart: Cart; voice_session_status }
+
+// Spoken-reply audio for order.reply (base64 in JSON, no binary frames): audio_start → audio_chunk × N → audio_end (or error)
+{ type: 'tts.audio_start';          session_id; request_id; encoding; sample_rate? }  // sample_rate: raw-PCM only
+{ type: 'tts.audio_chunk';          session_id; request_id; seq; audio }  // audio: base64 of one standalone file per sentence segment
+{ type: 'tts.audio_end';            session_id; request_id }
+{ type: 'tts.error';                session_id; request_id; message }
 ```
 
 ### 17.8 Contract keys → Odoo ids
