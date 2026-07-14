@@ -8,6 +8,7 @@ function fakeLlm(reply: string | (() => Promise<string>)): LlmProvider {
   return {
     name: 'fake',
     complete: (_prompt: LlmPrompt) => (typeof reply === 'string' ? Promise.resolve(reply) : reply()),
+    chat: () => Promise.reject(new Error('fakeLlm: chat not used by this test')),
   };
 }
 

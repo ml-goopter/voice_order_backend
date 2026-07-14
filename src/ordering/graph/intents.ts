@@ -21,15 +21,16 @@ export type Intent = z.infer<typeof intentSchema>;
 export const DEFAULT_INTENT: Intent = 'order';
 
 /**
- * Maps each intent to the graph node (or `END`) it routes to out of `classify` (which runs
- * after `normalize`). Used as the router's path map in `addConditionalEdges`, so routing and
- * the intent set can't drift. An intent that needs no special handling points at `load_cart`
- * (the order pipeline, already past normalize); one with its own behavior points at its handler
- * node. `junk` goes straight to `END` — a non-orderable utterance (greeting, noise) is NOT
- * recorded to history, so it can't pollute the conversation context later fed to `parse`.
+ * Maps each intent to the graph node (or `END`) it routes to out of `classify` (which runs after
+ * `normalize`). Used as the router's path map in `addConditionalEdges`, so routing and the intent
+ * set can't drift. Since the agent rework (docs/agent-tools.md), `classify` is only a JUNK-GATE:
+ * both `order` and `suggest` route into the proposer pipeline (`load_cart` → `agent`), where the
+ * agent itself decides the outcome (propose / clarify / suggest). `junk` goes straight to `END` —
+ * a non-orderable utterance (greeting, noise) is NOT recorded to history, so it can't pollute the
+ * conversation context later fed to the agent.
  */
 export const INTENT_ROUTE = {
   order: 'load_cart',
-  suggest: 'suggest',
+  suggest: 'load_cart',
   junk: END,
 } as const satisfies Record<Intent, string>;
