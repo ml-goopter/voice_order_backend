@@ -24,14 +24,17 @@ export interface AppConfig {
   readonly odooDatabaseUrl: string; // Postgres (Odoo POS DB) that also holds our `item_vector` table
   readonly cartIdempotencyTtlSeconds: number; // TTL on the cart idempotency ledger (design §9)
 
-  readonly sttProvider: string; // 'assemblyai' | 'deepgram' | ...
+  readonly sttProvider: string; // 'assemblyai' | ...
   readonly sttSampleRate: number; // Hz of the client PCM16 stream (design §5)
   readonly assemblyAiApiKey: string;
-  readonly ttsProvider: string; // 'deepgram' | 'noop'
-  readonly deepgramApiKey: string;
-  readonly ttsModel: string; // Deepgram Aura voice, e.g. 'aura-2-thalia-en'
+  readonly ttsProvider: string; // 'cartesia' | 'noop'
+  readonly cartesiaApiKey: string;
+  readonly ttsModel: string; // Cartesia Sonic model, e.g. 'sonic-3.5' (multilingual)
+  readonly ttsVoiceId: string; // Cartesia voice UUID (a multi-locale voice speaks all languages)
+  readonly ttsLanguage: string; // ISO-639-1 fallback language when the turn detected none (e.g. 'en')
   readonly ttsEncoding: string; // audio encoding streamed to the client ('mp3' default; 'linear16' etc.)
-  readonly ttsSampleRate: number; // Hz for raw-PCM encodings (linear16); ignored for mp3
+  readonly ttsSampleRate: number; // Hz of the emitted audio; mp3 container also requires it (Cartesia)
+  readonly ttsBitRate: number; // mp3 bit rate for the Cartesia mp3 container (bps)
   readonly llmProvider: string; // 'stub' | 'ollama' | 'openai' | ...
   readonly llmModel: string;
   readonly llmBaseUrl: string; // OpenAI-compatible base URL (Ollama by default)
@@ -64,11 +67,14 @@ export const config: AppConfig = {
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
   sttSampleRate: int('STT_SAMPLE_RATE', 16_000),
   assemblyAiApiKey: str('ASSEMBLYAI_API_KEY', ''),
-  ttsProvider: str('TTS_PROVIDER', 'deepgram'),
-  deepgramApiKey: str('DEEPGRAM_API_KEY', ''),
-  ttsModel: str('TTS_MODEL', 'aura-2-thalia-en'),
+  ttsProvider: str('TTS_PROVIDER', 'cartesia'),
+  cartesiaApiKey: str('CARTESIA_API_KEY', ''),
+  ttsModel: str('TTS_MODEL', 'sonic-3.5'),
+  ttsVoiceId: str('TTS_VOICE_ID', '694f9389-aac1-45b6-b726-9d9369183238'),
+  ttsLanguage: str('TTS_LANGUAGE', 'en'),
   ttsEncoding: str('TTS_ENCODING', 'mp3'),
   ttsSampleRate: int('TTS_SAMPLE_RATE', 24_000),
+  ttsBitRate: int('TTS_BIT_RATE', 128_000),
   llmProvider: str('LLM_PROVIDER', 'stub'),
   llmModel: str('LLM_MODEL', 'llama3.1'),
   llmBaseUrl: str('LLM_BASE_URL', 'http://localhost:11434/v1'),

@@ -92,7 +92,21 @@ describe('RealtimeGateway — order.reply', () => {
       request_id: 'r1',
       reply: 'How about a Coke?',
     });
-    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, 'How about a Coke?');
+    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, 'How about a Coke?', undefined);
+  });
+
+  it('forwards the detected language so TTS speaks it in the customer language', () => {
+    const { bus, gw, tts } = makeGateway();
+    const a = conn('s1', 'cart_1');
+    gw.onConnect(a);
+    bus.emit('order.reply', {
+      cart_id: 'cart_1',
+      session_id: 's1',
+      request_id: 'r1',
+      reply: '¿Una Coca-Cola?',
+      language: 'es_ES',
+    });
+    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, '¿Una Coca-Cola?', 'es_ES');
   });
 
   it('is a no-op (no send, no TTS) when the session has no socket', () => {

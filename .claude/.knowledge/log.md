@@ -7,6 +7,28 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-14 — TTS: replace Deepgram with Cartesia + multilingual synthesis
+- **What:** Swapped the TTS provider from Deepgram Aura to Cartesia Sonic and made synthesis
+  language-aware. Removed `@deepgram/sdk` + `deepgram-tts-provider.ts`; added `@cartesia/cartesia-js`
+  + `cartesia-tts-provider.ts` (`CartesiaTtsProvider` calls the `Cartesia` client `tts.generate`,
+  returning one buffer per segment). `TtsProvider.synthesize` gained a `language?` param; the
+  customer's STT-detected language now rides `order.reply` (new `OrderReply.language`) →
+  `TtsService.speak(…, language)` → `synthesize`. `toCartesiaLanguage()` maps the Odoo `res.lang`
+  code (`en_US`) to Cartesia's ISO-639-1 code (`en`), falling back to `TTS_LANGUAGE`.
+- **Why:** Move to Cartesia and let a single multi-locale voice speak replies in the customer's
+  language (`sonic-3.5` is multilingual over 42 languages). The reply text was already produced in
+  the customer's language by the LLM; only the TTS hop lacked the language.
+- **Where:** `src/tts/` (`cartesia-tts-provider.ts` new, `deepgram-tts-provider.ts` removed,
+  `tts-client.ts`, `tts-types.ts`, `tts-service.ts`, tests), `src/events/event-types.ts`
+  (`OrderReply.language`), `src/ordering/order-understanding-service.ts` (emit language),
+  `src/realtime/realtime-gateway.ts` (forward language), `src/config/env.ts` + `.env.example`.
+  Scrubbed illustrative Deepgram mentions in `src/stt/` comments.
+- **Notes:** Config `TTS_PROVIDER` default `cartesia`, new `CARTESIA_API_KEY`, `TTS_MODEL`
+  (`sonic-3.5`), `TTS_VOICE_ID` (a placeholder sample UUID — override with a real multi-locale
+  voice), `TTS_LANGUAGE` (`en` fallback), `TTS_BIT_RATE` (mp3). `TTS_SAMPLE_RATE` now also feeds the
+  Cartesia mp3 container. Client `tts.*` frame contract is unchanged. Known limitation: `segmentText`
+  doesn't sub-segment CJK (no whitespace after `。`) — synthesizes as one larger chunk.
+
 ## 2026-07-14 — TTS: standalone mp3 per sentence segment (progressive playback)
 - **What:** Reworked TTS so each `tts.audio_chunk` is a **complete, standalone** audio file
   rather than a byte slice of one continuous mp3 stream. `TtsService` now splits the reply

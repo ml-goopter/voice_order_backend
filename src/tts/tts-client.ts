@@ -1,6 +1,6 @@
-import { DeepgramClient } from '@deepgram/sdk';
+import { Cartesia } from '@cartesia/cartesia-js';
 import type { TtsProvider } from './tts-types.js';
-import { DeepgramTtsProvider, type SpeakFn } from './deepgram-tts-provider.js';
+import { CartesiaTtsProvider, type SpeakFn } from './cartesia-tts-provider.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 
@@ -14,54 +14,48 @@ class NoopTtsProvider implements TtsProvider {
   readonly encoding = 'mp3';
 
   async synthesize(): Promise<Buffer> {
-    logger.warn('tts.noop_provider_in_use', { hint: 'set DEEPGRAM_API_KEY to enable spoken replies' });
+    logger.warn('tts.noop_provider_in_use', { hint: 'set CARTESIA_API_KEY to enable spoken replies' });
     return Buffer.alloc(0);
   }
 }
 
 export function createTtsProvider(): TtsProvider {
   switch (config.ttsProvider) {
-    case 'deepgram':
-      if (!config.deepgramApiKey) {
-        logger.warn('tts.deepgram_no_key', { hint: 'set DEEPGRAM_API_KEY; using noop provider' });
+    case 'cartesia':
+      if (!config.cartesiaApiKey) {
+        logger.warn('tts.cartesia_no_key', { hint: 'set CARTESIA_API_KEY; using noop provider' });
         return new NoopTtsProvider();
       }
-      // Deepgram only needs an explicit sample rate for raw PCM (linear16); mp3 carries its own.
+      // mp3 is self-describing; only raw PCM (linear16) advertises a sample rate to the client.
       const sampleRate = config.ttsEncoding === 'linear16' ? config.ttsSampleRate : undefined;
-      return new DeepgramTtsProvider(config.ttsEncoding, sampleRate, defaultSpeakFn());
+      return new CartesiaTtsProvider(config.ttsEncoding, sampleRate, config.ttsLanguage, defaultSpeakFn());
     default:
       return new NoopTtsProvider();
   }
 }
 
-/** Real Deepgram REST TTS: one client, streamed response body adapted to an async iterable. */
+/** Real Cartesia REST TTS: one client, one complete audio file per segment (drained to bytes). */
 function defaultSpeakFn(): SpeakFn {
-  const client = new DeepgramClient({ apiKey: config.deepgramApiKey });
-  return async (text, signal) => {
-    const response = await client.speak.v1.audio.generate(
+  const client = new Cartesia({ apiKey: config.cartesiaApiKey });
+  type GenerateBody = Parameters<typeof client.tts.generate>[0];
+  // Cartesia's mp3 container requires an explicit sample_rate + bit_rate; raw PCM (linear16) carries a
+  // sample_rate and pcm_s16le encoding. Built once — the format is constant across segments.
+  const outputFormat =
+    config.ttsEncoding === 'linear16'
+      ? { container: 'raw', encoding: 'pcm_s16le', sample_rate: config.ttsSampleRate }
+      : { container: 'mp3', sample_rate: config.ttsSampleRate, bit_rate: config.ttsBitRate };
+  return async (text, language, signal) => {
+    const response = await client.tts.generate(
       {
-        text,
-        model: config.ttsModel,
-        encoding: config.ttsEncoding,
-        ...(config.ttsEncoding === 'linear16' ? { sample_rate: config.ttsSampleRate } : {}),
+        model_id: config.ttsModel,
+        transcript: text,
+        voice: { mode: 'id', id: config.ttsVoiceId },
+        language,
+        output_format: outputFormat as GenerateBody['output_format'],
       },
-      { abortSignal: signal },
+      { signal },
     );
-    const body = response.stream();
-    return body ? readStream(body) : null;
+    const buf = await response.arrayBuffer();
+    return buf.byteLength > 0 ? new Uint8Array(buf) : null;
   };
-}
-
-/** Adapt a web ReadableStream to an async generator (avoids relying on ReadableStream async-iteration). */
-async function* readStream(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
-  const reader = stream.getReader();
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) return;
-      if (value) yield value;
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }

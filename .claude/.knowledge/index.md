@@ -23,7 +23,7 @@ sit behind interfaces with stub implementations (search `TODO`).
 |---|---|
 | [realtime](./realtime/index.md) | WebSocket gateway, routing, client registry, reconnect (design §4) |
 | [voice](./voice/index.md) | Voice sessions + STT streaming; emits final transcript (design §5) |
-| [tts](./tts/index.md) | Synthesizes order.reply text with Deepgram; streams tts.* audio to the client |
+| [tts](./tts/index.md) | Synthesizes order.reply text with Cartesia (multilingual); streams tts.* audio to the client |
 | [ordering](./ordering/index.md) | Transcript → proposed ops / clarification; per-cart FIFO (design §6/§8) |
 | [menu](./menu/index.md) | Candidate matching before the LLM; Postgres/pgvector + Odoo JOINs (design §7) |
 | [llm](./llm/index.md) | Cloud LLM abstraction + prompt building (design §8) |

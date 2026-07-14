@@ -35,6 +35,9 @@ export interface OrderReply {
   request_id: RequestId;
   /** The spoken reply (a question or a recommendation). */
   reply: string;
+  /** The customer's detected language for this turn; the reply is phrased in it, so TTS speaks it
+   *  in the same language. Absent when the turn detected none (TTS falls back to a default). */
+  language?: LangCode;
 }
 
 export interface CartUpdated {

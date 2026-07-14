@@ -80,6 +80,7 @@ export class OrderUnderstandingService {
           session_id: e.session_id,
           request_id: e.request_id,
           reply: result.reply,
+          ...(e.language !== undefined ? { language: e.language } : {}),
         });
         return;
       case 'complete':

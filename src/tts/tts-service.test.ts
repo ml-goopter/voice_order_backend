@@ -19,6 +19,7 @@ function conn(session_id = 's1'): FakeConn {
 interface Call {
   text: string;
   signal: AbortSignal;
+  language: string | undefined;
   resolve: (b: Buffer) => void;
   reject: (e: unknown) => void;
 }
@@ -30,8 +31,8 @@ function controllableProvider(overrides: Partial<Pick<TtsProvider, 'encoding' | 
     name: 'fake',
     encoding: overrides.encoding ?? 'mp3',
     ...(overrides.sampleRate !== undefined ? { sampleRate: overrides.sampleRate } : {}),
-    synthesize(text: string, signal: AbortSignal): Promise<Buffer> {
-      return new Promise<Buffer>((resolve, reject) => calls.push({ text, signal, resolve, reject }));
+    synthesize(text: string, signal: AbortSignal, language?: string): Promise<Buffer> {
+      return new Promise<Buffer>((resolve, reject) => calls.push({ text, signal, language, resolve, reject }));
     },
   };
   return { provider, calls };
@@ -101,13 +102,13 @@ describe('TtsService', () => {
     const c = conn();
     new TtsService(provider).speak(c, ctx, 'hi');
     await flush();
-    calls[0]!.reject(new Error('deepgram_down'));
+    calls[0]!.reject(new Error('cartesia_down'));
     await flush();
     expect(c.send).toHaveBeenLastCalledWith({
       type: 'tts.error',
       session_id: 's1',
       request_id: 'r1',
-      message: 'deepgram_down',
+      message: 'cartesia_down',
     });
     // No audio_end after an error.
     expect(c.send.mock.calls.some(([m]) => m.type === 'tts.audio_end')).toBe(false);
@@ -122,6 +123,22 @@ describe('TtsService', () => {
     await flush();
     expect(c.send).toHaveBeenCalledTimes(2);
     expect(c.send).toHaveBeenNthCalledWith(2, { type: 'tts.audio_end', session_id: 's1', request_id: 'r1' });
+  });
+
+  it('forwards the reply language to the provider (per-segment)', async () => {
+    const { provider, calls } = controllableProvider();
+    const c = conn();
+    new TtsService(provider).speak(c, ctx, 'Un. Deux.', 'fr_FR');
+    expect(calls[0]!.language).toBe('fr_FR');
+    calls[0]!.resolve(Buffer.from([1]));
+    await flush();
+    expect(calls[1]!.language).toBe('fr_FR');
+  });
+
+  it('passes language undefined when the reply has none', () => {
+    const { provider, calls } = controllableProvider();
+    new TtsService(provider).speak(conn(), ctx, 'hi');
+    expect(calls[0]!.language).toBeUndefined();
   });
 
   it('ignores an empty / whitespace reply', () => {

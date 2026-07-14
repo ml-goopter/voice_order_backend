@@ -1,3 +1,5 @@
+import type { LangCode } from '../shared/types.js';
+
 /**
  * TTS provider abstraction — the mirror image of STT: text in, audio out.
  *
@@ -13,9 +15,11 @@ export interface TtsProvider {
   /** Sample rate of the emitted audio when the encoding needs one (e.g. linear16); else undefined. */
   readonly sampleRate?: number | undefined;
   /**
-   * Synthesize `text` into one complete audio buffer. Rejects on failure. If `signal` aborts, the
-   * synthesis stops early — it may resolve with a partial/empty buffer or reject with the abort
-   * error; either way the caller discards the result once the signal is aborted.
+   * Synthesize `text` into one complete audio buffer. `language` is the customer's detected language
+   * (the reply is already phrased in it), letting a multilingual provider speak it natively; a
+   * provider that can't map it falls back to a configured default. Rejects on failure. If `signal`
+   * aborts, the synthesis stops early — it may resolve with a partial/empty buffer or reject with the
+   * abort error; either way the caller discards the result once the signal is aborted.
    */
-  synthesize(text: string, signal: AbortSignal): Promise<Buffer>;
+  synthesize(text: string, signal: AbortSignal, language?: LangCode): Promise<Buffer>;
 }

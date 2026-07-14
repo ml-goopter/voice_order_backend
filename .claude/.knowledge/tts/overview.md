@@ -1,7 +1,7 @@
 ---
 type: Concept
 title: TTS Module
-description: Synthesizes order.reply text with Deepgram and streams tts.* audio frames to the client.
+description: Synthesizes order.reply text with Cartesia and streams tts.* audio frames to the client.
 resource: src/tts
 timestamp: 2026-07-14
 ---
@@ -12,7 +12,7 @@ timestamp: 2026-07-14
 Gives the agent a voice. When Order Understanding ends a turn by **speaking** (a
 clarifying question or a recommendation) it emits `order.reply`; the Realtime Gateway
 already forwards that reply **text**, and the TTS module additionally **synthesizes it
-with Deepgram and streams the audio** back over the same WebSocket. It owns no cart or
+with Cartesia and streams the audio** back over the same WebSocket. It owns no cart or
 turn logic — it is a pure text→audio side-effect of `order.reply`.
 
 ## Mechanics
@@ -30,21 +30,27 @@ turn logic — it is a pure text→audio side-effect of `order.reply`.
   self-contained mp3) for a segment — not a slice of a continuous stream — so the client
   plays each chunk on its own as it arrives (progressive playback). Matches the mic contract
   (audio is base64 inside JSON, §3).
-- **Provider abstraction (mirrors STT):** `TtsProvider.synthesize(text, signal)` returns a
+- **Provider abstraction (mirrors STT):** `TtsProvider.synthesize(text, signal, language?)` returns a
   `Promise<Buffer>` — one complete audio file per segment, cancellable via the `AbortSignal`.
-  `DeepgramTtsProvider` drains the streamed response body and concatenates it into one buffer;
-  the Deepgram-specific REST call is an injected `SpeakFn` (built in `tts-client.ts`) so tests
+  `CartesiaTtsProvider` awaits the REST response and returns its bytes as one buffer;
+  the Cartesia-specific call is an injected `SpeakFn` (built in `tts-client.ts`) so tests
   skip the network. `createTtsProvider()` selects by `config.ttsProvider`; `NoopTtsProvider`
   is the fallback for an unknown provider or a keyless boot (returns an empty buffer —
   `audio_start` + `audio_end`, no chunks, so the reply text still stands).
-- **Deepgram call:** `@deepgram/sdk` `speak.v1.audio.generate({ text, model, encoding })` per
-  segment; the `BinaryResponse.stream()` body is adapted to an async generator, drained, and
-  concatenated. Deepgram Aura bills per character, so one request per segment costs the same
-  as one whole-reply request while cutting time-to-first-audio.
+- **Cartesia call:** `@cartesia/cartesia-js` `Cartesia` client, `tts.generate({ model_id, transcript,
+  voice: { mode: 'id', id }, language, output_format })` per segment; the `Response` body is drained
+  to bytes (`arrayBuffer()`). One request per segment cuts time-to-first-audio. The model is
+  `sonic-3.5` (multilingual, 42 languages) and the voice is a Cartesia UUID (`TTS_VOICE_ID`).
+- **Multilingual:** the customer's language is detected by STT and rides `order.reply` (see
+  Mechanics/`events`). `TtsService.speak(conn, ctx, text, language)` forwards it to `synthesize`;
+  `toCartesiaLanguage()` maps the Odoo `res.lang` code (`en_US`) to Cartesia's ISO-639-1 language
+  (`en`), falling back to `TTS_LANGUAGE` when the turn detected none. A single multi-locale Cartesia
+  voice speaks each language via the `language` param (its timbre is preserved across languages).
 - **Encoding:** `mp3` by default (each segment's mp3 is self-describing and plays straight
-  through a client media player). `TTS_ENCODING` can switch to `linear16`/`opus`/…; for
-  raw-PCM encodings `TTS_SAMPLE_RATE` is advertised in `tts.audio_start` (standalone-per-chunk
-  is an mp3 notion; raw-PCM chunks are concatenable segment bytes).
+  through a client media player). Cartesia's mp3 container needs `TTS_SAMPLE_RATE` + `TTS_BIT_RATE`
+  in the request, but mp3 stays self-describing so no `sample_rate` is advertised. `TTS_ENCODING`
+  can switch to `linear16` (Cartesia `raw`/`pcm_s16le`); for raw PCM `TTS_SAMPLE_RATE` is advertised
+  in `tts.audio_start` (standalone-per-chunk is an mp3 notion; raw-PCM chunks are concatenable bytes).
 - **Barge-in (cancel-previous-only):** `TtsService` keeps an `AbortController` per
   `session_id`; a new reply aborts the previous one (stopping mid-segment and halting the
   segment loop) before starting, so audio never overlaps. The in-flight handle is dropped on
@@ -52,28 +58,29 @@ turn logic — it is a pure text→audio side-effect of `order.reply`.
   `voice.start` is out of scope.
 - **Disconnect:** the gateway's `onDisconnect` calls `TtsService.cancel(session_id)`
   (alongside the STT teardown), aborting any in-flight synthesis so a dropped client no
-  longer streams a paid Deepgram response into a closed socket.
+  longer streams a paid Cartesia response into a closed socket.
 - **Logging:** `TtsService` logs on a child logger bound to `{ session_id, request_id }`:
   `tts.synthesis_failed` (**warn**, with `error`) when synthesis fails — non-fatal, the
   reply text was already delivered — and, at **debug**, `tts.spoken` (`chunks`) on
   completion and `tts.superseded` on a barge-in cancel. Keyless/unknown-provider boots warn
-  once via the factory (`tts.deepgram_no_key` / `tts.noop_provider_in_use`).
+  once via the factory (`tts.cartesia_no_key` / `tts.noop_provider_in_use`).
 
 ## Dependencies
-- `events` (EventBus) — the `order.reply` trigger (consumed in the gateway).
+- `events` (EventBus) — the `order.reply` trigger (consumed in the gateway), which now carries the
+  detected `language`.
 - `realtime` (`ClientConnection`) — sends the `tts.*` frames; the gateway owns sockets and
   constructs `TtsService`.
-- `config/env` — provider/key/model/encoding settings.
-- `@deepgram/sdk` — Deepgram Aura REST speak client.
+- `config/env` — provider/key/model/voice/language/encoding settings.
+- `@cartesia/cartesia-js` — Cartesia Sonic REST TTS client (`tts.generate`).
 
 ## Key files
-- `tts/tts-types.ts` — `TtsProvider` interface (`synthesize(text, signal) → Promise<Buffer>`).
+- `tts/tts-types.ts` — `TtsProvider` interface (`synthesize(text, signal, language?) → Promise<Buffer>`).
 - `tts/segment-text.ts` — `segmentText(reply)`: split a reply into ≈sentence segments.
-- `tts/deepgram-tts-provider.ts` — Deepgram Aura provider + injectable `SpeakFn`; drains the
-  streamed body into one buffer per segment.
-- `tts/tts-client.ts` — `createTtsProvider()` factory (`deepgram` → real, else noop) +
-  the real `SpeakFn` (client construction, streamed body → async generator).
-- `tts/tts-service.ts` — segments the reply, synthesizes one segment at a time, and
-  orchestrates `tts.*` frames on a socket; per-session cancel.
+- `tts/cartesia-tts-provider.ts` — Cartesia Sonic provider + injectable `SpeakFn`; awaits one buffer
+  per segment. `toCartesiaLanguage()` maps `res.lang` (`en_US`) → Cartesia language (`en`).
+- `tts/tts-client.ts` — `createTtsProvider()` factory (`cartesia` → real, else noop) +
+  the real `SpeakFn` (client construction, `tts.generate` → response bytes).
+- `tts/tts-service.ts` — segments the reply, synthesizes one segment at a time (forwarding the
+  reply's language), and orchestrates `tts.*` frames on a socket; per-session cancel.
 - Wiring: `realtime/realtime-gateway.ts` (`order.reply` → `tts.speak`),
   `realtime/realtime-message-types.ts` (`tts.*` outbound messages), `app.ts` (composition).
