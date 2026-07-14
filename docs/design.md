@@ -1095,6 +1095,7 @@ Payloads for the core events in §2. Modules communicate ONLY through these.
 { type: 'cart.updated';             cart_id; version; cart: Cart }
 { type: 'cart.operation_rejected';  cart_id; request_id; reason; message }
 { type: 'voice.error';              session_id; reason; message }
+{ type: 'voice.stopped';            session_id; reason: 'idle' }          // server closed the mic (idle auto-stop), not a client voice.stop
 { type: 'connection.resumed';       session_id; cart_id; cart_version; cart: Cart; voice_session_status }
 
 // Spoken-reply audio for order.reply (base64 in JSON, no binary frames): audio_start → audio_chunk × N → audio_end (or error)

@@ -265,7 +265,7 @@ describe('VoiceMessageHandler', () => {
     it('auto-ends the turn when no new partial arrives after speech began', async () => {
       vi.useFakeTimers();
       try {
-        const { handler, conn, stt, events } = setup();
+        const { handler, conn, stt, events, sent } = setup();
         await handler.handleStart(conn, startMsg);
         stt.handlers.onPartial('two burgers'); // speech → arms the stopped-talking timer
         stt.handlers.onFinal('two burgers', 'en'); // a final is on record, session keeps listening
@@ -275,6 +275,8 @@ describe('VoiceMessageHandler', () => {
 
         expect(stt.stream.stop).toHaveBeenCalledTimes(1); // flushed once, as if the client stopped
         expect(events['voice.session_ended']).toHaveLength(1); // final already present → clean end
+        // A server-initiated stop tells the client the mic closed so it can drop its listening UI.
+        expect(sent).toContainEqual({ type: 'voice.stopped', session_id: 's1', reason: 'idle' });
       } finally {
         vi.useRealTimers();
       }
@@ -325,7 +327,7 @@ describe('VoiceMessageHandler', () => {
     it('an explicit voice.stop disarms the timer (no double stop)', async () => {
       vi.useFakeTimers();
       try {
-        const { handler, conn, stt } = setup();
+        const { handler, conn, stt, sent } = setup();
         await handler.handleStart(conn, startMsg);
         stt.handlers.onPartial('one coke'); // arms the timer
         await handler.handleStop(conn, stopMsg); // manual stop clears it
@@ -333,6 +335,8 @@ describe('VoiceMessageHandler', () => {
         vi.advanceTimersByTime(TIMEOUTS.partialIdleMs * 2);
         await vi.runAllTimersAsync();
         expect(stt.stream.stop).toHaveBeenCalledTimes(1); // only the manual stop, timer never fired
+        // A client-sent voice.stop is not echoed back as voice.stopped.
+        expect(sent).not.toContainEqual(expect.objectContaining({ type: 'voice.stopped' }));
       } finally {
         vi.useRealTimers();
       }

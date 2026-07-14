@@ -70,7 +70,7 @@ resets on transcript activity, not on audio.
 - **Never reset by audio** — `handleAudioChunk` does not touch the timer.
 - **Fires only while `listening`** — the timer and its callback both bail if the session
   is `stopping` or terminal.
-- **On fire** — after `TIMEOUTS.partialIdleMs` (2.5 s) of no progress, it calls
+- **On fire** — after `TIMEOUTS.partialIdleMs` (60 s) of no progress, it calls
   `handleStop` with a synthetic `voice.stop`, reusing the exact same flush + 4 s grace
   window as a client-sent stop (guards, `finalReceived`, `finalTimer` all identical).
 - **Cleared** on `handleStop`, `handleDisconnect`, and STT `onError`.
@@ -92,7 +92,7 @@ Don't conflate the three silence thresholds:
 | Threshold | Scale | Ends | Owner |
 |---|---|---|---|
 | Utterance endpointing | ~0.4–0.8 s | one utterance (produces a *final*) | STT provider (design §13) |
-| **Partial-idle stop (this doc)** | **2.5 s (`partialIdleMs`)** | **the turn** (auto-fires stop) | **backend, implemented** |
+| **Partial-idle stop (this doc)** | **60 s (`partialIdleMs`)** | **the turn** (auto-fires stop) | **backend, implemented** |
 | Session-idle backstop | ~20–30 s | the whole session ("walked away") | backend ([`voice-idle-timeout.md`](voice-idle-timeout.md), proposed) |
 
 The partial-idle stop is a turn-level convenience; the session-idle backstop is a
@@ -101,7 +101,7 @@ and, when it fires, ends the current turn cleanly before the backstop would ever
 
 ### Tuning / notes
 
-- **`partialIdleMs`** (`config/constants.ts`) starts at 2.5 s. Too short cuts off a
+- **`partialIdleMs`** (`config/constants.ts`) is 60 s. Too short cuts off a
   customer mid-pause; too long feels laggy.
 - **Keepalive partials.** The `text`-growth gate protects against a provider emitting
   empty/keepalive partials during silence. If AssemblyAI's partial semantics change,
