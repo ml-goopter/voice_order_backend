@@ -48,7 +48,7 @@ services:
       REDIS_URL: redis://redis:6379
       # Menu backend. Password must match the db service; set it in .env if it
       # contains URL-unsafe characters that need percent-encoding.
-      ODOO_DATABASE_URL: ${ODOO_DATABASE_URL:-postgres://odoo@db:5432/postgres}
+      ODOO_DATABASE_URL: ${ODOO_DATABASE_URL:-postgresql://odoo:EvGOMk4jOw6HciJTZwQSPTzSmTd+ca9rTSjqO75xiPY=%@db:5432/jadegarden1}
     depends_on:
       redis:
         condition: service_healthy
