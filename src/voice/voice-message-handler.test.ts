@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { Mock } from 'vitest';
 import { logger } from '../config/logger.js';
 import { VoiceMessageHandler } from './voice-message-handler.js';
 import { VoiceSessionManager } from './voice-session-manager.js';
@@ -13,10 +14,10 @@ import type { OutboundMessage } from '../realtime/realtime-message-types.js';
 class FakeSttProvider implements SttProvider {
   readonly name = 'fake';
   handlers!: SttStreamHandlers;
-  stream: SttStream & { sendAudio: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> } = {
-    sendAudio: vi.fn(),
-    stop: vi.fn().mockResolvedValue(undefined),
-    close: vi.fn(),
+  stream: SttStream & { sendAudio: Mock<(chunk: Buffer) => void>; stop: Mock<() => Promise<void>>; close: Mock<() => void> } = {
+    sendAudio: vi.fn<(chunk: Buffer) => void>(),
+    stop: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+    close: vi.fn<() => void>(),
   };
   async openStream(handlers: SttStreamHandlers): Promise<SttStream> {
     this.handlers = handlers;
@@ -111,7 +112,7 @@ describe('VoiceMessageHandler', () => {
   it('ends the session on stop when a final has already arrived', async () => {
     const { handler, conn, stt, events, manager } = setup();
     await handler.handleStart(conn, startMsg);
-    stt.handlers.onFinal('one coke', 'en');
+    stt.handlers.onFinal('one coke');
     await handler.handleStop(conn, stopMsg);
     expect(events['voice.session_ended']).toHaveLength(1);
     expect(events['voice.session_failed']).toBeUndefined();

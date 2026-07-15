@@ -44,8 +44,8 @@ class FakeRedis {
   /** Mirrors COMMIT_APPLIED_LUA: KEYS[1]=ARGV[1], KEYS[2]=ARGV[2] EX ARGV[3], atomically. */
   async eval(_script: string, _numKeys: number, ...args: string[]): Promise<void> {
     const [cartK, reqK, cartVal, mark, seconds] = args;
-    this.write(cartK, cartVal);
-    this.write(reqK, mark, Number(seconds));
+    this.write(cartK!, cartVal!);
+    this.write(reqK!, mark!, Number(seconds));
   }
 
   private write(key: string, value: string, seconds?: number): void {

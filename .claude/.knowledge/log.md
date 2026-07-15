@@ -61,6 +61,67 @@ timestamp: 2026-07-07
   saying "discount" can add a negative-price line. Neither ranks, so neither affects this
   change.
 
+## 2026-07-15 — `npm run typecheck` now type-checks the test files
+- **What:** Pointed the `typecheck` script at `tsconfig.test.json` (was `tsconfig.json --noEmit`,
+  which EXCLUDES `src/**/*.test.ts`). `tsconfig.test.json` already existed and already did the
+  right thing — nothing ran it. Fixed the 12 pre-existing errors it surfaced: stale `CartLine`/
+  `CartModifier` fixtures missing the required `name`/`names`, two `noUncheckedIndexedAccess`
+  hits in `cart-repository.test.ts`, and vitest `Mock` typings in `voice-message-handler.test.ts`.
+- **Why:** vitest transpiles tests with esbuild, which strips types WITHOUT checking them, and the
+  only config that covered tests was wired to nothing — so test files were type-checked by
+  literally no command. That let real staleness sit green: `voice-message-handler.test.ts` called
+  `stt.handlers.onFinal('one coke', 'en')` with a second argument the handler dropped when the STT
+  language param was removed (`onFinal(text: string)`). JS ignored the extra arg, so the test
+  passed while asserting against a signature that no longer exists.
+- **Where:** `package.json` (`typecheck` script). Fixtures: `cart/cart-operation-applier.test.ts`,
+  `cart/cart-repository.test.ts`, `ordering/nodes/load-cart.node.test.ts`,
+  `ordering/order-understanding-service.test.ts`, `voice/voice-message-handler.test.ts`.
+- **Notes:** `name`/`names` on a stored `CartLine`/`CartModifier` are snapshotted at add time and
+  written by `cart-operation-applier`, but neither `buildCartView` nor any applier path reads them
+  back (the prompt view re-resolves names from the menu) — so the fixtures fill them with a
+  `SNAPSHOT_UNREAD` placeholder via local `cartLine`/`mod` helpers rather than plausible names
+  that would imply the view echoes them. The production types were NOT loosened: required is
+  correct. Verified the wiring is not vacuous — a deliberate `Intent = 'suggest'` in a test file
+  now fails `npm run typecheck`. **Still uncovered:** `E2E/*.e2e.ts` (outside the `src/**/*.ts`
+  include) is type-checked by nothing; left out of scope here.
+
+## 2026-07-15 — Intent classifier is binary: `service` | `junk`
+- **What:** Collapsed the intent set from `order`/`suggest`/`junk` to **`service`/`junk`**.
+  `intentSchema` is now `z.enum(['service','junk'])`, `DEFAULT_INTENT` is `service`, and
+  `INTENT_ROUTE` is `{ service: 'load_cart', junk: END }`. The classifier prompt was rewritten as
+  a binary gate: `service` is defined by inclusion (ordering, adding/removing/changing items,
+  recommendations, menu/ingredient/price questions, and answers to the agent's own last reply),
+  `junk` narrowly (greetings, small talk, noise, unintelligible, off-topic), with an explicit
+  "prefer `service` whenever it could plausibly be acted on" tiebreak. `classify`'s
+  force-after-a-reply override now yields `service`. Also rewrote `docs/LLM-graph.md`, which was
+  badly stale (see Notes).
+- **Why:** Since the agent rework demoted `classify` to a junk-gate, `order` and `suggest` routed
+  **identically** (both → `load_cart`) and nothing read the difference — `interpret` only asks
+  `intent === 'junk'`. The agent decides propose-vs-reply-vs-recommend from the utterance itself,
+  so the third label was a distinction with no behavior behind it: it bought nothing and gave the
+  classifier a way to be wrong. Binary shrinks the gate's decision surface to the one call that
+  matters — does this utterance deserve the agent loop at all?
+- **Where:** `ordering/graph/intents.ts`, `llm/intent-prompt-builder.ts`,
+  `ordering/graph/build-graph.ts` (forced literal + comments),
+  `ordering/nodes/classify-intent.node.ts` (comments). Tests: `graph/intents.test.ts`,
+  `nodes/classify-intent.node.test.ts`, `order-understanding-service.test.ts`. Docs:
+  `docs/LLM-graph.md` (full rewrite), `docs/agent-tools.md` (Revision 2 note).
+- **Notes:** **No graph topology change** — the `normalize → classify → load_cart → agent ⇄ tools
+  → finalize` spine is untouched; only one edge target and one forced literal moved. `state.ts`
+  and `order-graph.ts` needed no logic change (both go via `Intent`/`DEFAULT_INTENT`). The enum
+  narrowing makes any stale `'order'`/`'suggest'` literal a type error — including in tests, now
+  that `npm run typecheck` type-checks `*.test.ts` (see the entry below). Added a
+  `classify-intent.node.test.ts` case pinning that a **retired** label (`suggest`)
+  degrades to `service` rather than being read as routable. All 296 unit tests pass.
+  Prompt behavior itself is NOT covered by unit tests (they use a fake
+  classifier) — `E2E/llm_pipeline.e2e.ts` wires a live `createIntentLlmProvider()` and is the
+  suite that would exercise the real prompt.
+- **Notes (dead code spotted, left alone):** `schemas/clarification.schema.ts` and
+  `TIMEOUTS.clarificationMs` have had no consumers since replies stopped pausing the graph;
+  `supported_languages` is threaded input → state → nowhere (always `[]`, has a TODO); and
+  `StubLlmProvider.complete` still returns `needs_clarification`/`clarification_question`, fields
+  the output schema dropped. All pre-existing and out of scope here — documented in
+  `docs/LLM-graph.md` §6.3 rather than removed.
 ## 2026-07-15 — Show the agent per-unit prices (base + modifier surcharge)
 - **What:** Added `base_price_cents` to `CandidateItem` and `CartLineView`, and
   `price_extra_cents` to `CartModifierView`, so both agent-facing surfaces (search results

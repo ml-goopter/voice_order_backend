@@ -41,7 +41,7 @@ function lastAssistantHasToolCalls(s: OrderStateType): boolean {
 
 /**
  * The Order Understanding graph (docs/agent-tools.md §3). `normalize → classify → load_cart →
- * agent ⇄ tools → finalize`. `classify` is a junk-gate: `order`/`suggest` route into the proposer
+ * agent ⇄ tools → finalize`. `classify` is a binary junk-gate: `service` routes into the agent
  * pipeline, `junk` short-circuits to END. The agent drives retrieval (`search_menu`) and
  * ends the turn either by committing operations (`propose_cart`) or by replying to the customer in
  * words (no tool call) — a single "reply" outcome that serves as both a clarifying question and a
@@ -66,12 +66,12 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
     })))
     // Then label the NORMALIZED utterance so the graph can route it. If the previous turn ended in
     // a spoken reply (its `agent_reply` is the last history entry), THIS utterance is likely the
-    // answer to it, so force `order` and skip the classifier's LLM call — the agent resolves the
-    // reply against the current utterance. Otherwise classify; the classifier degrades to `order`
-    // on any failure so a real order is never dropped. `classify` is a junk-gate only: `order` and
-    // `suggest` both route into the agent pipeline.
+    // answer to it, so force `service` and skip the classifier's LLM call — the agent resolves the
+    // reply against the current utterance. Otherwise classify; the classifier degrades to `service`
+    // on any failure so a real order is never dropped. `classify` is a junk-gate only: the choice
+    // is binary, and the agent (not the router) works out what the customer wants.
     .addNode('classify', node('classify', async (s) => {
-      if (s.history.at(-1)?.agent_reply !== undefined) return { intent: 'order' as const };
+      if (s.history.at(-1)?.agent_reply !== undefined) return { intent: 'service' as const };
       const intent = await classifyIntent(intentLlm, s.customer_text);
       return { intent };
     }))
@@ -122,8 +122,8 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
     })))
     .addEdge(START, 'normalize')
     .addEdge('normalize', 'classify')
-    // Junk-gate fan-out: the router returns the intent, INTENT_ROUTE maps it (order/suggest →
-    // load_cart, junk → END).
+    // Junk-gate fan-out: the router returns the intent, INTENT_ROUTE maps it (service → load_cart,
+    // junk → END).
     .addConditionalEdges('classify', (s) => s.intent, INTENT_ROUTE)
     .addEdge('load_cart', 'agent')
     // After the agent replies: run its tool calls, or end the turn (it spoke a reply, hit the step

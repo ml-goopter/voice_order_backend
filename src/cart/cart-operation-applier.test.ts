@@ -314,7 +314,8 @@ describe('applyOperation — pricing and menu edge cases', () => {
       cart_id: 'cart_x',
       pos_config_id: POS,
       version: 1,
-      items: [{ line_id: 'ln_1', product_tmpl_id: 100, quantity: 2, modifiers: [] }],
+      // name/names are snapshotted at add time; no applier path reads them back, hence the placeholder.
+      items: [{ line_id: 'ln_1', product_tmpl_id: 100, name: 'SNAPSHOT_UNREAD', names: {}, quantity: 2, modifiers: [] }],
       subtotal_cents: 1000,
       tax_cents: 0,
       total_cents: 1000,

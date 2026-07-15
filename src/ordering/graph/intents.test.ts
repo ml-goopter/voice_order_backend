@@ -10,10 +10,10 @@ describe('INTENT_ROUTE', () => {
     }
   });
 
-  it('is a junk-gate: order and suggest both enter the proposer pipeline (load_cart → agent)', () => {
-    expect(INTENT_ROUTE.order).toBe('load_cart');
-    expect(INTENT_ROUTE.suggest).toBe('load_cart');
-    expect(DEFAULT_INTENT).toBe('order');
+  it('is a binary junk-gate: service enters the agent pipeline (load_cart → agent)', () => {
+    expect(intentSchema.options).toEqual(['service', 'junk']);
+    expect(INTENT_ROUTE.service).toBe('load_cart');
+    expect(DEFAULT_INTENT).toBe('service');
   });
 
   it('short-circuits junk straight to END so it never pollutes history', () => {

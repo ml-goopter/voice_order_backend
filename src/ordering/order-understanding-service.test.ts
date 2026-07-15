@@ -5,7 +5,7 @@ import { InMemoryCartCache } from '../redis/cart-cache.js';
 import { MenuService } from '../menu/menu-service.js';
 import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
-import type { Cart } from '../cart/cart-types.js';
+import type { Cart, CartLine, CartModifier } from '../cart/cart-types.js';
 import type { AgentMessage, ChatResult, LlmPrompt, LlmProvider, ToolCall, ToolSpec } from '../llm/llm-provider.js';
 import type { Intent } from './graph/intents.js';
 import { OrderGraph } from './order-graph.js';
@@ -80,7 +80,7 @@ class ScriptedLlm implements LlmProvider {
 
   constructor(
     private readonly turnScripts: ChatResult[][],
-    private readonly intentFor: (text: string) => Intent = () => 'order',
+    private readonly intentFor: (text: string) => Intent = () => 'service',
   ) {}
 
   async complete(prompt: LlmPrompt): Promise<string> {
@@ -108,7 +108,7 @@ class ScriptedLlm implements LlmProvider {
 async function makeService(
   turnScripts: ChatResult[][],
   seedCart?: Cart,
-  intentFor: (text: string) => Intent = () => 'order',
+  intentFor: (text: string) => Intent = () => 'service',
   qtySold?: Array<[number, number]>,
 ) {
   const store = InMemoryMenuStore.of(POS, MENU);
@@ -140,6 +140,12 @@ function transcript(text: string, over: Partial<AppEventMap['stt.final_transcrip
     ...over,
   };
 }
+
+/** A stored line/modifier carries display names snapshotted at add time, but the prompt's cart
+ * view re-resolves every name from the menu and never reads them, so these fixtures fill the
+ * required fields with a placeholder that would be obvious if it ever surfaced in a view. */
+const mod = (ptav_id: CartModifier['ptav_id']): CartModifier => ({ ptav_id, name: 'SNAPSHOT_UNREAD' });
+const line = (l: Omit<CartLine, 'name' | 'names'>): CartLine => ({ ...l, name: 'SNAPSHOT_UNREAD', names: {} });
 
 function cartWith(version: number, lines: Cart['items'] = []): Cart {
   return {
@@ -179,7 +185,7 @@ describe('OrderUnderstandingService', () => {
   });
 
   it('passes edit operations that target a line_id straight through', async () => {
-    const seeded = cartWith(3, [{ line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [] }]);
+    const seeded = cartWith(3, [line({ line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [] })]);
     const { service, bus } = await makeService(
       [[propose([{ action: 'update_quantity', line_id: 'ln_1', quantity: 2 }])]],
       seeded,
@@ -292,14 +298,14 @@ describe('OrderUnderstandingService', () => {
     expect(versions).toEqual([5, 6]); // turn 2 saw turn 1's bump → FIFO held
   });
 
-  it('force-orders only the turn immediately after a reply; a later fresh junk utterance still short-circuits', async () => {
+  it('force-services only the turn immediately after a reply; a later fresh junk utterance still short-circuits', async () => {
     const resolve = propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }]);
     // Turn 1 replies; turn 2 answers it (proposes, recording NO agent_reply); turn 3 is fresh.
     // The classifier calls turn 3 'junk' — and since turn 2 left no pending reply, that stands.
     const { service, bus, llm } = await makeService(
       [[reply('one or both?')], [resolve]],
       cartWith(0),
-      (t) => (t === 'a coke' ? 'junk' : 'order'),
+      (t) => (t === 'a coke' ? 'junk' : 'service'),
     );
     const proposed = collect(bus, 'order.operations_proposed');
 
@@ -326,7 +332,7 @@ describe('OrderUnderstandingService', () => {
   });
 
   it('renders a self-describing cart line (name + keys + modifiers, no numeric ids)', async () => {
-    const seeded = cartWith(2, [{ line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [{ ptav_id: 1 }] }]);
+    const seeded = cartWith(2, [line({ line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [mod(1)] })]);
     const { service, llm } = await makeService(
       [[propose([{ action: 'update_quantity', line_id: 'ln_1', quantity: 2 }])]],
       seeded,
@@ -382,7 +388,7 @@ describe('OrderUnderstandingService', () => {
     const { service, bus, llm } = await makeService(
       [[search('coke'), reply('How about a Coke?')]],
       cartWith(0),
-      () => 'suggest',
+      () => 'service',
     );
     const proposed = collect(bus, 'order.operations_proposed');
     const failed = collect(bus, 'voice.session_failed');
@@ -499,7 +505,7 @@ describe('OrderUnderstandingService', () => {
     const { service, llm } = await makeService(
       [[search('coke'), reply('How about a Coke?')], [order]],
       cartWith(0),
-      () => 'order', // turn 2 is force-ordered anyway (turn 1 left a pending reply)
+      () => 'service', // turn 2 is force-serviced anyway (turn 1 left a pending reply)
     );
 
     await service.handleFinalTranscript(transcript('what should I get, maybe a coke', { request_id: 'req_1' }));
@@ -511,14 +517,14 @@ describe('OrderUnderstandingService', () => {
     ]);
   });
 
-  it('forces order (skips the classifier) after a reply, so a terse answer is not dropped as junk', async () => {
+  it('forces service (skips the classifier) after a reply, so a terse answer is not dropped as junk', async () => {
     const resolve = propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }]);
     // The classifier would label the terse answer "both" as junk; the pending reply must override
     // that and run the agent so the answer resolves the order.
     const { service, bus } = await makeService(
       [[reply('one or both?')], [resolve]],
       cartWith(0),
-      (t) => (t === 'both' ? 'junk' : 'order'),
+      (t) => (t === 'both' ? 'junk' : 'service'),
     );
     const proposed = collect(bus, 'order.operations_proposed');
 
