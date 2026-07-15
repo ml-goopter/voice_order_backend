@@ -24,6 +24,8 @@ export interface CandidateItem {
   names?: Record<LangCode, string>;
   matched_text?: string;
   score?: number;
+  /** Base price before any modifier surcharge — the agent quotes it; the cart still prices. */
+  base_price_cents: Cents;
   available_modifiers: CandidateModifier[];
 }
 

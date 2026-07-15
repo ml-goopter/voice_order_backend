@@ -3,7 +3,15 @@ import type { CartId, PosConfigId } from '../../shared/types.js';
 import type { Cart } from '../../cart/cart-types.js';
 import { emptyCart } from '../../cart/cart-types.js';
 import type { MenuLookup } from '../../menu/menu-service.js';
-import type { CartView } from '../schemas/order-graph-input.schema.js';
+import type { CandidateModifier } from '../../menu/menu-types.js';
+import type { CartModifierView, CartView } from '../schemas/order-graph-input.schema.js';
+
+/** Project a menu modifier to its prompt-facing view — keys/names/price, no numeric ids. */
+const toModifierView = (m: CandidateModifier): CartModifierView => ({
+  modifier_key: m.modifier_key,
+  name: m.name,
+  price_extra_cents: m.price_extra_cents,
+});
 
 /** Load the current cart snapshot; the turn's base_version comes from cart.version (§9). */
 export async function loadCart(
@@ -16,10 +24,11 @@ export async function loadCart(
 
 /**
  * Project the stored cart into a self-describing view for the prompt (Plan A): resolve each
- * line's item (one batched menu read) to its name + menu_item_key + available_modifiers, and
- * map each attached ptav_id to its {modifier_key, name}. Degrades gracefully when an item or
- * ptav_id is missing from the menu (numeric-id fallback, dropped modifier) so a stale line
- * never throws. Keys/names only — no numeric ids reach the model.
+ * line's item (one batched menu read) to its name + menu_item_key + base price +
+ * available_modifiers, and map each attached ptav_id to its {modifier_key, name, price}.
+ * Degrades gracefully when an item or ptav_id is missing from the menu (numeric-id fallback,
+ * dropped modifier) so a stale line never throws. Prices are per unit, and no numeric *ids*
+ * reach the model.
  */
 export async function buildCartView(menu: MenuLookup, cart: Cart): Promise<CartView> {
   const tmplIds = [...new Set(cart.items.map((l) => l.product_tmpl_id))];
@@ -37,11 +46,12 @@ export async function buildCartView(menu: MenuLookup, cart: Cart): Promise<CartV
         menu_item_key: item?.menu_item_key ?? String(line.product_tmpl_id),
         name: item?.names?.en_US ?? Object.values(item?.names ?? {})[0] ?? item?.menu_item_key ?? String(line.product_tmpl_id),
         quantity: line.quantity,
+        base_price_cents: item?.base_price_cents ?? 0,
         modifiers: line.modifiers
           .map((m) => avail.find((a) => a.ptav_id === m.ptav_id))
           .filter((a): a is NonNullable<typeof a> => a !== undefined)
-          .map((a) => ({ modifier_key: a.modifier_key, name: a.name })),
-        available_modifiers: avail.map((a) => ({ modifier_key: a.modifier_key, name: a.name })),
+          .map(toModifierView),
+        available_modifiers: avail.map(toModifierView),
       };
     }),
   };

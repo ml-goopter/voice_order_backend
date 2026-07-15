@@ -7,6 +7,24 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — Show the agent per-unit prices (base + modifier surcharge)
+- **What:** Added `base_price_cents` to `CandidateItem` and `CartLineView`, and
+  `price_extra_cents` to `CartModifierView`, so both agent-facing surfaces (search results
+  and `current_cart`) carry prices. Added a PRICE RULES block to the agent prompt.
+- **Why:** The surcharge fix above accidentally leaked `price_extra_cents` into search
+  results (`run-tools.ts` JSON.stringifies candidates wholesale) while base prices stayed
+  invisible — the agent could say what cheese cost but not the burger. Resolved deliberately
+  in favour of exposing prices, so the agent can answer "how much is that?".
+- **Where:** `src/menu/menu-types.ts`, `src/menu/candidate-matcher.ts`,
+  `src/ordering/schemas/order-graph-input.schema.ts`, `src/ordering/nodes/load-cart.node.ts`,
+  `src/ordering/tools/tool-specs.ts`, `src/llm/agent-prompt-builder.ts`.
+- **Notes:** Per-unit prices ONLY — `CartView` deliberately carries no totals, because it is
+  built before the turn's operations apply and any total would be stale by the time the agent
+  speaks. PRICE RULES therefore forbid summing, multiplying by quantity, or stating a total,
+  and tell it to read cents aloud as money. The client-facing `Cart`/`CartModifier` wire
+  shape is unchanged. Caveat: no currency is read from Odoo anywhere, so the agent infers it
+  when speaking — fine while both tenants are CAD.
+
 ## 2026-07-15 — Price modifier surcharges into the cart (`ptav.price_extra`)
 - **What:** `PostgresMenuStore.hydrate()` now selects `ptav.price_extra` and maps it to a
   required `CandidateModifier.price_extra_cents`; `priced()` in the cart applier adds each

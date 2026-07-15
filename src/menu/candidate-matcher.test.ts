@@ -83,6 +83,15 @@ describe('CandidateMatcher — fuzzy/modifier signals (stub embedder)', () => {
     expect(cb?.available_modifiers.map((x) => x.modifier_key)).toContain('no_mayo');
   });
 
+  it('carries per-unit prices through to the candidate the agent sees', async () => {
+    const m = await matcherWith(new StubEmbeddingService());
+    const { items } = await m.match(POS, 'chicken burger no mayo');
+    const cb = items.find((i) => i.menu_item_key === 'chicken_burger');
+    // The agent quotes prices from these fields, so the search result must carry both.
+    expect(cb?.base_price_cents).toBe(1000);
+    expect(cb?.available_modifiers.find((x) => x.modifier_key === 'no_mayo')?.price_extra_cents).toBe(0);
+  });
+
   it('cannot match a cross-language synonym with no embeddings (fuzzy only)', async () => {
     // French for the fried-rice item, sharing no characters with its stored names.
     const m = await matcherWith(new StubEmbeddingService());

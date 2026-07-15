@@ -52,10 +52,12 @@ describe('buildCartView (Plan A self-describing cart)', () => {
     expect(line.menu_item_key).toBe('sweet_sour_chicken');
     expect(line.name).toBe('Sweet and Sour Chicken');
     expect(line.quantity).toBe(2);
-    expect(line.modifiers).toEqual([{ modifier_key: 'add_broccoli', name: 'Add broccoli' }]);
+    // Prices are per unit — the line's quantity of 2 must not be baked in.
+    expect(line.base_price_cents).toBe(1200);
+    expect(line.modifiers).toEqual([{ modifier_key: 'add_broccoli', name: 'Add broccoli', price_extra_cents: 200 }]);
     expect(line.available_modifiers).toEqual([
-      { modifier_key: 'add_broccoli', name: 'Add broccoli' },
-      { modifier_key: 'no_broccoli', name: 'No broccoli' },
+      { modifier_key: 'add_broccoli', name: 'Add broccoli', price_extra_cents: 200 },
+      { modifier_key: 'no_broccoli', name: 'No broccoli', price_extra_cents: 0 },
     ]);
     // No numeric ids leak into the prompt view.
     expect(JSON.stringify(line)).not.toMatch(/product_tmpl_id|ptav_id|"100"|"10"/);
