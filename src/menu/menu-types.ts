@@ -1,4 +1,4 @@
-import type { LangCode, ProductTmplId, PtavId } from '../shared/types.js';
+import type { Cents, LangCode, ProductTmplId, PtavId } from '../shared/types.js';
 
 /** A modifier option offered to the LLM alongside a candidate item (design §7/§8). */
 export interface CandidateModifier {
@@ -7,6 +7,12 @@ export interface CandidateModifier {
   name: string; // default display name (en_US-first), the single-string fallback
   /** All translatable names by Odoo res.lang code, when the source carries them. */
   names?: Record<LangCode, string>;
+  /**
+   * Per-unit surcharge for choosing this option (ptav.price_extra). Priced per
+   * ptav, not per option value: the same option may cost differently on another
+   * item. Required — a missing price would silently under-charge.
+   */
+  price_extra_cents: Cents;
 }
 
 /** A menu item the Candidate Matcher surfaced for a transcript chunk (design §7). */
@@ -18,6 +24,8 @@ export interface CandidateItem {
   names?: Record<LangCode, string>;
   matched_text?: string;
   score?: number;
+  /** Base price before any modifier surcharge — the agent quotes it; the cart still prices. */
+  base_price_cents: Cents;
   available_modifiers: CandidateModifier[];
 }
 

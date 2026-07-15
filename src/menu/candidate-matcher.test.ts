@@ -19,7 +19,7 @@ const MENU: MenuItem[] = [
     product_tmpl_id: 10,
     menu_item_key: 'chicken_burger',
     names: { en_US: 'Chicken Burger' },
-    modifiers: [{ modifier_key: 'no_mayo', ptav_id: 1, name: 'No mayo' }],
+    modifiers: [{ modifier_key: 'no_mayo', ptav_id: 1, name: 'No mayo', price_extra_cents: 0 }],
   }),
   item({ product_tmpl_id: 11, menu_item_key: 'caesar_salad', names: { en_US: 'Caesar Salad' } }),
   item({ product_tmpl_id: 12, menu_item_key: 'coke', names: { en_US: 'Coke' } }),
@@ -81,6 +81,15 @@ describe('CandidateMatcher — fuzzy/modifier signals (stub embedder)', () => {
     const cb = items.find((i) => i.menu_item_key === 'chicken_burger');
     expect(cb).toBeDefined();
     expect(cb?.available_modifiers.map((x) => x.modifier_key)).toContain('no_mayo');
+  });
+
+  it('carries per-unit prices through to the candidate the agent sees', async () => {
+    const m = await matcherWith(new StubEmbeddingService());
+    const { items } = await m.match(POS, 'chicken burger no mayo');
+    const cb = items.find((i) => i.menu_item_key === 'chicken_burger');
+    // The agent quotes prices from these fields, so the search result must carry both.
+    expect(cb?.base_price_cents).toBe(1000);
+    expect(cb?.available_modifiers.find((x) => x.modifier_key === 'no_mayo')?.price_extra_cents).toBe(0);
   });
 
   it('cannot match a cross-language synonym with no embeddings (fuzzy only)', async () => {

@@ -19,17 +19,23 @@ const toCartModifier = (mod: CandidateModifier): CartModifier => ({
   ...(mod.names !== undefined ? { names: mod.names } : {}),
 });
 
-/** Recompute totals from menu prices. TODO: modifier price deltas + tax (§9). */
+/** Recompute totals from menu prices — base plus per-unit modifier surcharges. TODO: tax (§9). */
 async function priced(cart: Cart, items: CartLine[], menu: MenuLookup, pos: PosConfigId): Promise<Cart> {
   // One batched read for every distinct line item, rather than a GET per line.
   const tmpls = [...new Set(items.map((l) => l.product_tmpl_id))];
-  const priceOf = new Map(
-    (await menu.getItems(pos, tmpls)).map((i) => [i.product_tmpl_id, i.base_price_cents]),
+  const menuItems = await menu.getItems(pos, tmpls);
+  const priceOf = new Map(menuItems.map((i) => [i.product_tmpl_id, i.base_price_cents]));
+  // Surcharges come from the menu, not the line's snapshot — the same rule base prices
+  // follow. ptav_id is a PK, so one flat map cannot collide across items.
+  const extraOf = new Map(
+    menuItems.flatMap((i) => i.modifiers.map((m) => [m.ptav_id, m.price_extra_cents] as const)),
   );
-  const subtotal = items.reduce(
-    (sum, line) => sum + (priceOf.get(line.product_tmpl_id) ?? 0) * line.quantity,
-    0,
-  );
+  const subtotal = items.reduce((sum, line) => {
+    const unit =
+      (priceOf.get(line.product_tmpl_id) ?? 0) +
+      line.modifiers.reduce((acc, m) => acc + (extraOf.get(m.ptav_id) ?? 0), 0);
+    return sum + unit * line.quantity;
+  }, 0);
   return { ...cart, items, subtotal_cents: subtotal, tax_cents: 0, total_cents: subtotal, last_updated: nowIso() };
 }
 

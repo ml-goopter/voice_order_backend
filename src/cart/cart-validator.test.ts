@@ -17,7 +17,7 @@ function makeMenu(): MenuService {
       names: { en_US: 'Chicken Burger' },
       base_price_cents: 500,
       available: true,
-      modifiers: [{ modifier_key: 'no_mayo', ptav_id: 900, name: 'No mayo' }],
+      modifiers: [{ modifier_key: 'no_mayo', ptav_id: 900, name: 'No mayo', price_extra_cents: 0 }],
     },
   ];
   return new MenuService(InMemoryMenuStore.of(POS, items));

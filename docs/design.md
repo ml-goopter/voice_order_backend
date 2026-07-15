@@ -493,8 +493,7 @@ carts if losing them would be unacceptable.
 key:  cart:{cart_id}          # cart_id is globally unique; not namespaced by pos_config_id
 value: cart_id, pos_config_id, version,
        items: [ { line_id, product_tmpl_id, product_id?, name, quantity,
-                  modifiers: [ { ptav_id, name } ],
-                  combo_id?, combo_choices?: [ product_id ] } ],
+                  modifiers: [ { ptav_id, name } ] } ],
        subtotal_cents, tax_cents, total_cents, last_updated
 ```
 
@@ -956,8 +955,6 @@ interface CartLine {
   name: string;              // display name captured at add time (en_US fallback)
   quantity: number;
   modifiers: CartModifier[];
-  combo_id?: number;
-  combo_choices?: ProductId[];
 }
 
 interface Cart {

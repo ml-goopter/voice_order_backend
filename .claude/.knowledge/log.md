@@ -7,6 +7,56 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — Show the agent per-unit prices (base + modifier surcharge)
+- **What:** Added `base_price_cents` to `CandidateItem` and `CartLineView`, and
+  `price_extra_cents` to `CartModifierView`, so both agent-facing surfaces (search results
+  and `current_cart`) carry prices. Added a PRICE RULES block to the agent prompt.
+- **Why:** The surcharge fix above accidentally leaked `price_extra_cents` into search
+  results (`run-tools.ts` JSON.stringifies candidates wholesale) while base prices stayed
+  invisible — the agent could say what cheese cost but not the burger. Resolved deliberately
+  in favour of exposing prices, so the agent can answer "how much is that?".
+- **Where:** `src/menu/menu-types.ts`, `src/menu/candidate-matcher.ts`,
+  `src/ordering/schemas/order-graph-input.schema.ts`, `src/ordering/nodes/load-cart.node.ts`,
+  `src/ordering/tools/tool-specs.ts`, `src/llm/agent-prompt-builder.ts`.
+- **Notes:** Per-unit prices ONLY — `CartView` deliberately carries no totals, because it is
+  built before the turn's operations apply and any total would be stale by the time the agent
+  speaks. PRICE RULES therefore forbid summing, multiplying by quantity, or stating a total,
+  and tell it to read cents aloud as money. The client-facing `Cart`/`CartModifier` wire
+  shape is unchanged. Caveat: no currency is read from Odoo anywhere, so the agent infers it
+  when speaking — fine while both tenants are CAD.
+
+## 2026-07-15 — Price modifier surcharges into the cart (`ptav.price_extra`)
+- **What:** `PostgresMenuStore.hydrate()` now selects `ptav.price_extra` and maps it to a
+  required `CandidateModifier.price_extra_cents`; `priced()` in the cart applier adds each
+  line's modifier surcharges to the unit price before multiplying by quantity.
+- **Why:** Modifier surcharges were never read, so every modified line was charged at base
+  price. Invisible against Jade Garden (0.2% of ptavs are paid) but wrong on nearly every
+  Izumi order (82% are paid, up to +$8.50) — the exact failure
+  `docs/pos-product-modifier-order-schema.md` warns about under "Tenant differences".
+- **Where:** `src/menu/postgres-menu-store.ts`, `src/menu/menu-types.ts`,
+  `src/cart/cart-operation-applier.ts` (+ modifier fixtures across 7 test files).
+- **Notes:** Surcharges are read live from the menu on every reprice, matching how base
+  prices already work — `CartModifier` deliberately does NOT snapshot a price, keeping the
+  existing split (display data snapshotted, pricing data live). The field is required, not
+  optional, so a missing price can't silently mean "free"; note `tsconfig.json` excludes
+  `src/**/*.test.ts`, so that only binds production code — test fixtures were updated by
+  hand. Still open from the same audit: `display_type` is unread, so nothing enforces
+  pick-one (`radio`/`pills`) cardinality — and `goopter_pos_attribute_selection_limit` is
+  uninstalled, so Odoo won't reject an invalid selection count either.
+
+## 2026-07-15 — Drop the unused combo fields from `CartLine`
+- **What:** Removed `combo_id?` and `combo_choices?` from `CartLine` in the backend and frontend
+  types and from the two `design.md` cart specs (§Redis value, §17.3). They were declared but
+  never read or written anywhere — no producer, no consumer.
+- **Why:** Combos on a cart line were not intended; the vestigial optional fields implied a
+  supported feature that does not exist.
+- **Where:** `src/cart/cart-types.ts`, `frontend/src/realtime/messages.ts`, `docs/design.md`.
+- **Notes:** Odoo's *own* combo schema (`product_combo`, `product_combo_item`) is untouched — it
+  is real upstream POS structure we read, documented in `docs/menu_restaurant_schema.md`. The
+  "Odoo holds … combos" lines in `design.md` §17 and `persistence/overview.md` are statements
+  about Odoo, not our cart, and stay as-is. No stored-cart migration needed: the fields were
+  optional and never written, so existing Redis carts do not carry them.
+
 ## 2026-07-14 — Reply JSON is `{language, reply}`: declare the language before writing it
 - **What:** Flipped the spoken-reply terminal's field order from `{reply, language}` to
   `{language, reply}` in the agent prompt, and reworked the **LANGUAGE** section to require the

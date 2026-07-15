@@ -100,6 +100,7 @@ export class CandidateMatcher {
           name: item.names['en_US'] ?? Object.values(item.names)[0] ?? item.menu_item_key,
           names: item.names,
           score,
+          base_price_cents: item.base_price_cents,
           available_modifiers: item.modifiers,
         },
         score,

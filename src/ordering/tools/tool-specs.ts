@@ -19,7 +19,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: TOOL_NAMES.search,
     description:
-      'Search the menu for items matching a natural-language query. Returns candidate items with their menu_item_key, name, and available_modifiers. Call this before proposing so you use real menu keys. You may call it several times.',
+      'Search the menu for items matching a natural-language query. Returns candidate items with their menu_item_key, name, base_price_cents, and available_modifiers (each with its own price_extra_cents). All prices are per-unit integer cents. Call this before proposing so you use real menu keys. You may call it several times.',
     parameters: {
       type: 'object',
       properties: {

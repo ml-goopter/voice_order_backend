@@ -95,6 +95,7 @@ describe('PostgresMenuStore hydration (JOIN to Odoo)', () => {
   const modRow = {
     product_tmpl_id: 42,
     ptav_id: 5,
+    price_extra: '1.50',
     names: { en_US: 'Large' },
     attr_name: { en_US: 'Size' },
   };
@@ -110,8 +111,19 @@ describe('PostgresMenuStore hydration (JOIN to Odoo)', () => {
       names: { en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' },
       base_price_cents: 1299, // list_price 12.99 → cents
       available: true,
-      modifiers: [{ modifier_key: '5', ptav_id: 5, name: 'Large', names: { en_US: 'Large' } }],
+      modifiers: [
+        // price_extra 1.50 → cents, mirroring base_price_cents.
+        { modifier_key: '5', ptav_id: 5, price_extra_cents: 150, name: 'Large', names: { en_US: 'Large' } },
+      ],
     });
+  });
+
+  it('maps a null price_extra to a zero surcharge', async () => {
+    const pool = new FakePool();
+    pool.itemRows = [itemRow];
+    pool.modRows = [{ ...modRow, price_extra: null }];
+    const item = await makeStore(pool).getItem(1, 42);
+    expect(item?.modifiers[0]?.price_extra_cents).toBe(0);
   });
 
   it('resolves a menu_item_key to its item', async () => {
@@ -133,7 +145,7 @@ describe('PostgresMenuStore hydration (JOIN to Odoo)', () => {
   it('falls back to the attribute name when a modifier value has no name', async () => {
     const pool = new FakePool();
     pool.itemRows = [itemRow];
-    pool.modRows = [{ product_tmpl_id: 42, ptav_id: 9, names: {}, attr_name: { en_US: 'Spice' } }];
+    pool.modRows = [{ product_tmpl_id: 42, ptav_id: 9, price_extra: '0', names: {}, attr_name: { en_US: 'Spice' } }];
     const item = await makeStore(pool).getItem(1, 42);
     expect(item?.modifiers[0]?.name).toBe('Spice');
     // The all-language map falls back to the attribute's names too.
