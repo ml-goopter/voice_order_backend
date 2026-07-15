@@ -7,6 +7,25 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — `order.agent_tool` logs outcome, duration, and args
+- **What:** Enriched the per-tool-call log line in `runTools`. It carried only `tool` +
+  `request_id` and was always `info`, so a validated `propose_cart` and an agent stuck retrying a
+  rejected one were indistinguishable in logs. Now every call logs `ok`, elapsed `ms`, `cart_id`,
+  and a tool-specific arg summary — for `search_menu` the filters the model actually sent plus a
+  `results` count, for `propose_cart` the `operations` count; the error branches log at `warn`
+  with the reason.
+- **Why:** The agent ⇄ tools loop was unobservable — a turn burning `maxAgentSteps` on repeated
+  tool errors looked identical to a healthy one, and `searchMenu` was untimed. With `search_menu`
+  taking filters, "which filter combination returned nothing" is now the interesting question, and
+  `{sort, max_price_cents, …, results: 0}` answers it directly.
+- **Where:** `src/ordering/tools/run-tools.ts`.
+- **Notes:** `ToolExecResult` gained `error?: string` and `meta?: Record<string, unknown>`. The
+  error branches set `error` alongside the existing `content`, whose strings are unchanged — the
+  agent's scratchpad is byte-identical, so this is observability-only with no behavior change.
+  `warn` (not `error`) is deliberate: a tool error is the agent's to retry, so `order.node_failed`
+  stays the signal for a genuinely broken turn. The search arg summary spreads the parsed args, so
+  absent optionals are simply not logged and a bare browse stays a bare line.
+
 ## 2026-07-15 — Agent search: keywords + price filters + popularity ranking
 - **What:** Replaced the agent's `search_menu_semantic(query)` with `search_menu({query?,
   sort?, max_price_cents?, min_price_cents?, limit?})`. Added `MenuStore.popularity()`
