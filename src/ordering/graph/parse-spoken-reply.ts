@@ -10,10 +10,14 @@ export interface SpokenReply {
 const LANG_RE = /^[a-z]{2,3}([-_][a-z]{2,4})?$/i;
 
 /**
- * The agent ends a spoken turn with strict JSON {"reply": "...", "language": "..."} (see
- * agent-prompt-builder). Parse it, DEGRADING PER-FIELD: text that isn't JSON is spoken as-is (never
- * drop a reply); a JSON blob with no usable "reply" is a degenerate terminal (never read JSON
- * aloud); an off-format "language" costs only the language, and TTS falls back to TTS_LANGUAGE.
+ * The agent ends a spoken turn with strict JSON {"language": "...", "reply": "..."} (see
+ * agent-prompt-builder, which demands that field order so the model commits to a language before
+ * writing the reply). Field order is irrelevant HERE — this JSON.parses — so a model that emits the
+ * old {reply, language} order still parses fine.
+ *
+ * Parse it, DEGRADING PER-FIELD: text that isn't JSON is spoken as-is (never drop a reply); a JSON
+ * blob with no usable "reply" is a degenerate terminal (never read JSON aloud); an off-format
+ * "language" costs only the language, and TTS falls back to TTS_LANGUAGE.
  */
 export function parseSpokenReply(raw: string | undefined): SpokenReply {
   let text = raw?.trim();

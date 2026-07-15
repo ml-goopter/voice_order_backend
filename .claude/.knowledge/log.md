@@ -7,6 +7,32 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-14 — Reply JSON is `{language, reply}`: declare the language before writing it
+- **What:** Flipped the spoken-reply terminal's field order from `{reply, language}` to
+  `{language, reply}` in the agent prompt, and reworked the **LANGUAGE** section to require the
+  code be settled before any reply text is written. Fixed a garbled sentence there ("the CURRENT
+  Current customer_text", from `c25f5f2`) and replaced the en → zh switch example with the
+  zh → zh → en case that actually failed.
+- **Why:** The agent sometimes replied in Chinese to an unambiguous English utterance after two
+  Chinese turns. The cause is generation order, not comprehension: the model writes JSON left to
+  right, so a `reply`-first shape let it produce the whole reply — carried into Chinese by
+  `conversation_history` stickiness — and only then emit `language`, which faithfully labelled the
+  drift (`"zh"` was a *correct* description of what it had just written, so the parse was never at
+  fault). Emitting the code first forces the choice before any reply token exists and conditions
+  the reply on it.
+- **Where:** `llm/agent-prompt-builder.ts` (prompt + docstring), `ordering/graph/parse-spoken-reply.ts`
+  (docstring only), `ordering/graph/parse-spoken-reply.test.ts`, `docs/agent-tools.md` §3,
+  `knowledge/llm/overview.md`.
+- **Notes:** The ordering is enforced ONLY by the prompt — the parser JSON.parses and is
+  order-agnostic, now pinned by a test, so a model that slips back to reply-first still keeps its
+  declared language. The short-utterance fallback rule ("OK"/"two"/a bare item name → last
+  identifiable language) was left alone: it was ruled out as the cause here (the failing utterance
+  was a full English sentence), and it is deliberate — a Chinese speaker saying an English menu item
+  name should still get Chinese. **Unverified against a live model:** there is no eval harness for
+  the agent LLM (unit tests mock it), and the bug is intermittent, so this fix rests on the
+  generation-order argument, not an observed pass. If it recurs, the next lever is a turn-final
+  language reminder appended after tool results, which the `agent` node would have to inject.
+
 ## 2026-07-14 — Agent emits the reply language (STT language detection dropped entirely)
 - **What:** The ordering agent now ends a spoken turn with strict JSON `{reply, language}`; the
   parsed ISO-639-1 language sets `order.reply.language` → TTS, and is the **only** source of it —

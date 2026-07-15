@@ -41,10 +41,17 @@ export interface AgentContext {
  * System prompt for the tool-calling ordering agent (docs/agent-tools.md §3). The model is NOT
  * handed pre-computed candidates — it must call `search_menu_semantic` to discover real menu keys.
  * It ends the turn one of two ways: by calling `propose_cart` (a structured, validated action), or
- * by REPLYING with no tool call — strict JSON `{reply, language}` whose `reply` serves as both a
+ * by REPLYING with no tool call — strict JSON `{language, reply}` whose `reply` serves as both a
  * clarifying question and a recommendation (one merged "reply" outcome), and whose `language` tells
  * TTS which language to speak it in (parsed by graph/parse-spoken-reply.ts). The operation contract
  * is unchanged from the old parser prompt.
+ *
+ * `language` is demanded FIRST for a generation-order reason, not a stylistic one: the model writes
+ * the JSON left to right, so a `reply`-first shape lets it write the whole reply — drifting into
+ * whatever language conversation_history is in — and only then label what it already wrote, which
+ * makes `language` describe the drift instead of preventing it. Emitting the code first forces the
+ * choice before any reply token exists and conditions the reply on it. The parser is order-agnostic
+ * (it JSON.parses), so this ordering lives only here, in the prompt.
  */
 export function buildAgentSystemPrompt(): string {
   return [
@@ -58,8 +65,12 @@ export function buildAgentSystemPrompt(): string {
     '2. Then end the turn ONE of two ways:',
     '   - Call `propose_cart` with the operations to apply, when you know what to change.',
     '   - Otherwise, end the turn by SPEAKING: DO NOT call any tool, and output STRICT JSON',
-    '     (no prose outside it, no code fences): {"reply": <the spoken message to the customer>,',
-    '     "language": <ISO-639-1 code of the reply language, e.g. "en", "zh", "es", "fr">}.',
+    '     (no prose outside it, no code fences), with the fields in THIS ORDER:',
+    '     {"language": <ISO-639-1 code of the language you are about to write the reply in, e.g.',
+    '     "en", "zh", "es", "fr">, "reply": <the spoken message to the customer, written in that',
+    '     language>}.',
+    '     Choose "language" BEFORE you write "reply", and emit it first — it is a decision you make',
+    '     up front, never a label you attach to a reply you have already written.',
     '     Use a spoken reply to ask a clarifying question when the request is ambiguous, or to',
     '     recommend items when the customer asked what to get. The "reply" text is spoken to the',
     '     customer and ends the turn.',
@@ -85,13 +96,16 @@ export function buildAgentSystemPrompt(): string {
     '',
     'LANGUAGE:',
     'The customer may speak ANY language, and you are given no language hint — the CURRENT',
-    'Current customer_text is the only authority. Read the language off that text yourself.',
-    'Write "reply" in that language, and set "language" to its ISO-639-1 code — the code MUST be the',
-    'language you actually wrote "reply" in, because it is what the reply is spoken aloud in.',
+    'customer_text is the only authority. Read the language off that text yourself, before you write',
+    'anything, and emit its ISO-639-1 code as the FIRST field of your JSON. Then write "reply" in',
+    'that language. The code MUST be the language you actually wrote "reply" in, because it is what',
+    'the reply is spoken aloud in.',
     'The customer may SWITCH language at any turn. Always match the LATEST customer_text, even when',
     'conversation_history and your own earlier replies are in a different language: history is',
-    'context for INTENT, never evidence of the language to reply in. A customer who orders in',
-    'English and then asks something in Chinese gets a Chinese reply.',
+    'context for INTENT, never evidence of the language to reply in. Settling "language" from the',
+    'current utterance before you write is what stops a run of earlier turns in one language from',
+    'carrying you along with it. A customer who orders in Chinese, orders in Chinese again, and then',
+    'asks something in English gets an ENGLISH reply — two Chinese turns behind it change nothing.',
     'Only when the current customer_text is too short to identify (e.g. "OK", "two", a bare menu item',
     'name) should you fall back to the language of the most recent customer_text that WAS',
     'identifiable. Never default to English just because the menu data is in English.',

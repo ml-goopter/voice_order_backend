@@ -2,7 +2,17 @@ import { describe, it, expect } from 'vitest';
 import { parseSpokenReply } from './parse-spoken-reply.js';
 
 describe('parseSpokenReply', () => {
-  it('parses the strict JSON the agent is prompted to emit', () => {
+  it('parses the strict JSON the agent is prompted to emit (language first)', () => {
+    expect(parseSpokenReply('{"language":"en","reply":"What size would you like?"}')).toEqual({
+      reply: 'What size would you like?',
+      language: 'en',
+    });
+  });
+
+  // The prompt demands language-first so the model commits to a language before writing the reply
+  // (agent-prompt-builder), but that ordering is a generation-time device, not a parse contract: a
+  // model that slips back to reply-first must not lose its declared language over field order.
+  it('parses either field order — the prompted order is not a parse requirement', () => {
     expect(parseSpokenReply('{"reply":"What size would you like?","language":"en"}')).toEqual({
       reply: 'What size would you like?',
       language: 'en',
