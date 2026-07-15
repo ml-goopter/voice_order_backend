@@ -72,9 +72,12 @@ It is a **pure proposer**; the Cart Module validates and applies.
   left would leak): `output`, `reply`, `agent_messages` (the tool-calling scratchpad — NEVER
   persisted across turns), `agent_steps`, `failure_reason`. Two channels carry across turns:
   - **`cart_view`** (Plan A): `load_cart` projects the stored cart into a self-describing
-    `CartView` (`buildCartView`) — each line carries `line_id`, `name`, `menu_item_key`, its
-    modifiers, and the item's `available_modifiers` (keys/names only; numeric ids omitted) so
-    an edit by reference resolves from the cart alone. This is the prompt's `current_cart`.
+    `CartView` (`buildCartView`) — each line carries `line_id`, `name`, `menu_item_key`,
+    `base_price_cents`, its modifiers, and the item's `available_modifiers` (each with
+    `price_extra_cents`; numeric *ids* still omitted) so an edit by reference resolves from
+    the cart alone. This is the prompt's `current_cart`. Prices are per unit and the view
+    carries NO totals by design: it is built before the turn's operations apply, so any total
+    here would be stale — the prompt's PRICE RULES forbid the agent summing or stating one.
   - **`history`** (Plan A): `finalize` appends each turn's `customer_text` + `agent_reply`
     (`mergeHistory`, capped at `LIMITS.maxHistoryTurns`). Re-sent to the next turn's agent as
     `conversation_history` so references ("that", answers to a prior reply) resolve.

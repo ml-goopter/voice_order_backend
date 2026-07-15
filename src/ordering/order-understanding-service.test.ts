@@ -20,7 +20,7 @@ const MENU: MenuItem[] = [
     names: { en_US: 'Chicken Burger' },
     base_price_cents: 1000,
     available: true,
-    modifiers: [{ modifier_key: 'no_mayo', ptav_id: 1, name: 'No mayo' }],
+    modifiers: [{ modifier_key: 'no_mayo', ptav_id: 1, name: 'No mayo', price_extra_cents: 0 }],
   },
   {
     product_tmpl_id: 12,
@@ -333,8 +333,9 @@ describe('OrderUnderstandingService', () => {
         menu_item_key: 'chicken_burger',
         name: 'Chicken Burger',
         quantity: 1,
-        modifiers: [{ modifier_key: 'no_mayo', name: 'No mayo' }],
-        available_modifiers: [{ modifier_key: 'no_mayo', name: 'No mayo' }],
+        base_price_cents: 1000,
+        modifiers: [{ modifier_key: 'no_mayo', name: 'No mayo', price_extra_cents: 0 }],
+        available_modifiers: [{ modifier_key: 'no_mayo', name: 'No mayo', price_extra_cents: 0 }],
       },
     ]);
     // Numeric product_tmpl_id / ptav_id must not reach the prompt.

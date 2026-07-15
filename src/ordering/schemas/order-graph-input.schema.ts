@@ -1,10 +1,12 @@
 /** Prompt-facing cart projections + conversation history for the agent (design §6/§8). */
-import type { CartId, LineId, PosConfigId } from '../../shared/types.js';
+import type { CartId, Cents, LineId, PosConfigId } from '../../shared/types.js';
 
-/** A modifier on a self-describing cart line — keys/names only, no numeric ids (Plan A). */
+/** A modifier on a self-describing cart line — keys/names/price only, no numeric ids (Plan A). */
 export interface CartModifierView {
   modifier_key: string;
   name: string;
+  /** Per-unit surcharge, so the agent can quote an option's cost. */
+  price_extra_cents: Cents;
 }
 
 /**
@@ -19,11 +21,18 @@ export interface CartLineView {
   menu_item_key: string;
   name: string;
   quantity: number;
+  /** Base price before surcharges. Per unit, not multiplied by `quantity`. */
+  base_price_cents: Cents;
   modifiers: CartModifierView[];
   available_modifiers: CartModifierView[];
 }
 
-/** Prompt-facing projection of the cart (Plan A). Not the stored Cart shape. */
+/**
+ * Prompt-facing projection of the cart (Plan A). Not the stored Cart shape.
+ * Deliberately carries NO totals: this snapshot is loaded before the turn's operations
+ * are applied, so any total here would be stale by the time the agent speaks. Per-unit
+ * prices are safe to quote; totals are the cart's to compute and the client's to show.
+ */
 export interface CartView {
   cart_id: CartId;
   pos_config_id: PosConfigId;

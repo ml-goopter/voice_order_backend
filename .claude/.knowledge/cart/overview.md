@@ -46,9 +46,12 @@ bumps the version, persists, and broadcasts `cart.updated`. Rejected ops surface
     spurious `internal_error` for an already-committed cart. `register-handlers` also
     `.catch`es as a last-resort guard.
   - `confirm()` writes the cart to Odoo `pos_order` (stub).
-- **Pricing** currently sums item base prices only (TODO modifier deltas + tax).
-  The applier is async and reads prices from the Redis-backed `MenuLookup`; repricing
-  batches every line through one `getItems` (MGET) rather than a lookup per line.
+- **Pricing** sums `(base_price_cents + Σ modifier price_extra_cents) × quantity` per
+  line — the surcharge is per unit (TODO tax). Both the base price and the modifier
+  surcharges are read live from the `MenuLookup` on every reprice, never from the
+  line's snapshot: the line snapshots `name`/`names` for display only. The applier is
+  async; repricing batches every line through one `getItems` (MGET) rather than a
+  lookup per line, and builds the ptav→surcharge map from that same read.
 
 ## Dependencies
 - `persistence` (CartCache, CartRepository — both Redis-backed, with in-memory
@@ -62,4 +65,4 @@ bumps the version, persists, and broadcasts `cart.updated`. Rejected ops surface
 ## Not done yet
 - `CartRepository` is Redis-backed: the idempotency ledger lives at `cart:req:{request_id}`
   with a TTL (`CART_IDEMPOTENCY_TTL_SECONDS`, default 24h) so it stays bounded.
-  `confirmOrder` (Odoo pos_order) and modifier/tax pricing are still stubs.
+  `confirmOrder` (Odoo pos_order) and tax pricing are still stubs.

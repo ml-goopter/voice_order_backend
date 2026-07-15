@@ -62,6 +62,7 @@ interface ItemRow {
 interface ModifierRow {
   product_tmpl_id: number;
   ptav_id: number;
+  price_extra: string | null; // numeric → string in node-pg
   names: Translatable;
   attr_name: Translatable;
 }
@@ -225,6 +226,7 @@ export class PostgresMenuStore implements MenuStore {
     const { rows: modRows } = await this.pool.query<ModifierRow>(
       `SELECT ptav.product_tmpl_id,
               ptav.id AS ptav_id,
+              ptav.price_extra,
               pav.name AS names,
               pa.name  AS attr_name
          FROM product_template_attribute_value ptav
@@ -242,6 +244,7 @@ export class PostgresMenuStore implements MenuStore {
       list.push({
         modifier_key: String(m.ptav_id),
         ptav_id: m.ptav_id,
+        price_extra_cents: Math.round(Number(m.price_extra ?? 0) * 100),
         name: firstName(m.names, firstName(m.attr_name)),
         // Full translatable map for the client; falls back to the attribute's names
         // when the value itself has none (mirrors the `name` fallback chain).

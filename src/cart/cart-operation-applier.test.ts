@@ -22,8 +22,9 @@ function makeMenu(): MenuService {
       base_price_cents: 500,
       available: true,
       modifiers: [
-        { modifier_key: 'no_mayo', ptav_id: 900, name: 'No mayo' },
-        { modifier_key: 'extra_cheese', ptav_id: 901, name: 'Extra cheese', names: { en_US: 'Extra cheese', zh_CN: '加芝士' } },
+        // A free exclusion (the Jade Garden convention) and a paid add-on (the Izumi one).
+        { modifier_key: 'no_mayo', ptav_id: 900, name: 'No mayo', price_extra_cents: 0 },
+        { modifier_key: 'extra_cheese', ptav_id: 901, name: 'Extra cheese', names: { en_US: 'Extra cheese', zh_CN: '加芝士' }, price_extra_cents: 150 },
       ],
     },
     {
@@ -108,6 +109,38 @@ describe('applyOperation', () => {
       // 2 × 500 = 1000
       expect(next.subtotal_cents).toBe(1000);
       expect(next.total_cents).toBe(1000);
+    });
+
+    it('prices a paid modifier into the line, per unit', async () => {
+      const next = expectOk(
+        await applyOperation(
+          cart,
+          { action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [{ modifier_key: 'extra_cheese' }] },
+          menu,
+          POS,
+        ),
+      );
+      // 2 × (500 + 150) = 1300 — the surcharge is per unit, not per line.
+      expect(next.subtotal_cents).toBe(1300);
+      expect(next.total_cents).toBe(1300);
+    });
+
+    it('sums multiple modifiers and leaves free ones at zero', async () => {
+      const next = expectOk(
+        await applyOperation(
+          cart,
+          {
+            action: 'add_item',
+            menu_item_key: 'chicken_burger',
+            quantity: 1,
+            modifiers: [{ modifier_key: 'no_mayo' }, { modifier_key: 'extra_cheese' }],
+          },
+          menu,
+          POS,
+        ),
+      );
+      // 500 + 0 + 150
+      expect(next.subtotal_cents).toBe(650);
     });
 
     it('resolves modifier keys to ptav_ids', async () => {
@@ -204,6 +237,20 @@ describe('applyOperation', () => {
       ]);
     });
 
+    it('reprices the line when a paid modifier is added', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 2);
+      expect(withItem.subtotal_cents).toBe(1000);
+      const next = expectOk(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'extra_cheese' }, menu, POS));
+      // 2 × (500 + 150)
+      expect(next.subtotal_cents).toBe(1300);
+    });
+
+    it('is idempotent in price too — adding the same modifier twice charges once', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1, ['extra_cheese']);
+      const next = expectOk(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'extra_cheese' }, menu, POS));
+      expect(next.subtotal_cents).toBe(650);
+    });
+
     it('is idempotent — adding the same modifier twice does not duplicate it', async () => {
       const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1, ['no_mayo']);
       const next = expectOk(await applyOperation(withItem, { action: 'add_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));
@@ -221,6 +268,13 @@ describe('applyOperation', () => {
   });
 
   describe('remove_modifier', () => {
+    it('reprices the line when a paid modifier is removed', async () => {
+      const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 2, ['extra_cheese']);
+      expect(withItem.subtotal_cents).toBe(1300);
+      const next = expectOk(await applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'extra_cheese' }, menu, POS));
+      expect(next.subtotal_cents).toBe(1000);
+    });
+
     it('removes a present modifier', async () => {
       const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1, ['no_mayo', 'extra_cheese']);
       const next = expectOk(await applyOperation(withItem, { action: 'remove_modifier', line_id, modifier_key: 'no_mayo' }, menu, POS));

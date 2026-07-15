@@ -3,8 +3,8 @@ import { modifierMatchScore } from './modifier-matcher.js';
 import type { CandidateModifier } from './menu-types.js';
 
 const MODS: CandidateModifier[] = [
-  { modifier_key: 'no_pickles', ptav_id: 1, name: 'No pickles' },
-  { modifier_key: 'extra_cheese', ptav_id: 2, name: 'Extra cheese' },
+  { modifier_key: 'no_pickles', ptav_id: 1, name: 'No pickles', price_extra_cents: 0 },
+  { modifier_key: 'extra_cheese', ptav_id: 2, name: 'Extra cheese', price_extra_cents: 150 },
 ];
 
 describe('modifierMatchScore', () => {
