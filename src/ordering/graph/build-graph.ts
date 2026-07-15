@@ -87,8 +87,7 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
     .addNode('agent', node('agent', async (s) => {
       const step = s.agent_steps + 1;
       if (step > LIMITS.maxAgentSteps) return { failure_reason: 'agent_step_limit' };
-      const seeded = s.agent_messages.length === 0 ? seedMessages(s) : [];
-      const messages = [...s.agent_messages, ...seeded];
+      const messages = s.agent_messages.length === 0 ? seedMessages(s) : s.agent_messages;
       const res = await llm.chat(messages, TOOL_SPECS);
       const assistant: AgentMessage = {
         role: 'assistant',
