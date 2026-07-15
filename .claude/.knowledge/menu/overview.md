@@ -34,6 +34,8 @@ the test/dev double.
   phrase, `k·4` over-fetch, best sim per DISTINCT tmpl); `lexicalSearch` is
   `name ILIKE ANY(%term%)`; hydration maps `base_price_cents = round(list_price·100)`,
   `available = available_in_pos AND active`, `modifier_key = String(ptav_id)`,
+  `price_extra_cents = round(ptav.price_extra·100)` (the per-unit surcharge; read per
+  ptav, since the same option value may be priced differently on another item),
   modifier `name` en_US-first plus a full `names` map (`namesOf`, value-names else the
   attribute's, for the client). `ensureIndex()` runs idempotent DDL (`CREATE EXTENSION
   vector`, `CREATE TABLE item_vector`, a `(pos,tmpl)` btree + an HNSW

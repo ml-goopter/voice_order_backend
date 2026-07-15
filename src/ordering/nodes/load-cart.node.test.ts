@@ -11,8 +11,8 @@ const CHICKEN: MenuItem = {
   base_price_cents: 1200,
   available: true,
   modifiers: [
-    { modifier_key: 'add_broccoli', ptav_id: 100, name: 'Add broccoli' },
-    { modifier_key: 'no_broccoli', ptav_id: 101, name: 'No broccoli' },
+    { modifier_key: 'add_broccoli', ptav_id: 100, name: 'Add broccoli', price_extra_cents: 200 },
+    { modifier_key: 'no_broccoli', ptav_id: 101, name: 'No broccoli', price_extra_cents: 0 },
   ],
 };
 

@@ -19,7 +19,7 @@ const MENU: MenuItem[] = [
     product_tmpl_id: 10,
     menu_item_key: 'chicken_burger',
     names: { en_US: 'Chicken Burger' },
-    modifiers: [{ modifier_key: 'no_mayo', ptav_id: 1, name: 'No mayo' }],
+    modifiers: [{ modifier_key: 'no_mayo', ptav_id: 1, name: 'No mayo', price_extra_cents: 0 }],
   }),
   item({ product_tmpl_id: 11, menu_item_key: 'caesar_salad', names: { en_US: 'Caesar Salad' } }),
   item({ product_tmpl_id: 12, menu_item_key: 'coke', names: { en_US: 'Coke' } }),

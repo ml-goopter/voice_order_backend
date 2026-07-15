@@ -7,6 +7,25 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — Price modifier surcharges into the cart (`ptav.price_extra`)
+- **What:** `PostgresMenuStore.hydrate()` now selects `ptav.price_extra` and maps it to a
+  required `CandidateModifier.price_extra_cents`; `priced()` in the cart applier adds each
+  line's modifier surcharges to the unit price before multiplying by quantity.
+- **Why:** Modifier surcharges were never read, so every modified line was charged at base
+  price. Invisible against Jade Garden (0.2% of ptavs are paid) but wrong on nearly every
+  Izumi order (82% are paid, up to +$8.50) — the exact failure
+  `docs/pos-product-modifier-order-schema.md` warns about under "Tenant differences".
+- **Where:** `src/menu/postgres-menu-store.ts`, `src/menu/menu-types.ts`,
+  `src/cart/cart-operation-applier.ts` (+ modifier fixtures across 7 test files).
+- **Notes:** Surcharges are read live from the menu on every reprice, matching how base
+  prices already work — `CartModifier` deliberately does NOT snapshot a price, keeping the
+  existing split (display data snapshotted, pricing data live). The field is required, not
+  optional, so a missing price can't silently mean "free"; note `tsconfig.json` excludes
+  `src/**/*.test.ts`, so that only binds production code — test fixtures were updated by
+  hand. Still open from the same audit: `display_type` is unread, so nothing enforces
+  pick-one (`radio`/`pills`) cardinality — and `goopter_pos_attribute_selection_limit` is
+  uninstalled, so Odoo won't reject an invalid selection count either.
+
 ## 2026-07-15 — Drop the unused combo fields from `CartLine`
 - **What:** Removed `combo_id?` and `combo_choices?` from `CartLine` in the backend and frontend
   types and from the two `design.md` cart specs (§Redis value, §17.3). They were declared but

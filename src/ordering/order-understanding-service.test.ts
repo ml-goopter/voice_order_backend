@@ -20,7 +20,7 @@ const MENU: MenuItem[] = [
     names: { en_US: 'Chicken Burger' },
     base_price_cents: 1000,
     available: true,
-    modifiers: [{ modifier_key: 'no_mayo', ptav_id: 1, name: 'No mayo' }],
+    modifiers: [{ modifier_key: 'no_mayo', ptav_id: 1, name: 'No mayo', price_extra_cents: 0 }],
   },
   {
     product_tmpl_id: 12,
