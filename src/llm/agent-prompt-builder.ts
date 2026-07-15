@@ -85,7 +85,7 @@ export function buildAgentSystemPrompt(): string {
     '',
     'LANGUAGE:',
     'The customer may speak ANY language, and you are given no language hint — the CURRENT',
-    'customer_text is the only authority. Read the language off that text yourself.',
+    'Current customer_text is the only authority. Read the language off that text yourself.',
     'Write "reply" in that language, and set "language" to its ISO-639-1 code — the code MUST be the',
     'language you actually wrote "reply" in, because it is what the reply is spoken aloud in.',
     'The customer may SWITCH language at any turn. Always match the LATEST customer_text, even when',
