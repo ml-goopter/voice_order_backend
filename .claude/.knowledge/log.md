@@ -111,6 +111,15 @@ timestamp: 2026-07-07
   voice), `TTS_LANGUAGE` (`en` fallback), `TTS_BIT_RATE` (mp3). `TTS_SAMPLE_RATE` now also feeds the
   Cartesia mp3 container. Client `tts.*` frame contract is unchanged. Known limitation: `segmentText`
   doesn't sub-segment CJK (no whitespace after `。`) — synthesizes as one larger chunk.
+## 2026-07-14 — Notify client on server-initiated (idle) voice stop
+- **What:** Added outbound WS message `voice.stopped` (`{ session_id; reason: 'idle' }`) and
+  send it when the stopped-talking idle timer fires, just before `handleStop`. A client-sent
+  `voice.stop` gets no echo. Reviewed existing outbounds first — none fit (`voice.final_transcript`
+  is conditional/display, `voice.error` would mislabel a normal end-of-turn as a failure).
+- **Why:** On a server-initiated stop the client had no signal that the backend closed the mic,
+  so it couldn't drop its listening UI or stop capturing audio.
+- **Where:** `realtime/realtime-message-types.ts` (new `VoiceStoppedMsg` + union),
+  `voice/voice-message-handler.ts` (`armIdleStop` emit), `docs/design.md` §17.7, `voice` bundle.
 
 ## 2026-07-14 — TTS: standalone mp3 per sentence segment (progressive playback)
 - **What:** Reworked TTS so each `tts.audio_chunk` is a **complete, standalone** audio file

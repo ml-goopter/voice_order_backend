@@ -227,6 +227,9 @@ export class VoiceMessageHandler {
     session.stopTimer = setTimeout(() => {
       session.stopTimer = null;
       if (session.status !== 'listening' || session.stopping) return;
+      // Server-initiated stop: tell the client we closed the mic so it can drop its
+      // listening UI (a client-sent voice.stop needs no such echo — it already knows).
+      conn.send({ type: 'voice.stopped', session_id: session.session_id, reason: 'idle' });
       // No new speech for partialIdleMs → end-of-turn. Same flush/grace path as voice.stop.
       void this.handleStop(conn, { type: 'voice.stop', session_id: session.session_id });
     }, TIMEOUTS.partialIdleMs);
