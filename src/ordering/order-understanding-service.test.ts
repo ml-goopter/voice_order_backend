@@ -11,6 +11,7 @@ import type { Intent } from './graph/intents.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
 import { LIMITS } from '../config/constants.js';
+import { TOOL_NAMES } from './tools/tool-specs.js';
 
 const POS = 1;
 const MENU: MenuItem[] = [
@@ -35,8 +36,15 @@ const MENU: MenuItem[] = [
 // ── scripted agent turns ─────────────────────────────────────────────────────
 let idCounter = 0;
 const call = (name: string, args: unknown): ToolCall => ({ id: `c${idCounter++}`, name, arguments: args });
-const search = (query: string): ChatResult => ({ toolCalls: [call('search_menu_semantic', { query })] });
-const propose = (operations: unknown[]): ChatResult => ({ toolCalls: [call('propose_cart', { operations })] });
+// Tool names come from TOOL_NAMES, not string literals: a scripted call to a name the handler
+// does not know silently degrades to an "unknown tool" tool-error that the agent just loops past,
+// so a drifted literal here would leave these tests green while the real agent found nothing.
+const search = (query: string): ChatResult => ({ toolCalls: [call(TOOL_NAMES.search, { query })] });
+/** A search with the full argument bag (filters / sort), not just a query. */
+const searchWith = (args: Record<string, unknown>): ChatResult => ({
+  toolCalls: [call(TOOL_NAMES.search, args)],
+});
+const propose = (operations: unknown[]): ChatResult => ({ toolCalls: [call(TOOL_NAMES.propose, { operations })] });
 /** The agent ends the turn by SPEAKING (no tool call). Plain text is the DEGRADE path (the prompt
  *  asks for JSON) — still a valid reply, just with no declared language. */
 const reply = (text: string): ChatResult => ({ text, toolCalls: [] });
@@ -64,6 +72,8 @@ interface TurnContext {
 class ScriptedLlm implements LlmProvider {
   readonly name = 'scripted';
   readonly contexts: TurnContext[] = [];
+  /** Tool result payloads the graph fed back, in order — what the agent actually saw. */
+  readonly toolResults: string[] = [];
   chatCalls = 0;
   private turnIdx = -1;
   private stepIdx = 0;
@@ -87,6 +97,7 @@ class ScriptedLlm implements LlmProvider {
       const userMsg = messages.find((m) => m.role === 'user') as { content: string } | undefined;
       if (userMsg) this.contexts.push(JSON.parse(userMsg.content) as TurnContext);
     }
+    for (const m of messages) if (m.role === 'tool') this.toolResults.push(m.content);
     const script = this.turnScripts[this.turnIdx] ?? [];
     const res = script[this.stepIdx] ?? { toolCalls: [] };
     this.stepIdx += 1;
@@ -98,8 +109,11 @@ async function makeService(
   turnScripts: ChatResult[][],
   seedCart?: Cart,
   intentFor: (text: string) => Intent = () => 'order',
+  qtySold?: Array<[number, number]>,
 ) {
-  const menu = new MenuService(InMemoryMenuStore.of(POS, MENU));
+  const store = InMemoryMenuStore.of(POS, MENU);
+  if (qtySold) store.setQtySold(POS, new Map(qtySold));
+  const menu = new MenuService(store);
   const carts = new InMemoryCartCache();
   if (seedCart) await carts.set(seedCart);
   const llm = new ScriptedLlm(turnScripts, intentFor);
@@ -381,6 +395,57 @@ describe('OrderUnderstandingService', () => {
     expect(replies).toHaveLength(1);
     expect(replies[0]).toMatchObject({ cart_id: 'cart_1', request_id: 'req_1', reply: 'How about a Coke?' });
     expect(llm.chatCalls).toBe(2); // one search, then the spoken reply
+  });
+
+  it('answers "what do you suggest?" from real sales: a bare popularity search, tiered, in ONE call', async () => {
+    // Coke outsells the burger 50:2, so it leads and is tiered "top". The agent asks for no
+    // query at all — this is the browse path, which has no relevance signal to rank by.
+    const { service, bus, llm } = await makeService(
+      [[searchWith({ sort: 'popularity' }), jsonReply('Our Coke is a favourite!', 'en')]],
+      cartWith(0),
+      () => 'suggest',
+      [
+        [12, 50], // Coke
+        [10, 2], // Chicken Burger
+      ],
+    );
+    const replies = collect(bus, 'order.reply');
+
+    await service.handleFinalTranscript(transcript('what do you suggest?'));
+
+    expect(replies).toHaveLength(1);
+    const seen = JSON.parse(llm.toolResults[0] ?? '[]') as Array<{ name: string; popularity?: string }>;
+    expect(seen.map((i) => i.name)).toEqual(['Coke', 'Chicken Burger']);
+    expect(seen[0]?.popularity).toBe('top');
+    expect(llm.chatCalls).toBe(2); // one search, then the spoken reply — no second retrieval
+  });
+
+  it('answers "popular AND <thing>" in ONE search, intersecting server-side', async () => {
+    // The motivating query. The burger is the unpopular one, so a popularity-only search would
+    // lead with Coke; a relevance-only search would not rank. Both constraints, one call.
+    const { service, bus, llm } = await makeService(
+      [
+        [
+          searchWith({ query: 'chicken burger', sort: 'popularity' }),
+          jsonReply('Our Chicken Burger is great.', 'en'),
+        ],
+      ],
+      cartWith(0),
+      () => 'suggest',
+      [
+        [12, 50], // Coke — popular, but not a chicken burger
+        [10, 2],
+      ],
+    );
+    const replies = collect(bus, 'order.reply');
+
+    await service.handleFinalTranscript(transcript('what is popular and has chicken?'));
+
+    expect(replies).toHaveLength(1);
+    const seen = JSON.parse(llm.toolResults[0] ?? '[]') as Array<{ name: string }>;
+    // Popularity re-orders the relevant items; it never drags in the irrelevant Coke.
+    expect(seen.map((i) => i.name)).toEqual(['Chicken Burger']);
+    expect(llm.chatCalls).toBe(2);
   });
 
   it("speaks only the reply text, in the agent's declared language", async () => {

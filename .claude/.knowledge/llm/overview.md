@@ -53,7 +53,11 @@ deterministic source of truth.
   Emitting the code first forces the choice before any reply token exists. The ordering is a
   generation-time device enforced ONLY by the prompt: `parse-spoken-reply.ts` JSON.parses and
   accepts either order, so a model that slips back to reply-first still keeps its language.
-  Candidates are NOT pre-fetched — the agent retrieves them via `search_menu_semantic`.
+  Candidates are NOT pre-fetched — the agent retrieves them via `search_menu`. The prompt's
+  WORKFLOW section also teaches that tool's filters/sort (popularity for "what do you
+  suggest?", one call for "popular AND <thing>"), that a `popularity` tier may be voiced but
+  never a rank or a count, and that the menu carries **no ingredient/allergen/dietary data** —
+  so the agent must refuse to guess at an allergy question rather than infer from a name.
   The system prompt also embeds the **JSON Schema for a `propose_cart` operation**, generated
   from `cartOperationSchema` via `z.toJSONSchema` (with a small `scrubSchema` pass to drop the
   sentinel `maximum`/`$schema` noise) so the advertised shape can't drift from validation. The

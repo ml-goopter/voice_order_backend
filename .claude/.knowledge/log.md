@@ -7,6 +7,41 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — Agent search: keywords + price filters + popularity ranking
+- **What:** Replaced the agent's `search_menu_semantic(query)` with `search_menu({query?,
+  sort?, max_price_cents?, min_price_cents?, limit?})`. Added `MenuStore.popularity()`
+  (live aggregate over `pos_order_line`), `MenuService.searchMenu()`, a coarse
+  `CandidateItem.popularity` tier (`top`/`popular`), `MatchOptions` on the matcher (price
+  filter + result cap), `POPULARITY` constants, and `MENU_EXCLUDED_CATEGORIES` applied by the
+  seed. Removed `MenuService.getCandidates` (`searchMenu` subsumes it) and ported its two E2E
+  callers to `searchMenu({query})`.
+- **Why:** The agent could only ask "is there an item whose NAME looks like this phrase", so
+  "what do you suggest?", "what's popular and has fish?", and "anything under $10?" were
+  unanswerable. Deferred in `docs/agent-tools.md` §2/§8; spec in
+  `docs/plans/agent-search-extension.md`.
+- **Where:** `src/menu/{menu-types,menu-store,menu-service,candidate-matcher,
+  postgres-menu-store,in-memory-menu-store}.ts`, `src/ordering/tools/{tool-specs,run-tools}.ts`,
+  `src/llm/agent-prompt-builder.ts`, `src/config/{env,constants}.ts`,
+  `scripts/populate-postgres-menu.ts`, `.env.example`, `E2E/{embedding,llm_pipeline}.e2e.ts`.
+- **Notes:** ONE tool, not the `filter_menu` + `popular_items` pair `agent-tools.md` sketched —
+  "popular AND has fish" is an intersection, and two tools would make the *model* intersect two
+  result sets (a step models get wrong, plus an extra round-trip on a voice path). Three traps,
+  each pinned by a test that was verified to fail when the bug is reintroduced: (1) rank by
+  **qty, never revenue** — Izumi is AYCE, 32% of its products are $0 and its top seller is $0
+  salmon; (2) **the relevance leg is taken UNCUT before the popularity re-rank**
+  (`match(…, {limit: Infinity})`) — any cut there is by relevance, so re-ranking what survives
+  answers "the N most fish-like, by popularity" not "the most popular fish". A finite pool only
+  moves the N at which that returns, so there is no pool constant; the final cut happens after
+  the re-rank. (3) **`item_vector` joined with EXISTS, never JOIN** — it holds one row per
+  (item, language), and a JOIN silently doubled every count on the live Jade DB while leaving
+  the ranking order identical. Popularity is a live aggregate (no cache), matching the module's
+  no-menu-cache stance; it degrades to an unranked list on any query error.
+  **Not fixed, wants its own ticket:** the seed writes `item_vector` from a bare
+  `available_in_pos AND active`, so "Discount" (Izumi 1308 / Jade 3796, `list_price = -1.00`)
+  and "Refund" (Izumi 1307 / Jade 32) are searchable and `propose_cart`-able today — a customer
+  saying "discount" can add a negative-price line. Neither ranks, so neither affects this
+  change.
+
 ## 2026-07-15 — Show the agent per-unit prices (base + modifier surcharge)
 - **What:** Added `base_price_cents` to `CandidateItem` and `CartLineView`, and
   `price_extra_cents` to `CartModifierView`, so both agent-facing surfaces (search results

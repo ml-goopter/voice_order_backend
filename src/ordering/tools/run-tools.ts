@@ -8,7 +8,17 @@ import { formatZodError } from '../schemas/zod-error.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import { logger } from '../../config/logger.js';
 
-const searchArgs = z.object({ query: z.string().min(1) });
+/**
+ * Every field optional: an argument-less call is a valid "what's popular?" browse. Unknown keys
+ * are ignored rather than rejected — a model inventing a filter should still get its search.
+ */
+const searchArgs = z.object({
+  query: z.string().min(1).optional(),
+  sort: z.enum(['relevance', 'popularity']).optional(),
+  max_price_cents: z.number().int().nonnegative().optional(),
+  min_price_cents: z.number().int().nonnegative().optional(),
+  limit: z.number().int().positive().optional(),
+});
 
 /** What one tool call produced: a `content` string appended to the scratchpad (fed back to the
  *  model on a loop), plus `output` when `propose_cart` validated (the terminal action). */
@@ -23,7 +33,7 @@ async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolC
     case TOOL_NAMES.search: {
       const parsed = searchArgs.safeParse(call.arguments);
       if (!parsed.success) return { content: `Invalid arguments: ${formatZodError(parsed.error)}` };
-      const set = await menu.getCandidates(s.pos_config_id, parsed.data.query);
+      const set = await menu.searchMenu(s.pos_config_id, parsed.data);
       return { content: JSON.stringify(set.items) };
     }
     case TOOL_NAMES.propose: {

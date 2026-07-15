@@ -1,10 +1,25 @@
-import type { PosConfigId, ProductTmplId } from '../shared/types.js';
+import type { Cents, PosConfigId, ProductTmplId } from '../shared/types.js';
 import type { MenuStore } from './menu-store.js';
 import type { EmbeddingService } from './embedding-service.js';
 import type { CandidateItem, CandidateSet, MenuItem } from './menu-types.js';
 import { LIMITS } from '../config/constants.js';
 import { similarity } from './fuzzy-matcher.js';
 import { modifierMatchScore } from './modifier-matcher.js';
+
+/**
+ * Constraints applied while ranking. The price filter is applied INSIDE `rank()`, before the
+ * top-N cut: filtering afterwards would first truncate to N and then shrink that slice, hiding
+ * matches that passed the filter.
+ */
+export interface MatchOptions {
+  /** Max items to return, applied after ranking. Defaults to `LIMITS.maxCandidatesToLlm`.
+   *  Pass `Infinity` to take the relevant set UNCUT — a caller that re-sorts downstream (e.g.
+   *  by popularity) must not be handed a slice already truncated by relevance, or it re-orders
+   *  the wrong N. See `MenuService.searchMenu`. */
+  limit?: number;
+  min_price_cents?: Cents;
+  max_price_cents?: Cents;
+}
 
 /**
  * Hybrid ranking weights (design §7). Embedding dominates when available; fuzzy
@@ -41,18 +56,22 @@ export class CandidateMatcher {
       .filter((s) => s.length > 0);
   }
 
-  async match(pos_config_id: PosConfigId, text: string): Promise<CandidateSet> {
+  async match(
+    pos_config_id: PosConfigId,
+    text: string,
+    opts: MatchOptions = {},
+  ): Promise<CandidateSet> {
     const phrases = this.chunk(text.toLowerCase());
     if (phrases.length === 0) return { items: [] };
 
     // No embeddings available → fuzzy/modifier scan over the whole menu.
-    if (this.embedder.dimensions === 0) return this.fuzzyScan(pos_config_id, phrases);
+    if (this.embedder.dimensions === 0) return this.fuzzyScan(pos_config_id, phrases, opts);
 
     // Customer transcript phrases are the search side → 'query' (design §7).
     const phraseVectors = (await this.embedder.embedBatch(phrases, 'query')).filter(
       (v) => v.length > 0,
     );
-    if (phraseVectors.length === 0) return this.fuzzyScan(pos_config_id, phrases);
+    if (phraseVectors.length === 0) return this.fuzzyScan(pos_config_id, phrases, opts);
 
     // Retrieve by BOTH vector similarity and lexical name match, then union — a
     // high-fuzzy item the KNN recall misses is still surfaced via lexicalSearch.
@@ -62,22 +81,32 @@ export class CandidateMatcher {
     ]);
     const retrieveIds = new Set<ProductTmplId>([...sims.keys(), ...lexIds]);
     // Nothing retrieved (index missing/empty) → fuzzy fallback rather than fail.
-    if (retrieveIds.size === 0) return this.fuzzyScan(pos_config_id, phrases);
+    if (retrieveIds.size === 0) return this.fuzzyScan(pos_config_id, phrases, opts);
 
     const items = await this.store.getItems(pos_config_id, [...retrieveIds]);
-    return this.rank(items, phrases, (item) => sims.get(item.product_tmpl_id) ?? 0);
+    return this.rank(items, phrases, (item) => sims.get(item.product_tmpl_id) ?? 0, opts);
   }
 
   /** Rank hydrated candidates by W_EMBED·emb + W_FUZZY·fuzzy + W_MODIFIER·mod. */
-  private async fuzzyScan(pos_config_id: PosConfigId, phrases: string[]): Promise<CandidateSet> {
+  private async fuzzyScan(
+    pos_config_id: PosConfigId,
+    phrases: string[],
+    opts: MatchOptions,
+  ): Promise<CandidateSet> {
     const items = await this.store.allItems(pos_config_id);
-    return this.rank(items, phrases, () => 0);
+    return this.rank(items, phrases, () => 0, opts);
   }
 
-  private rank(items: MenuItem[], phrases: string[], embOf: (item: MenuItem) => number): CandidateSet {
+  private rank(
+    items: MenuItem[],
+    phrases: string[],
+    embOf: (item: MenuItem) => number,
+    opts: MatchOptions,
+  ): CandidateSet {
     const scored: Array<{ item: CandidateItem; score: number }> = [];
     for (const item of items) {
       if (!item.available) continue;
+      if (!withinPrice(item.base_price_cents, opts)) continue;
       const names = Object.values(item.names).map((n) => n.toLowerCase());
 
       let fuzzy = 0;
@@ -93,21 +122,30 @@ export class CandidateMatcher {
       const score = W_EMBED * emb + W_FUZZY * fuzzy + W_MODIFIER * mod;
       if (score < SCORE_THRESHOLD) continue;
 
-      scored.push({
-        item: {
-          menu_item_key: item.menu_item_key,
-          product_tmpl_id: item.product_tmpl_id,
-          name: item.names['en_US'] ?? Object.values(item.names)[0] ?? item.menu_item_key,
-          names: item.names,
-          score,
-          base_price_cents: item.base_price_cents,
-          available_modifiers: item.modifiers,
-        },
-        score,
-      });
+      scored.push({ item: { ...toCandidate(item), score }, score });
     }
 
     scored.sort((a, b) => b.score - a.score);
-    return { items: scored.slice(0, LIMITS.maxCandidatesToLlm).map((s) => s.item) };
+    return { items: scored.slice(0, opts.limit ?? LIMITS.maxCandidatesToLlm).map((s) => s.item) };
   }
+}
+
+/** The item as the agent sees it, minus the relevance `score` only a ranked search can supply.
+ *  Shared with the no-query browse path so the two can't drift — see `MenuService.searchMenu`. */
+export function toCandidate(item: MenuItem): CandidateItem {
+  return {
+    menu_item_key: item.menu_item_key,
+    product_tmpl_id: item.product_tmpl_id,
+    name: item.names['en_US'] ?? Object.values(item.names)[0] ?? item.menu_item_key,
+    names: item.names,
+    base_price_cents: item.base_price_cents,
+    available_modifiers: item.modifiers,
+  };
+}
+
+/** Price-window test. An absent bound is no bound; bounds are inclusive. */
+export function withinPrice(price: Cents, opts: MatchOptions): boolean {
+  if (opts.min_price_cents !== undefined && price < opts.min_price_cents) return false;
+  if (opts.max_price_cents !== undefined && price > opts.max_price_cents) return false;
+  return true;
 }

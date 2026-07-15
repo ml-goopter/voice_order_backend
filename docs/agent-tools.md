@@ -4,6 +4,16 @@ Status: **implemented** (branch `feat/agent-rework`). Reworked the `order` path 
 fixed `retrieve → parse` pipeline into an **LLM agent that calls tools**. The old pipeline
 is removed entirely — the agent graph is the only path; there is no feature flag.
 
+> **Revision 2 (implemented):** the retrieval tool is now **`search_menu`**, not
+> `search_menu_semantic` — it takes `{query?, sort?, max_price_cents?, min_price_cents?,
+> limit?}` and is no longer purely semantic. Every mention of `search_menu_semantic` below
+> should be read as `search_menu`; the tool *count* (two) and everything else in this doc are
+> unchanged. This subsumes the deferred `filter_menu` / `popular_items` (§2, §8): they are
+> parameters on one tool rather than tools of their own, so "popular AND has fish" is
+> intersected server-side instead of by the model. Category/dietary filtering did **not**
+> land — the schema has no ingredient or dietary field at all. See
+> `docs/plans/agent-search-extension.md`.
+
 > **Revision (implemented):** clarify and suggest are **not tools**. The agent has two tools
 > (`search_menu_semantic`, `propose_cart`) and ends a turn either by proposing or by replying
 > (no tool call) with strict JSON `{language, reply}` — one merged **`reply`** outcome that serves as both a
@@ -47,9 +57,13 @@ what it retrieves.
 - The intent classifier demoted to a **junk-gate**.
 
 **Out (later phases / explicitly deferred):**
-- `filter_menu` (structured category/dietary/price search) — needs new `MenuStore`
-  queries.
-- `popular_items` — needs Odoo sales/popularity data not currently modeled.
+- ~~`filter_menu` (structured category/dietary/price search)~~ / ~~`popular_items`~~ —
+  **superseded.** Both landed, but as parameters on a single `search_menu` tool rather than
+  as separate tools, because "popular AND has fish" is one intersection and two tools would
+  force the *model* to intersect two result sets. **Category** and **dietary** filtering did
+  NOT land and are not deferred work but data gaps: `product_template` carries no ingredient,
+  tag, or dietary field, so "has fish" is only ever a NAME match. See
+  `docs/plans/agent-search-extension.md` §2/§4.
 - Prompted-ReAct (non-native) tool-calling fallback — deferred; the agent uses native
   tool-calling only, so production must run a tool-capable model (see §4).
 - Any change to event contracts, the cart module, or the STT/voice path.
@@ -229,10 +243,12 @@ menu data leaks across turns.
 
 ## 6. Config (`src/config/`)
 
-- **`LIMITS.maxAgentSteps = 4`** — cap on `agent ⇄ tools` iterations per turn
-  (cost/latency guard + runaway-loop backstop). On exhaustion the turn fails via
-  `voice.session_failed` with reason **`agent_step_limit`** (new, parallel to the
-  existing `order_parse_failed`).
+- **`LIMITS.maxAgentSteps`** — cap on `agent ⇄ tools` iterations per turn (cost/latency
+  guard + runaway-loop backstop). On exhaustion the turn fails via `voice.session_failed`
+  with reason **`agent_step_limit`** (new, parallel to the existing `order_parse_failed`).
+  *(The value is **8** in `config/constants.ts`, not the 4 this doc originally proposed —
+  sized to let a multi-item order run several sequential searches before proposing. The
+  constant is authoritative; §9 below is the stale proposal.)*
 
 No `ORDERING_AGENT` flag: `build-graph` unconditionally builds the agent graph (§3.1).
 
@@ -261,8 +277,8 @@ No `ORDERING_AGENT` flag: `build-graph` unconditionally builds the agent graph (
   fire-and-forget clarify, consecutive-clarify cap, per-cart FIFO) plus
   `suggest.node`-equivalent recommendation behavior are migrated to and pass on the
   agent graph. No pipeline path remains to keep green.
-- **Later:** `filter_menu` (+ store queries), `popular_items` (+ Odoo popularity
-  data), optional prompted-ReAct fallback for weak models.
+- **Later:** ~~`filter_menu`, `popular_items`~~ — landed as `search_menu` parameters
+  (`docs/plans/agent-search-extension.md`); optional prompted-ReAct fallback for weak models.
 
 ## 9. Resolved decisions
 

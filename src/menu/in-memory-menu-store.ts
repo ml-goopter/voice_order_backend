@@ -37,12 +37,18 @@ function cosine(a: number[], b: number[]): number {
  */
 export class InMemoryMenuStore implements MenuStore {
   private readonly byPos = new Map<PosConfigId, IndexedMenuItem[]>();
+  private readonly qtySoldByPos = new Map<PosConfigId, Map<ProductTmplId, number>>();
 
   /** Items only, no vectors — enough for the cart lookups / fuzzy fallback. */
   static of(pos: PosConfigId, items: MenuItem[]): InMemoryMenuStore {
     const store = new InMemoryMenuStore();
     store.byPos.set(pos, items.map((item) => ({ item, vectors: [] })));
     return store;
+  }
+
+  /** Stand in for the `pos_order_line` aggregate — the double has no orders to sum. */
+  setQtySold(pos: PosConfigId, qtyByTmpl: Map<ProductTmplId, number>): void {
+    this.qtySoldByPos.set(pos, qtyByTmpl);
   }
 
   /** Embed each item's per-language names ('passage'), mirroring the seed path. */
@@ -117,6 +123,20 @@ export class InMemoryMenuStore implements MenuStore {
 
   allItems(pos: PosConfigId): Promise<MenuItem[]> {
     return Promise.resolve(this.indexed(pos).map((i) => i.item));
+  }
+
+  /**
+   * Mirrors `PostgresMenuStore.popularity` semantics on the seeded `setQtySold` data: only
+   * items on this pos's menu (the store's `EXISTS item_vector` gate) and only net-positive
+   * qty (its `HAVING sum(l.qty) > 0`, which is what keeps a refund product off the list).
+   * `windowDays` is omitted — the double holds no order dates to window over.
+   */
+  popularity(pos: PosConfigId): Promise<Map<ProductTmplId, number>> {
+    const onMenu = new Set(this.indexed(pos).map((i) => i.item.product_tmpl_id));
+    const sold = this.qtySoldByPos.get(pos) ?? new Map<ProductTmplId, number>();
+    return Promise.resolve(
+      new Map([...sold].filter(([tmpl, qty]) => qty > 0 && onMenu.has(tmpl))),
+    );
   }
 
   getItem(pos: PosConfigId, tmpl: ProductTmplId): Promise<MenuItem | undefined> {

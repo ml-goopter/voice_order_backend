@@ -27,6 +27,17 @@ export interface MenuStore {
   getItems(pos: PosConfigId, tmpls: ProductTmplId[]): Promise<MenuItem[]>;
   /** Every seeded item for a restaurant (the fuzzy-fallback corpus). */
   allItems(pos: PosConfigId): Promise<MenuItem[]>;
+  /**
+   * Units sold per item over the trailing `windowDays`, for this restaurant's menu only —
+   * the popularity signal. Nothing stores popularity; it is aggregated from `pos_order_line`
+   * on every call (docs/plans/agent-search-extension.md §5).
+   *
+   * Ranked by **quantity, never revenue**: an all-you-can-eat menu prices its most popular
+   * food at $0, so revenue ranking inverts it. Items netting <= 0 (fully refunded, or a
+   * refund product) are omitted. Empty on any query error — the caller degrades to relevance
+   * rather than failing the turn.
+   */
+  popularity(pos: PosConfigId, windowDays: number): Promise<Map<ProductTmplId, number>>;
   getItem(pos: PosConfigId, tmpl: ProductTmplId): Promise<MenuItem | undefined>;
   getItemByKey(pos: PosConfigId, menu_item_key: string): Promise<MenuItem | undefined>;
 }

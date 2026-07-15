@@ -15,6 +15,14 @@ function int(name: string, fallback: number): number {
   return Number.isNaN(n) ? fallback : n;
 }
 
+/** Comma-separated list, e.g. "CUSTOMER TYPE,Charges". Blank entries dropped. */
+function list(name: string): string[] {
+  return str(name, '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 export interface AppConfig {
   readonly nodeEnv: string;
   readonly port: number;
@@ -53,6 +61,16 @@ export interface AppConfig {
   readonly embeddingDimensions: number;
   readonly jinaApiKey: string;
   readonly jinaBaseUrl: string;
+  /**
+   * POS category names whose products are not dishes (e.g. "CUSTOMER TYPE" — cover
+   * charges, the negative-price Discount product). The seed skips them, so they never
+   * enter `item_vector` and are neither searchable nor proposable. Excluded by category
+   * name rather than template id: one legible entry an operator can find in the POS UI
+   * covers every member, including ones added later. Odoo's own service products
+   * (pos_config tip/down-payment/refund) are excluded automatically and need no entry
+   * here. See docs/plans/agent-search-extension.md §5.3.
+   */
+  readonly menuExcludedCategories: string[];
 }
 
 export const config: AppConfig = {
@@ -92,4 +110,5 @@ export const config: AppConfig = {
   embeddingDimensions: int('EMBEDDING_DIMENSIONS', 1024),
   jinaApiKey: str('JINA_API_KEY', ''),
   jinaBaseUrl: str('JINA_BASE_URL', 'https://api.jina.ai/v1/embeddings'),
+  menuExcludedCategories: list('MENU_EXCLUDED_CATEGORIES'),
 };
