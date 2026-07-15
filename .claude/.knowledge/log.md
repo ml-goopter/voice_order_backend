@@ -7,6 +7,110 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-14 — Reply JSON is `{language, reply}`: declare the language before writing it
+- **What:** Flipped the spoken-reply terminal's field order from `{reply, language}` to
+  `{language, reply}` in the agent prompt, and reworked the **LANGUAGE** section to require the
+  code be settled before any reply text is written. Fixed a garbled sentence there ("the CURRENT
+  Current customer_text", from `c25f5f2`) and replaced the en → zh switch example with the
+  zh → zh → en case that actually failed.
+- **Why:** The agent sometimes replied in Chinese to an unambiguous English utterance after two
+  Chinese turns. The cause is generation order, not comprehension: the model writes JSON left to
+  right, so a `reply`-first shape let it produce the whole reply — carried into Chinese by
+  `conversation_history` stickiness — and only then emit `language`, which faithfully labelled the
+  drift (`"zh"` was a *correct* description of what it had just written, so the parse was never at
+  fault). Emitting the code first forces the choice before any reply token exists and conditions
+  the reply on it.
+- **Where:** `llm/agent-prompt-builder.ts` (prompt + docstring), `ordering/graph/parse-spoken-reply.ts`
+  (docstring only), `ordering/graph/parse-spoken-reply.test.ts`, `docs/agent-tools.md` §3,
+  `knowledge/llm/overview.md`.
+- **Notes:** The ordering is enforced ONLY by the prompt — the parser JSON.parses and is
+  order-agnostic, now pinned by a test, so a model that slips back to reply-first still keeps its
+  declared language. The short-utterance fallback rule ("OK"/"two"/a bare item name → last
+  identifiable language) was left alone: it was ruled out as the cause here (the failing utterance
+  was a full English sentence), and it is deliberate — a Chinese speaker saying an English menu item
+  name should still get Chinese. **Unverified against a live model:** there is no eval harness for
+  the agent LLM (unit tests mock it), and the bug is intermittent, so this fix rests on the
+  generation-order argument, not an observed pass. If it recurs, the next lever is a turn-final
+  language reminder appended after tool results, which the `agent` node would have to inject.
+
+## 2026-07-14 — Agent emits the reply language (STT language detection dropped entirely)
+- **What:** The ordering agent now ends a spoken turn with strict JSON `{reply, language}`; the
+  parsed ISO-639-1 language sets `order.reply.language` → TTS, and is the **only** source of it —
+  the STT-detected language is no longer consulted at all, falling back to `TTS_LANGUAGE` when the
+  agent declares none. New pure `ordering/graph/parse-spoken-reply.ts` (+test) parses the terminal,
+  degrading PER-FIELD: non-JSON text is spoken as-is, a JSON blob with no usable `reply` is
+  `agent_no_terminal` (never read aloud), and an off-format `language` (e.g. `"Chinese"`) costs only
+  the language, not the reply. It parses the OUTERMOST `{…}` span, so prose wrapped around the object
+  (`Sure! {…}`) is dropped rather than read aloud as braces-and-quotes.
+  The agent's declaration lands on its own turn-scoped `reply_language` channel (cleared by
+  `normalize`), NOT on the old `language` input channel — sharing one channel leaked a declared
+  language into later turns that declared none.
+  **STT language detection is removed end-to-end**, not just demoted: gone from `OrderState`/
+  `OrderGraphParams`, from `SttFinalTranscriptReceived`, from the `voice.final_transcript` WS frame
+  (a client-facing protocol change) and from `SttStreamHandlers.onFinal`, which no longer takes a
+  language. `assemblyai-stt-provider` now ignores `turn.language_code`. `OrderReply.language`
+  tightened from optional to REQUIRED — the façade always supplies one.
+  To make the agent actually reply in the customer's language, the prompt gained a dedicated
+  **LANGUAGE** section (latest customer_text is the sole authority; match a mid-conversation switch;
+  fall back to the last identifiable utterance only for unreadable ones like "OK"/"two"), and
+  `buildAgentUserMessage` **stopped passing the STT `language` hint** — it tagged nearly every turn
+  `en_US`, so it argued the customer spoke English even on a plainly Chinese utterance.
+  `AgentContext.language` is gone with it.
+- **Why:** `turn.language_code` from AssemblyAI STT was unreliable — the default streaming model
+  returns `en` for everything and the multilingual tier isn't reliably entitled. The agent WRITES the
+  reply, so it knows the language for free and needs no STT model change. A wrong hint is worse than
+  none: `customer_text` is the actual evidence. Keeping STT as a *fallback* would have re-admitted
+  the same bad signal, so it was cut rather than demoted.
+- **Where:** llm (`agent-prompt-builder`), ordering (`graph/build-graph`, `graph/state`,
+  `graph/parse-spoken-reply`, `order-graph`, `order-understanding-service`), events
+  (`event-types`), stt (`stt-types`, `assemblyai-stt-provider`), voice (`voice-message-handler`),
+  realtime (`realtime-message-types`, `realtime-gateway` comment), config (`env` comment), tts
+  (`cartesia-tts-provider` comments only) — `OrderReply.language` already existed and is already
+  forwarded to `toCartesiaLanguage()`.
+- **Notes:** Deliberately NOT a zod schema, unlike other LLM boundaries here: those feed
+  `formatZodError` into a schema-repair prompt, whereas this parser discards the error and degrades.
+  A `z.object` also fails all-or-nothing, which would let a bad `language` cost a good `reply`.
+  **Client impact:** the `voice.final_transcript` frame no longer carries `language`; a client
+  reading it must stop.
+  `TTS_LANGUAGE` is applied at the **reply** boundary (`order-understanding-service`), not inside the
+  provider: `order.reply` is the only `speak` caller. An earlier revision of this change hardcoded
+  `en` there, which silently overrode any operator who had set `TTS_LANGUAGE` and left the knob dead.
+  With the default resolved at that boundary, `language` is now **required** the whole way down
+  (`TtsService.speak` → `TtsProvider.synthesize`) and `CartesiaTtsProvider`'s `defaultLanguage`
+  constructor param is **gone** — it was unreachable. `toCartesiaLanguage` is correspondingly total
+  (`LangCode → string`): every caller supplies a real code, since a declared one is shape-checked by
+  `parse-spoken-reply` and `str()` guarantees `TTS_LANGUAGE` is non-blank.
+  **Test-typing caveat:** `tsconfig.json` excludes `src/**/*.test.ts`, so `npm run typecheck` does
+  NOT cover tests and several test files carry pre-existing type errors. Two fixtures went stale
+  under this change and only a full (test-inclusive) `tsc` caught them: `realtime-gateway.test.ts`
+  built `OrderReply` without the now-required `language` (and asserted `speak(…, undefined)`, a state
+  production can no longer produce), and two new `order-understanding-service` tests passed
+  `transcript(…, { language })` — a field `SttFinalTranscriptReceived` no longer has, making their
+  "ignores STT's language" claim vacuous. STT is now ruled out by the type, not by those assertions.
+  Follow-up: `parse-spoken-reply`'s `LANG_RE` still admits 3-letter ISO-639-2 codes (`zho`), which
+  reach Cartesia as-is even though it takes ISO-639-1.
+
+## 2026-07-14 — TTS: replace Deepgram with Cartesia + multilingual synthesis
+- **What:** Swapped the TTS provider from Deepgram Aura to Cartesia Sonic and made synthesis
+  language-aware. Removed `@deepgram/sdk` + `deepgram-tts-provider.ts`; added `@cartesia/cartesia-js`
+  + `cartesia-tts-provider.ts` (`CartesiaTtsProvider` calls the `Cartesia` client `tts.generate`,
+  returning one buffer per segment). `TtsProvider.synthesize` gained a `language?` param; the
+  customer's STT-detected language now rides `order.reply` (new `OrderReply.language`) →
+  `TtsService.speak(…, language)` → `synthesize`. `toCartesiaLanguage()` maps the Odoo `res.lang`
+  code (`en_US`) to Cartesia's ISO-639-1 code (`en`), falling back to `TTS_LANGUAGE`.
+- **Why:** Move to Cartesia and let a single multi-locale voice speak replies in the customer's
+  language (`sonic-3.5` is multilingual over 42 languages). The reply text was already produced in
+  the customer's language by the LLM; only the TTS hop lacked the language.
+- **Where:** `src/tts/` (`cartesia-tts-provider.ts` new, `deepgram-tts-provider.ts` removed,
+  `tts-client.ts`, `tts-types.ts`, `tts-service.ts`, tests), `src/events/event-types.ts`
+  (`OrderReply.language`), `src/ordering/order-understanding-service.ts` (emit language),
+  `src/realtime/realtime-gateway.ts` (forward language), `src/config/env.ts` + `.env.example`.
+  Scrubbed illustrative Deepgram mentions in `src/stt/` comments.
+- **Notes:** Config `TTS_PROVIDER` default `cartesia`, new `CARTESIA_API_KEY`, `TTS_MODEL`
+  (`sonic-3.5`), `TTS_VOICE_ID` (a placeholder sample UUID — override with a real multi-locale
+  voice), `TTS_LANGUAGE` (`en` fallback), `TTS_BIT_RATE` (mp3). `TTS_SAMPLE_RATE` now also feeds the
+  Cartesia mp3 container. Client `tts.*` frame contract is unchanged. Known limitation: `segmentText`
+  doesn't sub-segment CJK (no whitespace after `。`) — synthesizes as one larger chunk.
 ## 2026-07-14 — Notify client on server-initiated (idle) voice stop
 - **What:** Added outbound WS message `voice.stopped` (`{ session_id; reason: 'idle' }`) and
   send it when the stopped-talking idle timer fires, just before `handleStop`. A client-sent

@@ -6,7 +6,7 @@ is removed entirely — the agent graph is the only path; there is no feature fl
 
 > **Revision (implemented):** clarify and suggest are **not tools**. The agent has two tools
 > (`search_menu_semantic`, `propose_cart`) and ends a turn either by proposing or by replying
-> with plain text (no tool call) — one merged **`reply`** outcome that serves as both a
+> (no tool call) with strict JSON `{language, reply}` — one merged **`reply`** outcome that serves as both a
 > clarifying question and a recommendation (spoken-only, no structured items). This replaces
 > the `ask_clarification`/`suggest_items` tools and collapses `order.clarification_needed` +
 > `order.suggestion_ready` into a single `order.reply` event. The consecutive-clarification cap
@@ -63,10 +63,55 @@ upstream router — determines the turn's outcome.
 | Turn ends by… | Replaces | Façade `GraphTurnResult` → event |
 |---|---|---|
 | calling `propose_cart(operations)` | `parse` output | `complete` → `order.operations_proposed` |
-| replying with plain text (no tool call) | parse's `needs_clarification` branch **and** the `suggest` node | `reply` → `order.reply` |
+| replying (no tool call) with JSON `{language, reply}` | parse's `needs_clarification` branch **and** the `suggest` node | `reply` → `order.reply` |
 
 (As implemented — see the revision note at the top. `ask_clarification`/`suggest_items` were
 not built; a spoken reply is the single merged terminal alongside `propose_cart`.)
+
+**The reply is still not a tool** — it remains the no-tool-call terminal — but its message body is
+strict JSON rather than bare text:
+
+```json
+{"language": "zh", "reply": "您想要什么饮料?"}
+```
+
+`language` is the ISO-639-1 code of the language the agent *actually wrote* `reply` in; it sets
+`order.reply.language`, which TTS speaks the reply in (`docs/text-to-speech.md` §Multilingual). It is
+the **only** source of the reply's language — the STT-detected code is not consulted, not even as a
+fallback; a reply that declares none falls back to `TTS_LANGUAGE`.
+
+**`language` comes first for a generation-order reason.** The model emits JSON left to right, so a
+`reply`-first shape let it write the entire reply — drifting into whatever language
+`conversation_history` was in — and only then label what it had already written, making `language` an
+accurate description of the drift rather than a guard against it. This showed up as a
+Chinese → Chinese → English session still being answered in Chinese. Emitting the code first forces
+the choice before any reply token exists and conditions the reply on it. The parser is
+order-agnostic, so this ordering is enforced only by the prompt.
+
+The agent is given **no language hint** in its user context — deliberately. The STT-detected code
+was previously passed as a `language` field, but it tags nearly every turn `en`, so it argued the
+customer spoke English even on a plainly Chinese utterance; a wrong hint is worse than none. The
+prompt's LANGUAGE section instead makes `customer_text` the sole authority (it is the actual
+evidence), requires the reply to match the LATEST utterance so a mid-conversation switch is
+honoured, and allows falling back to the last identifiable utterance's language only when the
+current one is too short to read (`"OK"`, `"two"`, a bare item name).
+
+`ordering/graph/parse-spoken-reply.ts` parses the terminal and degrades **per-field**, so a format
+slip is never a dropped reply:
+
+| Agent emitted | Outcome |
+|---|---|
+| `{"language":"zh","reply":"…"}` | reply spoken in `zh` |
+| `{"reply":"…","language":"zh"}` | reply spoken in `zh` — the prompt asks for language-first, but the parser accepts either order |
+| `{"reply":"…"}` | reply spoken in `TTS_LANGUAGE` (the fallback when none is declared) |
+| `{"language":"Chinese","reply":"…"}` | reply spoken in `TTS_LANGUAGE`; the off-format code is dropped |
+| `Sure! {"language":"zh","reply":"…"}` | the object is unwrapped from the prose; reply spoken in `zh` |
+| plain text (no JSON) | text spoken as-is, in `TTS_LANGUAGE` |
+| malformed/truncated JSON | raw text spoken (better than dropping a reply) |
+| valid JSON, no usable `reply` | `agent_no_terminal` — a blob is never read aloud |
+
+The parser reads the **outermost `{…}` span** rather than requiring the message to be exactly the
+object, so prose wrapped around it (`Sure! {…}`) is dropped instead of being read aloud verbatim.
 
 The façade, `order-understanding-service.ts`, and all event contracts are
 **unchanged** — only *who* decides the outcome moves from fixed routing to the agent.
@@ -228,7 +273,7 @@ No `ORDERING_AGENT` flag: `build-graph` unconditionally builds the agent graph (
   on the agent path (§3.2).
 - **Clarify + suggest merged into one `reply` outcome (revision).** The agent has two tools
   (`search_menu_semantic`, `propose_cart`); it ends a turn either by proposing or by replying
-  with plain text. The reply is spoken-only (no structured `suggested_items`). One event
+  with a spoken message. The reply is spoken-only (no structured `suggested_items`). One event
   `order.reply` replaces `order.clarification_needed` + `order.suggestion_ready` (WS protocol
   change). `GraphTurnResult` = `complete | reply | junk | fail`.
 - **Consecutive-clarification cap dropped (revision).** With clarify/suggest merged, a

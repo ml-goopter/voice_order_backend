@@ -37,8 +37,14 @@ let idCounter = 0;
 const call = (name: string, args: unknown): ToolCall => ({ id: `c${idCounter++}`, name, arguments: args });
 const search = (query: string): ChatResult => ({ toolCalls: [call('search_menu_semantic', { query })] });
 const propose = (operations: unknown[]): ChatResult => ({ toolCalls: [call('propose_cart', { operations })] });
-/** The agent ends the turn by SPEAKING (no tool call): a clarifying question or a recommendation. */
+/** The agent ends the turn by SPEAKING (no tool call). Plain text is the DEGRADE path (the prompt
+ *  asks for JSON) — still a valid reply, just with no declared language. */
 const reply = (text: string): ChatResult => ({ text, toolCalls: [] });
+/** The agent speaking in the format it is actually prompted for: strict JSON {reply, language}. */
+const jsonReply = (text: string, language: string): ChatResult => ({
+  text: JSON.stringify({ reply: text, language }),
+  toolCalls: [],
+});
 
 /** Captured agent user-context (the seed `user` message JSON) for one turn. */
 interface TurnContext {
@@ -374,6 +380,50 @@ describe('OrderUnderstandingService', () => {
     expect(replies).toHaveLength(1);
     expect(replies[0]).toMatchObject({ cart_id: 'cart_1', request_id: 'req_1', reply: 'How about a Coke?' });
     expect(llm.chatCalls).toBe(2); // one search, then the spoken reply
+  });
+
+  it("speaks only the reply text, in the agent's declared language", async () => {
+    // The STT language is unreliable (the default AssemblyAI streaming model says `en` for
+    // everything), so the agent — which wrote the reply — declares the language it used. There is
+    // no STT language to out-rank here: `SttFinalTranscriptReceived` no longer carries one at all,
+    // so the type system, not this test, is what rules STT out as a source.
+    const { service, bus } = await makeService([[jsonReply('您想要什么饮料?', 'zh')]], cartWith(0));
+    const replies = collect(bus, 'order.reply');
+
+    await service.handleFinalTranscript(transcript('我想要一个鸡肉汉堡'));
+
+    expect(replies).toHaveLength(1);
+    // The JSON envelope is parsed away: the customer hears the words, not the blob.
+    expect(replies[0]).toMatchObject({ reply: '您想要什么饮料?', language: 'zh' });
+  });
+
+  it('falls back to TTS_LANGUAGE when the agent declares none', async () => {
+    // A plain-text reply declares no language, so the configured default (`TTS_LANGUAGE`, `en`
+    // here) decides what it is spoken in — never a hardcoded `en`, so an operator who set
+    // TTS_LANGUAGE still gets their language.
+    const { service, bus } = await makeService([[reply('One without mayo, or both?')]], cartWith(0));
+    const replies = collect(bus, 'order.reply');
+
+    await service.handleFinalTranscript(transcript('two burgers no mayo'));
+
+    expect(replies[0]).toMatchObject({ reply: 'One without mayo, or both?', language: 'en' });
+  });
+
+  it('does not carry an agent-declared language into a later turn that declares none', async () => {
+    // A declaration is evidence about the turn that made it, so it must not outlive that turn.
+    // Turn 2's agent declares nothing, so its English reply must fall back to TTS_LANGUAGE (`en`)
+    // — if turn 1's `zh` survived, the English sentence would be spoken in Chinese.
+    const { service, bus } = await makeService(
+      [[jsonReply('您想要什么饮料?', 'zh')], [reply('Sure, anything else?')]],
+      cartWith(0),
+    );
+    const replies = collect(bus, 'order.reply');
+
+    await service.handleFinalTranscript(transcript('我想要一个鸡肉汉堡'));
+    await service.handleFinalTranscript(transcript('yes that is all thanks'));
+
+    expect(replies[0]).toMatchObject({ reply: '您想要什么饮料?', language: 'zh' });
+    expect(replies[1]).toMatchObject({ reply: 'Sure, anything else?', language: 'en' });
   });
 
   it("records the agent's reply to history so the next turn can resolve a reference to it", async () => {

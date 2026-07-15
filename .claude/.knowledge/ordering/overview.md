@@ -39,10 +39,17 @@ It is a **pure proposer**; the Cart Module validates and applies.
     user context (`buildAgentMessages` in `llm/agent-prompt-builder.ts`: `customer_text`,
     `current_cart`, `conversation_history` — candidates are NOT pre-fetched). It ends the
     turn one of two ways: by calling **`propose_cart`** (structured operations), or by
-    **replying with plain text** (no tool call) — a single "reply" outcome serving as both
-    a clarifying question and a recommendation. Bounded by `LIMITS.maxAgentSteps` (8, sized to
-    allow several sequential per-item searches before a propose);
-    exhaustion → `failure_reason='agent_step_limit'`; an empty reply → `agent_no_terminal`.
+    **replying** (no tool call) — a single "reply" outcome serving as both a clarifying question
+    and a recommendation. A reply is strict JSON `{reply, language}` parsed by
+    `graph/parse-spoken-reply.ts`, which writes the agent-declared language onto the turn-scoped
+    `reply_language` channel (cleared by `normalize`, so a declaration never outlives its turn) —
+    the ONLY source of the reply's language, defaulted to `TTS_LANGUAGE` by the façade (the sole
+    `speak` caller, so that is where the knob is applied). The graph takes no
+    STT `language` input at all. That parser degrades PER-FIELD — non-JSON text is spoken as-is, an
+    off-format `language` costs only the language — so a format slip never drops a reply.
+    Bounded by `LIMITS.maxAgentSteps` (8, sized to allow several sequential per-item searches
+    before a propose); exhaustion → `failure_reason='agent_step_limit'`; an empty reply, or a
+    JSON blob carrying no usable `reply`, → `agent_no_terminal`.
   - **tools** (`tools/run-tools.ts`) executes the requested tool calls, appends their
     results to the turn scratchpad, and loops back to the agent. Two tools
     (`tools/tool-specs.ts`): `search_menu_semantic` (wraps `menu.getCandidates`, loopable)
@@ -100,6 +107,9 @@ It is a **pure proposer**; the Cart Module validates and applies.
 - `graph/intents.ts` — `intentSchema` (`order`/`suggest`/`junk`) + `INTENT_ROUTE` junk-gate
   (order/suggest → load_cart, junk → END).
 - `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` on any node throw.
+- `graph/parse-spoken-reply.ts` — pure parser for the agent's spoken terminal (the outermost `{…}`
+  span → `SpokenReply`), degrading per-field so a format slip never drops a reply nor reads JSON
+  aloud.
 - `nodes/*.node.ts` — `classify-intent` (LLM intent classifier, defaults to `order`),
   `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)
 - `tools/tool-specs.ts` — `search_menu_semantic` + `propose_cart` specs; `tools/run-tools.ts` —
@@ -108,7 +118,9 @@ It is a **pure proposer**; the Cart Module validates and applies.
   `order-graph-input` (CartView/HistoryTurn types), `clarification`/`proposal`, `zod-error`.
 - `order-understanding-service.test.ts` — happy path, edits, spoken-reply fire-and-forget
   (reply then answered next transcript), force-order after a reply, propose validation retry,
-  step-limit fail, per-cart FIFO, history persistence, junk short-circuit.
+  step-limit fail, per-cart FIFO, history persistence, junk short-circuit, reply language
+  (agent-declared wins; `en` default ignores STT; a declaration never leaks into a later turn).
+- `graph/parse-spoken-reply.test.ts` — the reply terminal's degradation matrix.
 
 ## Not done yet
 - Business validation of operations against candidates (unknown key → clarify) is deferred to

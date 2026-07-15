@@ -45,8 +45,9 @@ export class RealtimeGateway {
         request_id: e.request_id,
         reply: e.reply,
       });
-      // Speak the reply: synthesize with TTS and stream the audio back over the same socket.
-      this.tts.speak(c, { session_id: e.session_id, request_id: e.request_id }, e.reply);
+      // Speak the reply: synthesize with TTS and stream the audio back over the same socket. The
+      // agent-declared language lets a multi-locale voice speak it in the language it was written in.
+      this.tts.speak(c, { session_id: e.session_id, request_id: e.request_id }, e.reply, e.language);
     });
 
     this.bus.on('cart.operation_rejected', (e) => {

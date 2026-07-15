@@ -19,6 +19,7 @@ function conn(session_id = 's1'): FakeConn {
 interface Call {
   text: string;
   signal: AbortSignal;
+  language: string | undefined;
   resolve: (b: Buffer) => void;
   reject: (e: unknown) => void;
 }
@@ -30,8 +31,8 @@ function controllableProvider(overrides: Partial<Pick<TtsProvider, 'encoding' | 
     name: 'fake',
     encoding: overrides.encoding ?? 'mp3',
     ...(overrides.sampleRate !== undefined ? { sampleRate: overrides.sampleRate } : {}),
-    synthesize(text: string, signal: AbortSignal): Promise<Buffer> {
-      return new Promise<Buffer>((resolve, reject) => calls.push({ text, signal, resolve, reject }));
+    synthesize(text: string, signal: AbortSignal, language?: string): Promise<Buffer> {
+      return new Promise<Buffer>((resolve, reject) => calls.push({ text, signal, language, resolve, reject }));
     },
   };
   return { provider, calls };
@@ -46,7 +47,7 @@ describe('TtsService', () => {
   it('emits audio_start → one standalone-mp3 audio_chunk per segment → audio_end', async () => {
     const { provider, calls } = controllableProvider();
     const c = conn();
-    new TtsService(provider).speak(c, ctx, 'One. Two.');
+    new TtsService(provider).speak(c, ctx, 'One. Two.', 'en');
 
     // audio_start goes out up front; the first segment is already being synthesized.
     expect(c.send).toHaveBeenNthCalledWith(1, {
@@ -86,7 +87,7 @@ describe('TtsService', () => {
   it('advertises sample_rate on audio_start for raw-PCM encodings', () => {
     const { provider } = controllableProvider({ encoding: 'linear16', sampleRate: 24000 });
     const c = conn();
-    new TtsService(provider).speak(c, ctx, 'hi');
+    new TtsService(provider).speak(c, ctx, 'hi', 'en');
     expect(c.send).toHaveBeenNthCalledWith(1, {
       type: 'tts.audio_start',
       session_id: 's1',
@@ -99,15 +100,15 @@ describe('TtsService', () => {
   it('emits tts.error and stops when a segment fails to synthesize', async () => {
     const { provider, calls } = controllableProvider();
     const c = conn();
-    new TtsService(provider).speak(c, ctx, 'hi');
+    new TtsService(provider).speak(c, ctx, 'hi', 'en');
     await flush();
-    calls[0]!.reject(new Error('deepgram_down'));
+    calls[0]!.reject(new Error('cartesia_down'));
     await flush();
     expect(c.send).toHaveBeenLastCalledWith({
       type: 'tts.error',
       session_id: 's1',
       request_id: 'r1',
-      message: 'deepgram_down',
+      message: 'cartesia_down',
     });
     // No audio_end after an error.
     expect(c.send.mock.calls.some(([m]) => m.type === 'tts.audio_end')).toBe(false);
@@ -116,7 +117,7 @@ describe('TtsService', () => {
   it('skips a chunk for an empty audio buffer (e.g. noop provider) but still ends', async () => {
     const { provider, calls } = controllableProvider();
     const c = conn();
-    new TtsService(provider).speak(c, ctx, 'hi');
+    new TtsService(provider).speak(c, ctx, 'hi', 'en');
     await flush();
     calls[0]!.resolve(Buffer.alloc(0));
     await flush();
@@ -124,10 +125,20 @@ describe('TtsService', () => {
     expect(c.send).toHaveBeenNthCalledWith(2, { type: 'tts.audio_end', session_id: 's1', request_id: 'r1' });
   });
 
+  it('forwards the reply language to the provider (per-segment)', async () => {
+    const { provider, calls } = controllableProvider();
+    const c = conn();
+    new TtsService(provider).speak(c, ctx, 'Un. Deux.', 'fr_FR');
+    expect(calls[0]!.language).toBe('fr_FR');
+    calls[0]!.resolve(Buffer.from([1]));
+    await flush();
+    expect(calls[1]!.language).toBe('fr_FR');
+  });
+
   it('ignores an empty / whitespace reply', () => {
     const { provider, calls } = controllableProvider();
     const c = conn();
-    new TtsService(provider).speak(c, ctx, '   ');
+    new TtsService(provider).speak(c, ctx, '   ', 'en');
     expect(c.send).not.toHaveBeenCalled();
     expect(calls).toHaveLength(0);
   });
@@ -137,9 +148,9 @@ describe('TtsService', () => {
     const c = conn();
     const svc = new TtsService(provider);
 
-    svc.speak(c, { session_id: 's1', request_id: 'r1' }, 'first');
+    svc.speak(c, { session_id: 's1', request_id: 'r1' }, 'first', 'en');
     await flush();
-    svc.speak(c, { session_id: 's1', request_id: 'r2' }, 'second');
+    svc.speak(c, { session_id: 's1', request_id: 'r2' }, 'second', 'en');
 
     expect(calls[0]!.signal.aborted).toBe(true);
     // The second reply started its own stream (fresh audio_start with the new request_id).
@@ -154,9 +165,9 @@ describe('TtsService', () => {
   it('does not abort across different sessions', async () => {
     const { provider, calls } = controllableProvider();
     const svc = new TtsService(provider);
-    svc.speak(conn('s1'), { session_id: 's1', request_id: 'r1' }, 'a');
+    svc.speak(conn('s1'), { session_id: 's1', request_id: 'r1' }, 'a', 'en');
     await flush();
-    svc.speak(conn('s2'), { session_id: 's2', request_id: 'r2' }, 'b');
+    svc.speak(conn('s2'), { session_id: 's2', request_id: 'r2' }, 'b', 'en');
     expect(calls[0]!.signal.aborted).toBe(false);
   });
 
@@ -164,7 +175,7 @@ describe('TtsService', () => {
     const { provider, calls } = controllableProvider();
     const c = conn();
     const svc = new TtsService(provider);
-    svc.speak(c, { session_id: 's1', request_id: 'r1' }, 'reply');
+    svc.speak(c, { session_id: 's1', request_id: 'r1' }, 'reply', 'en');
     await flush();
     svc.cancel('s1');
     expect(calls[0]!.signal.aborted).toBe(true);
@@ -181,7 +192,7 @@ describe('TtsService', () => {
     const { provider, calls } = controllableProvider();
     const c = conn();
     const svc = new TtsService(provider);
-    svc.speak(c, { session_id: 's1', request_id: 'r1' }, 'hi');
+    svc.speak(c, { session_id: 's1', request_id: 'r1' }, 'hi', 'en');
     await flush();
     calls[0]!.resolve(Buffer.from([1]));
     await flush();

@@ -5,6 +5,7 @@ import type { GraphTurnResult } from './order-graph.js';
 import { OrderGraph } from './order-graph.js';
 import { CartTurnQueue } from './cart-turn-queue.js';
 import { logger } from '../config/logger.js';
+import { config } from '../config/env.js';
 import { messageOf } from '../shared/errors.js';
 
 /**
@@ -43,7 +44,6 @@ export class OrderUnderstandingService {
         pos_config_id: e.pos_config_id,
         text: e.text,
         supported_languages: [],
-        ...(e.language !== undefined ? { language: e.language } : {}),
       });
     } catch (error) {
       // The failing node already logged order.node_failed with which state threw; this is the
@@ -71,17 +71,23 @@ export class OrderUnderstandingService {
         log.warn('order.turn_failed', { reason: result.reason });
         this.fail(e, result.reason);
         return;
-      case 'reply':
+      case 'reply': {
         // The agent ended by speaking to the customer (a clarifying question or a recommendation).
         // Fire-and-forget: emit the reply and end the turn. The customer's answer arrives as the
         // next transcript; the reply is already recorded to history so the next turn resolves it.
+        // The agent wrote the reply, so it is the only authority on the reply's language; STT's
+        // detected language is not consulted at all (unreliable — see docs/text-to-speech.md).
+        // `TTS_LANGUAGE` when it declared none, so TTS always has a language to speak: this is the
+        // only `speak` caller, so defaulting here is what keeps that knob reachable at all.
         this.bus.emit('order.reply', {
           cart_id: e.cart_id,
           session_id: e.session_id,
           request_id: e.request_id,
           reply: result.reply,
+          language: result.language ?? config.ttsLanguage,
         });
         return;
+      }
       case 'complete':
         this.propose(e, result);
         return;

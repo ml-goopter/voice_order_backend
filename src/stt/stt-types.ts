@@ -1,8 +1,8 @@
-import type { LangCode } from '../shared/types.js';
-
 export interface SttStreamHandlers {
   onPartial(text: string): void;
-  onFinal(text: string, language?: LangCode): void;
+  /** No language: the provider's per-turn detection is unreliable and nothing consumes it — the
+   *  agent declares the reply's language instead (docs/text-to-speech.md §Multilingual). */
+  onFinal(text: string): void;
   onError(error: Error): void;
 }
 

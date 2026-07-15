@@ -13,6 +13,7 @@ import { loadCart, buildCartView } from '../nodes/load-cart.node.js';
 import { buildAgentMessages } from '../../llm/agent-prompt-builder.js';
 import { TOOL_SPECS } from '../tools/tool-specs.js';
 import { runTools } from '../tools/run-tools.js';
+import { parseSpokenReply } from './parse-spoken-reply.js';
 
 export interface GraphDeps {
   menu: MenuService;
@@ -21,13 +22,14 @@ export interface GraphDeps {
   carts: CartCache;
 }
 
-/** Build the turn's seed messages from graph state (cart is loaded before the agent runs). */
+/** Build the turn's seed messages from graph state (cart is loaded before the agent runs). The
+ *  `language` channel is deliberately NOT passed: it holds the unreliable STT-detected code, and
+ *  the agent reads the language off `customer_text` instead (see agent-prompt-builder). */
 function seedMessages(s: OrderStateType): AgentMessage[] {
   return buildAgentMessages({
     customer_text: s.customer_text,
     current_cart: s.cart_view!,
     history: s.history,
-    ...(s.language !== undefined ? { language: s.language } : {}),
   });
 }
 
@@ -57,6 +59,7 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
       customer_text: normalizeTranscript(s.customer_text),
       output: null,
       reply: null,
+      reply_language: undefined,
       agent_messages: [],
       agent_steps: 0,
       failure_reason: undefined,
@@ -84,8 +87,7 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
     .addNode('agent', node('agent', async (s) => {
       const step = s.agent_steps + 1;
       if (step > LIMITS.maxAgentSteps) return { failure_reason: 'agent_step_limit' };
-      const seeded = s.agent_messages.length === 0 ? seedMessages(s) : [];
-      const messages = [...s.agent_messages, ...seeded];
+      const messages = s.agent_messages.length === 0 ? seedMessages(s) : s.agent_messages;
       const res = await llm.chat(messages, TOOL_SPECS);
       const assistant: AgentMessage = {
         role: 'assistant',
@@ -93,11 +95,15 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
         ...(res.toolCalls.length > 0 ? { tool_calls: res.toolCalls } : {}),
       };
       const base = { agent_messages: [...messages, assistant], agent_steps: step };
-      // No tool call → the agent ended the turn by speaking. Capture the reply (empty text is a
-      // degenerate terminal → fail).
+      // No tool call → the agent ended the turn by speaking. The reply is strict JSON
+      // {reply, language}; parse it and record the declared language on its own turn-scoped channel
+      // (never on the `language` input channel — that would outlive the turn). Non-JSON text
+      // degrades to being spoken as-is with no language; a blob with no usable reply is the same
+      // degenerate terminal as empty text was.
       if (res.toolCalls.length === 0) {
-        const text = res.text?.trim() ? res.text : null;
-        return text !== null ? { ...base, reply: text } : { ...base, failure_reason: 'agent_no_terminal' };
+        const { reply, language } = parseSpokenReply(res.text);
+        if (reply === null) return { ...base, failure_reason: 'agent_no_terminal' };
+        return { ...base, reply, ...(language !== undefined ? { reply_language: language } : {}) };
       }
       return base;
     }))

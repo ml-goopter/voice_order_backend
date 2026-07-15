@@ -1,4 +1,4 @@
-import type { RequestId, SessionId } from '../shared/types.js';
+import type { LangCode, RequestId, SessionId } from '../shared/types.js';
 import type { ClientConnection } from '../realtime/client-registry.js';
 import type { TtsProvider } from './tts-types.js';
 import { segmentText } from './segment-text.js';
@@ -30,7 +30,7 @@ export class TtsService {
 
   constructor(private readonly provider: TtsProvider) {}
 
-  speak(conn: ClientConnection, ctx: TtsContext, text: string): void {
+  speak(conn: ClientConnection, ctx: TtsContext, text: string, language: LangCode): void {
     const segments = segmentText(text);
     if (segments.length === 0) return;
 
@@ -46,7 +46,7 @@ export class TtsService {
     const controller = new AbortController();
     this.inflight.set(ctx.session_id, controller);
 
-    void this.stream(conn, ctx, segments, controller, log).catch((err) =>
+    void this.stream(conn, ctx, segments, controller, log, language).catch((err) =>
       log.error('tts.stream_error', { error: err instanceof Error ? err.message : String(err) }),
     );
   }
@@ -57,6 +57,7 @@ export class TtsService {
     segments: string[],
     controller: AbortController,
     log: ReturnType<typeof logger.child>,
+    language: LangCode,
   ): Promise<void> {
     const { signal } = controller;
     try {
@@ -74,7 +75,7 @@ export class TtsService {
 
         let audio: Buffer;
         try {
-          audio = await this.provider.synthesize(segment, signal);
+          audio = await this.provider.synthesize(segment, signal, language);
         } catch (err) {
           if (signal.aborted) return; // abort surfaced as a rejection — stay silent
           conn.send({

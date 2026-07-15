@@ -32,7 +32,7 @@ export function createSttProvider(): SttProvider {
         return new NoopSttProvider();
       }
       return new AssemblyAiSttProvider();
-    // case 'deepgram': return new DeepgramProvider();
+    // Add another provider here: a new class + one `case`.
     default:
       return new NoopSttProvider();
   }

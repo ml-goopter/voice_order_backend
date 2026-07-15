@@ -37,9 +37,22 @@ deterministic source of truth.
   request must echo unchanged or it 400s. A tool-calls-only assistant turn also omits
   `content` (a null content beside `tool_calls` is rejected by some compat endpoints).
 - `agent-prompt-builder.ts` builds the agent's seed transcript: a system message fixing the
-  tool workflow (search first, then EITHER `propose_cart` OR a plain spoken reply) and the
-  operation contract (keys from search results, edits target `line_id`, only `add_item` omits
-  it), plus a user message with the utterance, `current_cart`, and `conversation_history`.
+  tool workflow (search first, then EITHER `propose_cart` OR a spoken reply emitted as strict
+  JSON `{language, reply}`, where `language` is the ISO-639-1 code of the language the agent
+  wrote the reply in — parsed by `ordering/graph/parse-spoken-reply.ts` and forwarded to TTS)
+  and the operation contract (keys from search results, edits target `line_id`, only `add_item`
+  omits it), plus a user message with the utterance, `current_cart`, and `conversation_history`.
+  A dedicated **LANGUAGE** section makes `customer_text` the sole authority on which language to
+  reply in and requires matching the LATEST utterance (so a mid-conversation switch is honoured;
+  history is context for intent, not evidence of language). No language hint is passed in the user
+  context — the STT code tags nearly every turn `en`, and a wrong hint is worse than none.
+  **`language` is demanded as the FIRST JSON field on purpose.** The model generates left to
+  right, so the earlier `{reply, language}` shape let it write the whole reply — drifting into
+  `conversation_history`'s language — and only then label what it had written, so `language`
+  described the drift instead of preventing it (observed: a zh → zh → en session answered in zh).
+  Emitting the code first forces the choice before any reply token exists. The ordering is a
+  generation-time device enforced ONLY by the prompt: `parse-spoken-reply.ts` JSON.parses and
+  accepts either order, so a model that slips back to reply-first still keeps its language.
   Candidates are NOT pre-fetched — the agent retrieves them via `search_menu_semantic`.
   The system prompt also embeds the **JSON Schema for a `propose_cart` operation**, generated
   from `cartOperationSchema` via `z.toJSONSchema` (with a small `scrubSchema` pass to drop the

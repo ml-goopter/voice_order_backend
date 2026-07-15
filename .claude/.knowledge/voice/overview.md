@@ -21,6 +21,8 @@ that may eventually touch the cart (§11 invariant).
   to the client (display twin of the partial — replaces it, display-only) and mints a
   `request_id` to emit `stt.final_transcript.received` (both skipped once the session is
   terminal, so a final arriving after a timeout/failure never reaches the client or cart).
+  Neither carries a language: STT's per-turn detection is unreliable and is not plumbed
+  anywhere — the agent declares the reply's language (docs/text-to-speech.md §Multilingual).
   Minting the `request_id` here is the one join point from a socket (`session_id`) to the
   turn (`request_id`) it spawns, so it also logs a `voice.final_transcript` line
   `{ request_id, session_id, cart_id }` — the anchor that ties the event-bus correlation

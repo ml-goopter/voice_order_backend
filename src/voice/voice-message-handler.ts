@@ -46,7 +46,7 @@ export class VoiceMessageHandler {
           }
         },
         // Final: the one signal that may touch the cart (§11 invariant).
-        onFinal: (text, language) => {
+        onFinal: (text) => {
           // A final that lands after the session already went terminal (timeout-failed,
           // ended, or interrupted) must not touch the cart — the customer was already
           // asked to repeat (§11.2 C).
@@ -58,7 +58,6 @@ export class VoiceMessageHandler {
             type: 'voice.final_transcript',
             session_id: session.session_id,
             text,
-            ...(language !== undefined ? { language } : {}),
           });
           // Mint the turn id here and log it against the session so a developer can
           // pivot from a socket (session_id) to the turn (request_id) it spawned — the
@@ -75,7 +74,6 @@ export class VoiceMessageHandler {
             cart_id: session.cart_id,
             pos_config_id: session.pos_config_id,
             text,
-            ...(language !== undefined ? { language } : {}),
           });
           // A final that arrives after voice.stop clears the §11.2 C timeout and
           // closes out the session cleanly.

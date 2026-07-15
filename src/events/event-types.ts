@@ -7,13 +7,14 @@ import type { Cart } from '../cart/cart-types.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 import type { OrderProposal } from '../ordering/schemas/proposal.js';
 
+/** No `language`: STT's per-turn language detection is not used anywhere (docs/text-to-speech.md
+ *  §Multilingual). The agent declares the reply's language instead — see `OrderReply.language`. */
 export interface SttFinalTranscriptReceived {
   request_id: RequestId;
   session_id: SessionId;
   cart_id: CartId;
   pos_config_id: PosConfigId;
   text: string;
-  language?: LangCode;
 }
 
 export interface OrderOperationsProposed {
@@ -35,6 +36,9 @@ export interface OrderReply {
   request_id: RequestId;
   /** The spoken reply (a question or a recommendation). */
   reply: string;
+  /** The language the AGENT declared it wrote `reply` in, so TTS speaks it in the language it was
+   *  actually written in. `en` when it declared none. Never sourced from STT detection. */
+  language: LangCode;
 }
 
 export interface CartUpdated {
