@@ -14,6 +14,15 @@ is removed entirely — the agent graph is the only path; there is no feature fl
 > within-turn runaway). Sections below are kept for rationale; where they mention the four-tool
 > design, the two-tool + reply-outcome shape above is authoritative.
 
+> **Revision 2 (implemented):** the intent set is now **binary** — `intentSchema` is
+> `['service', 'junk']` and `INTENT_ROUTE` is `{ service: 'load_cart', junk: END }`. Demoting
+> classify to a junk-gate (below) had already made `order` and `suggest` route identically, and
+> nothing downstream read the difference (`interpret` only asks `intent === 'junk'`), so the
+> three-way split was a distinction with no behavior behind it — it only gave the classifier a
+> way to be wrong. `service` now covers ordering, edits, recommendations, and menu questions.
+> The degrade-to-default and force-after-a-reply behaviors are unchanged in substance; both now
+> yield `service`. Where sections below say `order`/`suggest`, read `service`.
+
 Scope: `src/ordering/graph/`, `src/ordering/nodes/`, `src/ordering/tools/` (new),
 `src/llm/` (provider tool-calling), `src/config/`. The service loop, event
 contracts, cart module, and menu store queries are unchanged in Phase 1.

@@ -22,18 +22,22 @@ It is a **pure proposer**; the Cart Module validates and applies.
   `StateGraph` implementing an **agent tool-calling loop** (docs/agent-tools.md), NOT a
   fixed retrieve→parse pipeline: `normalize → classify → load_cart → agent ⇄ tools →
   finalize → END`.
-  - **classify** is a **junk-gate** only. It labels the utterance `order`/`suggest`/`junk`
+  - **classify** is a **binary junk-gate** only. It labels the utterance `service`/`junk`
     via a cheap first-hop LLM call on its OWN provider/creds (`INTENT_LLM_*` env, falling
     back to `LLM_*`; `createIntentLlmProvider` → `GraphDeps.intentLlm` →
     `nodes/classify-intent.node.ts`), routing via the one table-driven conditional edge
-    `INTENT_ROUTE` (`graph/intents.ts`, single source of truth). `order` AND `suggest`
-    both route into the pipeline (`load_cart` → `agent`) — the agent decides the outcome;
-    `junk` → straight to `END` (a non-orderable utterance is NOT recorded to history, so it
-    can't pollute later context). The classifier DEGRADES to `order` on any failure (so a
-    real order is never dropped; the `stub` provider therefore always yields `order`). When
-    the previous turn ended in a spoken reply (the last `history` entry has `agent_reply`),
-    classify **forces `order`** and skips the LLM call, so a terse follow-up isn't misrouted
-    to junk.
+    `INTENT_ROUTE` (`graph/intents.ts`, single source of truth). `service` — anything a
+    server could act on (ordering, edits, recommendations, menu questions) — routes into the
+    pipeline (`load_cart` → `agent`), where the agent decides the outcome; `junk` → straight
+    to `END` (a non-orderable utterance is NOT recorded to history, so it can't pollute later
+    context). **The set is binary because that is the only distinction anything downstream
+    reads:** `interpret` only asks `intent === 'junk'`, and the agent works out what the
+    customer wants on its own, so a finer label (the former `order`/`suggest` split) routed
+    identically and was consumed by no one. The classifier DEGRADES to `service` on any
+    failure (so a real order is never dropped; the `stub` provider therefore always yields
+    `service`). When the previous turn ended in a spoken reply (the last `history` entry has
+    `agent_reply`), classify **forces `service`** and skips the LLM call, so a terse
+    follow-up isn't misrouted to junk.
   - **agent** (`nodes` inline in `build-graph.ts`) runs one LLM tool-calling turn via
     `LlmProvider.chat`. On first entry it seeds the transcript with the system prompt +
     user context (`buildAgentMessages` in `llm/agent-prompt-builder.ts`: `customer_text`,
@@ -104,20 +108,20 @@ It is a **pure proposer**; the Cart Module validates and applies.
 - `order-understanding-service.ts`, `order-graph.ts` (façade), `cart-turn-queue.ts`,
   `register-handlers.ts`.
 - `graph/state.ts`, `graph/build-graph.ts` — LangGraph state + graph wiring (agent/tools nodes).
-- `graph/intents.ts` — `intentSchema` (`order`/`suggest`/`junk`) + `INTENT_ROUTE` junk-gate
-  (order/suggest → load_cart, junk → END).
+- `graph/intents.ts` — `intentSchema` (`service`/`junk`) + `INTENT_ROUTE` binary junk-gate
+  (service → load_cart, junk → END).
 - `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` on any node throw.
 - `graph/parse-spoken-reply.ts` — pure parser for the agent's spoken terminal (the outermost `{…}`
   span → `SpokenReply`), degrading per-field so a format slip never drops a reply nor reads JSON
   aloud.
-- `nodes/*.node.ts` — `classify-intent` (LLM intent classifier, defaults to `order`),
+- `nodes/*.node.ts` — `classify-intent` (LLM junk-gate classifier, defaults to `service`),
   `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)
 - `tools/tool-specs.ts` — `search_menu_semantic` + `propose_cart` specs; `tools/run-tools.ts` —
   the `tools` node executing them.
 - `schemas/*.ts` — `cart-operation` (zod), `order-graph-output` (operations-only, zod),
   `order-graph-input` (CartView/HistoryTurn types), `clarification`/`proposal`, `zod-error`.
 - `order-understanding-service.test.ts` — happy path, edits, spoken-reply fire-and-forget
-  (reply then answered next transcript), force-order after a reply, propose validation retry,
+  (reply then answered next transcript), force-service after a reply, propose validation retry,
   step-limit fail, per-cart FIFO, history persistence, junk short-circuit, reply language
   (agent-declared wins; `en` default ignores STT; a declaration never leaks into a later turn).
 - `graph/parse-spoken-reply.test.ts` — the reply terminal's degradation matrix.

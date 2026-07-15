@@ -1,15 +1,15 @@
 # Order Understanding — LangGraph Internals
 
-A deep reference for the `@langchain/langgraph` graph that turns a final transcript
-into proposed cart operations (or a clarification request). Covers the graph
-topology, every state channel, the interrupt/resume mechanism, the checkpointer
-thread model, and error handling.
+A deep reference for the `@langchain/langgraph` graph that turns a final transcript into
+proposed cart operations or a spoken reply. Covers the graph topology, every state channel,
+the agent ⇄ tools loop, the checkpointer thread model, and error handling.
 
-Scope: `src/ordering/graph/` (`build-graph.ts`, `state.ts`, `instrument.ts`),
-`src/ordering/order-graph.ts` (the façade), and the `src/ordering/nodes/*` invoked
-by the graph. The service loop that *drives* the graph
-(`order-understanding-service.ts`) is covered only where it touches graph behavior —
-see `ordering/overview.md` for the surrounding module.
+Scope: `src/ordering/graph/` (`build-graph.ts`, `state.ts`, `intents.ts`, `instrument.ts`,
+`parse-spoken-reply.ts`), `src/ordering/order-graph.ts` (the façade), `src/ordering/tools/`
+(the agent's tools), and the `src/ordering/nodes/*` invoked by the graph. The service loop that
+*drives* the graph (`order-understanding-service.ts`) is covered only where it touches graph
+behavior — see `ordering/overview.md` for the surrounding module. The design rationale for the
+agent rework lives in `docs/agent-tools.md`; this doc describes the code as it stands.
 
 ---
 
@@ -30,19 +30,20 @@ OrderGraph.start()  ──►  graph.invoke(input, threadConfig)
         │              └──────────────────────┘
         ▼
 GraphTurnResult: { status: 'complete', output, base_version }
-             or  { status: 'clarify', question, options? }
+             or  { status: 'reply', reply, language? }
+             or  { status: 'junk' }
+             or  { status: 'fail', reason }
 ```
 
-The graph is a **pure proposer**. It never mutates the cart; it reads the cart
-snapshot, asks the LLM for operations, validates their *shape*, and returns them.
-Business validation (does the key exist, is the item available) is the Cart
-Validator's job downstream.
+The graph is a **pure proposer**. It never mutates the cart; it reads the cart snapshot, lets
+the agent search the menu and decide, and returns either operations or words. Business
+validation (does the key exist, is the item available) is the Cart Validator's job downstream.
 
 ---
 
 ## 2. Graph topology
 
-Defined in `graph/build-graph.ts` → `buildOrderGraph({ menu, llm, carts })`.
+Defined in `graph/build-graph.ts` → `buildOrderGraph({ menu, llm, intentLlm, carts })`.
 
 ```
  START
@@ -52,49 +53,55 @@ Defined in `graph/build-graph.ts` → `buildOrderGraph({ menu, llm, carts })`.
    │
    ▼
  classify ──(INTENT_ROUTE, one conditional edge)──┐
-   │ order            │ suggest          │ junk
-   ▼                  ▼                  ▼
- load_cart          suggest             END   (junk not recorded)
-   │                  │
-   ▼                  │
- retrieve ──► parse ──┤
-                      ▼
-                   finalize ──► END
+   │ service                                      │ junk
+   ▼                                              ▼
+ load_cart                                       END   (junk not recorded)
+   │
+   ▼
+ agent ◄─────────────┐
+   │ │               │ (no terminal written)
+   │ │ tool_calls    │
+   │ └──► tools ─────┘
+   │        │
+   │        │ output set (propose_cart validated)
+   │        ▼
+   └──►  finalize ──► END
+     (reply / failure_reason)
 ```
 
-- **`normalize` is the entry point**; **`classify` runs right after it** (design §6) and labels
-  the NORMALIZED utterance `order | suggest | junk`, routing via a single conditional edge whose
-  path map is `INTENT_ROUTE` (`graph/intents.ts`). The router returns `s.intent`; `INTENT_ROUTE`
-  maps it to the next node, so routing and the intent set can't drift.
-  - `order` → `load_cart` (the rest of the proposer spine — `normalize` already ran).
-  - `suggest` → the `suggest` recommender node → `finalize`.
+- **`normalize` is the entry point**; **`classify` runs right after it** and labels the
+  NORMALIZED utterance `service | junk`, routing via a single conditional edge whose path map is
+  `INTENT_ROUTE` (`graph/intents.ts`). The router returns `s.intent`; `INTENT_ROUTE` maps it to
+  the next node, so routing and the intent set can't drift.
+  - `service` → `load_cart` → the agent loop.
   - `junk` → `END` directly.
-- Order spine: `normalize → classify → load_cart → retrieve → parse → finalize`. A clarification
-  is not a branch/pause — `parse` sets `needs_clarification` and `finalize` records the question;
-  the order path always runs to `END`.
-- `finalize → END` records the completed turn to history. The `order` and `suggest` routes pass
+- **`classify` is a binary junk-gate and nothing more.** The intent set is `service | junk`
+  because that is the only distinction anything downstream acts on: the agent works out what the
+  customer actually wants (order / recommendation / menu answer) from the utterance itself, so a
+  finer label would be read by no one. `service` covers ordering, changing or removing items,
+  recommendations, and menu questions.
+- **`agent ⇄ tools` is the loop** (§5). The agent searches the menu, then ends the turn either by
+  calling `propose_cart` (structured operations) or by speaking (no tool call). There is no
+  pause/interrupt: a spoken reply is fire-and-forget.
+- `finalize → END` records the completed turn to history. Every route that ran the agent passes
   through it; **`junk` skips it and goes straight to `END`**, so a non-orderable utterance
-  (greeting, noise) is never recorded and can't pollute the context later fed to `parse`.
-- Non-order intents **skip the proposer `parse`**: `junk` touches nothing; `suggest` loads the
-  cart and retrieves candidates inside its own node (for the recommendation) but never runs the
-  `parse`/repair pipeline, so no cart operations are ever proposed for them.
+  (greeting, noise) is never recorded and can't pollute the context later fed to the agent.
 - **Extensibility:** adding an intent is a one-row edit — a value in `intentSchema` and a row in
   `INTENT_ROUTE` (+ a handler node only if it needs its own behavior).
 
-Compiled with `.compile({ checkpointer: new MemorySaver() })` — the checkpointer is
-what makes pause/resume possible (§5).
+Compiled with `.compile({ checkpointer: new MemorySaver() })` — the checkpointer is what carries
+`history` across turns on the same thread (§6).
 
 ### The `node()` wrapper
 
 Every node is wrapped by `graph/instrument.ts` → `node(name, fn)`:
 
-- Runs `fn(state)`; on throw, logs `order.node_failed` **once** with `{ node,
-  request_id, cart_id, pos_config_id, ...errorMeta }`, then re-throws unchanged.
-- Uses `isGraphBubbleUp(error)` to pass LangGraph's own control-flow throws
-  (interrupt/pause, `Command` bubbling) straight through **without** logging them as
-  errors — an `interrupt()` is not a fault.
-- This centralizes per-node error attribution so a Redis failure in `load_cart`
-  isn't mislabeled as a parse failure by the single catch in the service.
+- Runs `fn(state)`; on throw, logs `order.node_failed` **once** with `{ node, request_id,
+  cart_id, pos_config_id, ...errorMeta }`, then re-throws unchanged.
+- Uses `isGraphBubbleUp(error)` to pass LangGraph's own control-flow throws (`Command` bubbling)
+  straight through **without** logging them as errors.
+- This centralizes per-node error attribution so a Redis failure in `load_cart` isn't mislabeled
+  as an agent failure by the single catch in the service.
 
 ---
 
@@ -110,8 +117,8 @@ function lww<T>(def: () => T) {
 }
 ```
 
-A node returning the channel overwrites it; a node that doesn't touch it leaves the
-prior value. The `default` lets a channel be *read* before it's ever written.
+A node returning the channel overwrites it; a node that doesn't touch it leaves the prior value.
+The `default` lets a channel be *read* before it's ever written.
 
 ### `appendHistory` — accumulating, capped
 
@@ -119,11 +126,10 @@ prior value. The `default` lets a channel be *read* before it's ever written.
 reducer: (prev, next) => mergeHistory(prev, next, LIMITS.maxHistoryTurns)
 ```
 
-`mergeHistory(prev, next, cap) = [...prev, ...next].slice(-cap)` — appends the
-completed turn(s) and keeps only the newest `cap` (currently
-`LIMITS.maxHistoryTurns = 6`), oldest→newest. Extracted as a pure function so its
-semantics are unit-testable without LangGraph (LangGraph requires reducers to be
-pure + deterministic).
+`mergeHistory(prev, next, cap) = [...prev, ...next].slice(-cap)` — appends the completed turn(s)
+and keeps only the newest `cap` (currently `LIMITS.maxHistoryTurns = 6`), oldest→newest.
+Extracted as a pure function so its semantics are unit-testable without LangGraph (LangGraph
+requires reducers to be pure + deterministic).
 
 ### Channel table
 
@@ -134,71 +140,76 @@ pure + deterministic).
 | `cart_id` | plain | — | invoke input | cart being ordered against |
 | `pos_config_id` | plain | — | invoke input | POS/menu scope |
 | `customer_text` | plain | — | invoke input, then `normalize` | the utterance |
-| `intent` | lww | `'order'` | `classify` | routing label (`order`/`suggest`/`junk`) |
-| `language` | lww | `undefined` | invoke input | optional lang hint |
-| `supported_languages` | lww | `[]` | invoke input | allowed langs (currently `[]`, TODO) |
-| `clarification_answer` | lww | `undefined` | `clarify` (set), `normalize` (clear) | one-shot answer for the resumed parse |
-| `clarification_question` | lww | `undefined` | `clarify` (set), `normalize` (clear) | kept so `finalize` can log Q with A |
+| `supported_languages` | lww | `[]` | invoke input | **currently dead** — always `[]`, never read (§6.3) |
+| `intent` | lww | `'service'` | `classify` | routing label (`service`/`junk`) |
 | `cart_view` | lww | `null` | `load_cart` | self-describing cart projection for the prompt |
 | `base_version` | lww | `0` | `load_cart` | cart version the proposal is computed against |
-| `candidates` | lww | `[]` | `retrieve` | per-turn candidate items for the prompt |
 | `history` | append (capped) | `[]` | `finalize` | prior turns, resent for reference resolution |
-| `output` | lww | `null` | `parse` (set), `clarify` (clear to `null`) | the parsed LLM result |
-| `suggestion` | lww | `null` | `suggest` (set), `normalize` (clear to `null`) | `{ reply, items }` recommendation for a `suggest` turn |
+| `output` | lww | `null` | `tools` (`propose_cart`), `normalize` (clear) | the validated operations — a terminal |
+| `reply` | lww | `null` | `agent`, `normalize` (clear) | the spoken message — the other terminal |
+| `reply_language` | lww | `undefined` | `agent`, `normalize` (clear) | ISO code the agent declared it wrote `reply` in |
+| `agent_messages` | lww | `[]` | `agent`, `tools`, `normalize` (clear) | the turn's tool-calling scratchpad |
+| `agent_steps` | lww | `0` | `agent`, `normalize` (clear) | agent LLM turns so far; guards `maxAgentSteps` |
+| `failure_reason` | lww | `undefined` | `agent`, `normalize` (clear) | set when the loop ends with no terminal |
 
-Three lifetimes are in play:
+Two lifetimes are in play:
 
-1. **Durable across turns** (survive many invokes on the same thread):
-   `history`, plus all the input ids. Carried by the checkpointer thread.
-2. **Per-turn** (recomputed each fresh turn): `cart_view`, `base_version`,
-   `candidates`, `output`, normalized `customer_text`.
-3. **One-shot within a turn**: `clarification_answer` / `clarification_question` —
-   set on `clarify`, consumed by the very next `parse`, and cleared by `normalize`
-   at the start of the *next* fresh turn so a prior turn's answer can never leak
-   into a new turn's prompt (§4, `normalize`).
+1. **Durable across turns** (survive many invokes on the same thread): `history`, plus the input
+   ids. Carried by the checkpointer thread.
+2. **Per-turn**: everything else. `cart_view`/`base_version`/`intent` are recomputed each turn by
+   their nodes; the terminals (`output`, `reply`, `reply_language`) and the agent scratchpad
+   (`agent_messages`, `agent_steps`, `failure_reason`) are **explicitly cleared by `normalize`**.
+
+> **Why `normalize` must clear.** The checkpointer persists the *whole* state blob per thread, so
+> a channel that no node happens to overwrite this turn keeps last turn's value. For channels
+> that are always written (`intent`, `cart_view`) that's harmless; for the terminals and the
+> scratchpad it is not — a stale `reply` would be re-spoken, and a stale `agent_messages` would
+> re-seed the loop with last turn's (possibly stale) menu data. Clearing them in `normalize` is
+> what keeps them turn-scoped.
+
+`reply_language` gets its own channel rather than riding the input `language` for exactly this
+reason: a declaration is evidence about the turn that made it, and a shared channel once leaked
+it into later turns that declared none.
 
 ---
 
 ## 4. Nodes, one by one
 
-### `classify`
-
-```ts
-if (s.clarification_question !== undefined) return { intent: 'order' as const };
-const intent = await classifyIntent(intentLlm, s.customer_text);
-return { intent };
-```
-
-- Runs **right after `normalize`** (not the entry point). Sets the `intent` channel, which the
-  conditional edge reads to route the turn (§2). Classifies the NORMALIZED utterance.
-- **Pending-clarification override:** `normalize` carries an unanswered `clarification_question`
-  from the last history turn into the channel; if it's set, THIS utterance is that answer, so
-  `classify` forces `intent = 'order'` and skips the classifier LLM call entirely — the parse
-  pipeline resolves the question. Without this, a terse answer ("both", "the second one") could be
-  mislabeled `junk` and dropped.
-- `classifyIntent` (`nodes/classify-intent.node.ts`) calls its OWN LLM provider (`intentLlm`,
-  built from `INTENT_LLM_*` env by `createIntentLlmProvider`, falling back to `LLM_*` — so the
-  classifier can run on a cheaper/separate model+key than the parser) with `buildIntentPrompt`
-  (`llm/intent-prompt-builder.ts`), JSON-parses, and validates against `intentSchema`. It
-  **degrades to `order` on any failure** (transport error, non-JSON, non-object payload, unknown
-  label): a real order must never be dropped. The `stub` provider returns a non-intent JSON, so it
-  always degrades to `order` — i.e. stub deployments behave exactly as before this node existed.
-
 ### `normalize`
 
 ```ts
 customer_text: normalizeTranscript(s.customer_text),
-clarification_answer: undefined,
-clarification_question: undefined,
+output: null, reply: null, reply_language: undefined,
+agent_messages: [], agent_steps: 0, failure_reason: undefined,
 ```
 
 - `normalizeTranscript` (`nodes/normalize-transcript.node.ts`) is just
   `text.trim().replace(/\s+/g, ' ')` — collapse whitespace.
-- **Critically, it clears the clarification channels.** `normalize` runs only on a
-  *fresh* turn (entered from `START`). A resume re-enters the graph at `clarify`
-  (§5), so it skips `normalize` — meaning a within-turn answer survives to `parse`,
-  but a stale answer from a *previous* completed turn is wiped before a new turn
-  parses. This is the mechanism that keeps the one-shot channels one-shot.
+- **Critically, it resets every turn-scoped channel** — see the box in §3.
+
+### `classify`
+
+```ts
+if (s.history.at(-1)?.agent_reply !== undefined) return { intent: 'service' as const };
+const intent = await classifyIntent(intentLlm, s.customer_text);
+return { intent };
+```
+
+- Runs **right after `normalize`**, on the NORMALIZED utterance. Sets the `intent` channel, which
+  the conditional edge reads to route the turn (§2).
+- **Pending-reply override:** if the previous turn ended by SPEAKING (its `agent_reply` is the
+  last history entry), THIS utterance is likely the answer to it, so `classify` forces
+  `intent = 'service'` and skips the classifier LLM call entirely — the agent resolves the reply
+  against the current utterance. Without this, a terse answer ("both", "the second one") could be
+  mislabeled `junk` and dropped. Note it keys on the **immediately** preceding turn: once a turn
+  proposes (recording no `agent_reply`), a later fresh junk utterance short-circuits normally.
+- `classifyIntent` (`nodes/classify-intent.node.ts`) calls its OWN LLM provider (`intentLlm`,
+  built from `INTENT_LLM_*` env by `createIntentLlmProvider`, falling back to `LLM_*` — so the
+  classifier can run on a cheaper/separate model+key than the agent) with `buildIntentPrompt`
+  (`llm/intent-prompt-builder.ts`), JSON-parses, and validates against `intentSchema`. It
+  **degrades to `service` on any failure** (transport error, non-JSON, non-object payload,
+  unknown label): a real order must never be dropped. The `stub` provider returns a non-intent
+  JSON, so it always degrades to `service` — i.e. stub deployments always run the agent.
 
 ### `load_cart`
 
@@ -208,348 +219,278 @@ const cart_view = await buildCartView(menu, cart);
 return { cart_view, base_version: cart.version };
 ```
 
-- `loadCart` reads the cart from `CartCache`, falling back to `emptyCart(...)` when
-  absent — a first turn on a new cart still gets a valid (empty) snapshot.
-- `base_version` is captured here as `cart.version` and then **rides through
-  resumes untouched** (lww, not rewritten by later nodes), so the eventual proposal
-  always carries the version it was computed against — the basis for optimistic
-  concurrency downstream (design §9).
-- `buildCartView` (Plan A) projects the stored cart into a **self-describing**
-  `CartView`: one batched `menu.getItems` read resolves each line to its `name` +
-  `menu_item_key`, maps each attached `ptav_id` to `{modifier_key, name}`, and lists
-  the item's `available_modifiers`. Numeric `product_tmpl_id`/`ptav_id` are
-  deliberately **omitted** so the model can't confuse one for a `line_id`. It
-  degrades gracefully (numeric-id fallback for name/key, dropped unknown modifiers)
-  so a stale cart line never throws.
+- `loadCart` reads the cart from `CartCache`, falling back to `emptyCart(...)` when absent — a
+  first turn on a new cart still gets a valid (empty) snapshot.
+- `base_version` is captured here as `cart.version` and then **rides the whole turn untouched**
+  (lww, not rewritten by later nodes), so the eventual proposal always carries the version it was
+  computed against — the basis for optimistic concurrency downstream (design §9).
+- `buildCartView` (Plan A) projects the stored cart into a **self-describing** `CartView`: one
+  batched `menu.getItems` read resolves each line to its `name` + `menu_item_key`, maps each
+  attached `ptav_id` to `{modifier_key, name}`, and lists the item's `available_modifiers`.
+  Numeric `product_tmpl_id`/`ptav_id` are deliberately **omitted** so the model can't confuse one
+  for a `line_id`. It degrades gracefully (numeric-id fallback for name/key, dropped unknown
+  modifiers) so a stale cart line never throws.
 
-### `retrieve`
+### `agent`
 
-```ts
-const candidates = await retrieveCandidates(menu, s.pos_config_id, s.customer_text);
-return { candidates: candidates.items };
-```
-
-- Thin wrapper over `menu.getCandidates(pos_config_id, text)` (design §7) — the
-  likely items/modifiers for this utterance, capped at `LIMITS.maxCandidatesToLlm`
-  (8) inside the menu module.
-- lww: `retrieve` fully replaces `candidates` every turn; they are never
-  accumulated (superseding the removed Plan B candidate-accumulation approach —
-  cart-resident vocabulary now comes from `cart_view`).
-
-### `parse`
+One LLM tool-calling turn — the heart of the graph (§5).
 
 ```ts
-const output = await parseAndValidate(llm, toInput(s), LIMITS.llmMaxRetries);
-return { output };
+const step = s.agent_steps + 1;
+if (step > LIMITS.maxAgentSteps) return { failure_reason: 'agent_step_limit' };
+const messages = s.agent_messages.length === 0 ? seedMessages(s) : s.agent_messages;
+const res = await llm.chat(messages, TOOL_SPECS);
 ```
 
-- `toInput(s)` assembles the `OrderGraphInput` from state: ids, normalized
-  `customer_text`, `current_cart: cart_view!`, `candidate_items`, `history`,
-  `supported_languages`, and — **only when present** — `language` and
-  `clarification_answer`. The clarification answer being in the input is what lets
-  the resumed parse honor the customer's answer.
-- `parseAndValidate` (`nodes/parse-and-validate.node.ts`) is the schema-repair loop:
-  1. `parseOrder(llm, input)` → raw JSON string (`buildPrompt`).
-  2. `validateOperations(raw)`: `JSON.parse` then zod
-     `parseOrderGraphOutput`; returns a `Result`.
-  3. On success → return the validated `OrderGraphOutput`.
-  4. On failure, if attempts `< maxRepairs` (`LIMITS.llmMaxRetries = 1`), log
-     `order.schema_repair_retry` and re-prompt with `buildRepairPrompt(input, raw,
-     error.message)` — the rejected output plus the validation error — then loop.
-  5. On exhaustion, log `order.schema_repair_exhausted` and **throw** the last
-     `ValidationError`. The throw propagates out of the node → out of `invoke()` →
-     the service fails the turn with `order_parse_failed` (§7).
-- Net: one parse attempt + up to one repair re-prompt (2 LLM calls worst case)
-  before the turn fails.
+- **Seeds on first entry** (`agent_messages` empty) via `buildAgentMessages` — system prompt +
+  user context — then appends the model's assistant reply to the scratchpad. On later iterations
+  it re-sends the accumulated scratchpad.
+- The `language` channel is deliberately NOT passed to the prompt: it holds the unreliable
+  STT-detected code, and the agent reads the language off `customer_text` instead.
+- **Step guard:** `maxAgentSteps` (8) caps `agent` LLM turns per customer turn. Exhaustion sets
+  `failure_reason: 'agent_step_limit'` — a cost/latency guard and runaway-loop backstop, sized to
+  allow several sequential per-item searches before a `propose_cart`.
+- **No tool call → the agent ended by speaking.** The reply is strict JSON `{language, reply}`;
+  `parseSpokenReply` extracts it and the node records `reply` + `reply_language`. A blob with no
+  usable reply sets `failure_reason: 'agent_no_terminal'`.
 
-### `clarify`
+### `tools`
 
 ```ts
-const out = s.output!;
-const payload: ClarificationInterrupt = {
-  question: out.clarification_question!,
-  ...(out.clarification_options !== undefined ? { options: out.clarification_options } : {}),
-};
-const answer = interrupt(payload) as string;
-return { clarification_answer: answer, clarification_question: payload.question, output: null };
+.addNode('tools', node('tools', (s) => runTools(menu, s)))
 ```
 
-- Reached only when `parse` produced `output.needs_clarification === true`. The
-  output schema `.refine(...)` guarantees a non-null `clarification_question`
-  accompanies that flag, so the `!` is safe.
-- `interrupt(payload)` **pauses the graph** (§5). On the first pass, control leaves
-  the graph and `invoke()` returns with `__interrupt__` populated. On resume, the
-  node body re-runs from the top and `interrupt(...)` *returns* the supplied answer.
-- On resume it: stores the answer (`clarification_answer`), keeps the question
-  (`clarification_question`, so `finalize` can log the Q/A pair as history context),
-  and **clears `output` to `null`** so the stale clarify-output can't be mistaken
-  for a completed proposal. Then the `clarify → parse` edge re-parses.
+- Runs the tool calls the agent just requested, appends each result to `agent_messages` as a
+  `{role:'tool'}` message, and carries the `output` a successful `propose_cart` set (§5.2).
 
 ### `finalize`
 
 ```ts
 history: [{
   customer_text: s.customer_text,
-  ...(s.clarification_question !== undefined ? { clarification_question: s.clarification_question } : {}),
-  ...(s.clarification_answer  !== undefined ? { clarification_answer:  s.clarification_answer  } : {}),
+  ...(s.reply !== null ? { agent_reply: s.reply } : {}),
 }]
 ```
 
-- The single terminus before `END`. Appends **one** `HistoryTurn` for the whole
-  turn — the utterance plus, if the turn was clarified, the question and answer.
-- `history`'s appending+capped reducer means the next turn's `parse` re-sends the
-  newest ≤6 turns as conversation context so references ("that", "the same one")
-  resolve. History is **reference-only** — the prompt forbids re-executing a past
-  request; `current_cart` is the source of truth for what's actually in the cart.
-- Reached by the order path AND by the `suggest` route, so those turns are recorded once. For a
-  `suggest` turn `output` is `null`, so no clarification is recorded — just the utterance. The
-  `junk` route skips `finalize` entirely (routes straight to `END`), so a non-orderable utterance
-  is **not** recorded — it can't pollute the context later fed to `parse`.
-
-### `suggest`
-
-```ts
-const cart = await loadCart(carts, s.cart_id, s.pos_config_id);
-const cart_view = await buildCartView(menu, cart);
-const candidates = await retrieveCandidates(menu, s.pos_config_id, s.customer_text);
-const suggestion = await generateSuggestion(llm, { customer_text, current_cart: cart_view,
-  candidate_items: candidates.items, history, language? });
-return { suggestion };
-```
-
-- The recommender for the `suggest` intent (`nodes/suggest.node.ts` → `generateSuggestion`). It
-  loads the cart (for upsell context) and retrieves this turn's candidates, then asks the proposer
-  `llm` (via `buildSuggestionPrompt`) for a `{ reply, items }` and validates it with
-  `parseSuggestion`. Recommended items are **filtered to the candidates**, so the model can't
-  surface anything off-menu. It **degrades to a safe fallback reply** (empty items) on any failure
-  — a bad recommendation must not fail the turn.
-- Writes the result to the `suggestion` state channel. `OrderGraph.interpret` reads both the
-  `intent` and this channel → `{ status: 'suggest', reply, items }`; the service emits
-  `order.suggestion_ready`.
-- `finalize` records `suggestion.items` into the turn's `HistoryTurn.suggested_items`, so a
-  follow-up ("the first one", "add that") resolves against them on the next turn's `parse` (the
-  parse prompt permits a recalled suggested key even when it's not in that turn's candidates).
-  `normalize` clears the `suggestion` channel each fresh turn so a prior suggestion can't leak
-  into a later order turn's `finalize`.
+- The single terminus before `END`. Appends **one** `HistoryTurn` for the whole turn — the
+  utterance plus, when the agent ended by SPEAKING, the reply it spoke.
+- `agent_reply` is what makes the next turn work: it feeds `classify`'s pending-reply override
+  and gives the next agent the context to resolve an answer. A turn that committed operations (or
+  failed) records only its utterance.
+- `history`'s appending+capped reducer means the next turn's agent re-sends the newest ≤6 turns
+  as conversation context so references ("that", "the same one") resolve. History is
+  **reference-only** — the prompt forbids re-executing a past request; `current_cart` is the
+  source of truth for what's actually in the cart. The `agent_messages` scratchpad is **never**
+  written to history.
+- The `junk` route skips `finalize` entirely (routes straight to `END`).
 
 ---
 
-## 5. Pause / resume: the interrupt mechanism
+## 5. The agent ⇄ tools loop
 
-This is the heart of the clarification loop and the main reason a checkpointer is
-required.
+This is the heart of the turn and the reason the graph exists in this shape.
 
-### First pass (pause)
-
-1. `parse` sets `output.needs_clarification = true`; the conditional edge routes to
-   `clarify`.
-2. `clarify` calls `interrupt(payload)`. LangGraph throws a control-flow signal
-   (recognized by `isGraphBubbleUp`, so `node()` doesn't log it as an error) that
-   bubbles out of `invoke()`.
-3. The checkpointer **persists the full state** at the `clarify` boundary under the
-   thread id.
-4. `invoke()` resolves with `{ ..., __interrupt__: [{ value: ClarificationInterrupt }] }`.
-
-### Interpretation (`order-graph.ts`)
-
-`OrderGraph.interpret(out)`:
+### 5.1 The loop edges
 
 ```ts
-const first = out.__interrupt__?.[0];
-if (first !== undefined) return { status: 'clarify', question, options? };
-return { status: 'complete', output: out.output!, base_version: out.base_version };
+.addConditionalEdges('agent', (s) => {
+  if (s.failure_reason !== undefined || s.reply !== null) return 'finalize';
+  return lastAssistantHasToolCalls(s) ? 'tools' : 'finalize';
+}, { tools: 'tools', finalize: 'finalize' })
+
+.addConditionalEdges('tools', (s) => (s.output !== null ? 'finalize' : 'agent'), {
+  agent: 'agent', finalize: 'finalize',
+})
 ```
 
-- `__interrupt__` present → `{ status: 'clarify', ... }`.
-- Absent → the graph ran to `END`, so `output` is set → `{ status: 'complete',
-  output, base_version }`.
+The routers are **channel-driven, not intent-driven**: the loop continues precisely while no
+terminal channel has been written. `tools → agent` fires whenever `propose_cart` did not validate
+— which is exactly what makes a failed proposal retriable (§5.2).
 
-### Resume
+### 5.2 The tools (`tools/tool-specs.ts`, `tools/run-tools.ts`)
 
-`OrderGraph.resume(pos_config_id, cart_id, answer)`:
+Two tools, and the asymmetry between them is the design:
 
-```ts
-await this.graph.invoke(new Command({ resume: answer }), this.threadConfig(...));
-```
+| Tool | Kind | Effect |
+|---|---|---|
+| `search_menu_semantic` | retrieval, **loopable** | `menu.getCandidates(pos_config_id, query)` → candidate items as the tool result. The agent may call it several times (e.g. once per distinct item). |
+| `propose_cart` | **terminal action** | zod-validates `operations` via `parseOrderGraphOutput`; on success sets `output` and the turn ends. |
 
-- `new Command({ resume: answer })` tells LangGraph to reload the checkpointed
-  state for the thread and continue **from the interrupt point**.
-- `clarify` re-runs; `interrupt(...)` now returns `answer`. The node writes
-  `clarification_answer`, and `clarify → parse` re-parses with the answer in the
-  input.
-- The resumed run re-enters at `clarify`, **not** `START`, so `normalize` does not
-  run — which is exactly why the one-shot `clarification_answer` survives to this
-  parse but is cleared before any *future* fresh turn.
-- From there the turn either completes (`finalize → END`) or clarifies again
-  (bounded by the service's round cap).
+- **Candidates are NOT pre-fetched.** Unlike the old fixed `retrieve` node, the agent decides what
+  to search for and when — the reason a multi-item order works without a retrieval heuristic.
+- **Clarifications and recommendations are NOT tools.** The agent expresses both by ending the
+  turn with a plain spoken reply, which the graph surfaces as the single `reply` outcome.
+- **A `propose_cart` that fails validation is a retriable tool error, not a turn failure.** It
+  sets no `output`, so the loop router sends control back to the agent with the validation message
+  as the tool result — the schema-repair loop, expressed as an ordinary loop iteration.
+- **An empty `operations` array is rejected on purpose.** `operations` defaults to `[]` when
+  absent, so a malformed call would otherwise "succeed" as an empty proposal and silently drop the
+  customer's request. `run-tools.ts` rejects it with a message telling the agent to reply in words
+  instead.
+- `propose_cart`'s advertised `parameters` JSON Schema is deliberately **loose** (`items: {type:
+  'object'}`); the precise contract lives in the system prompt (which embeds the real schema
+  generated from `cartOperationSchema`) and zod does the enforcing.
 
-### Why the checkpointer / thread id matters
+### 5.3 The two terminals
 
-```ts
-threadConfig = { configurable: { thread_id: `${pos_config_id}:${cart_id}` } };
-```
+The agent must end every turn exactly one way — the prompt says so, and the state enforces it
+(`output` and `reply` are mutually exclusive per turn):
 
-- The thread id keys on **`pos_config_id:cart_id`**, so conversational context
-  (history, and any paused turn) follows the **cart**, not a single voice session.
-  Multiple sessions on the same cart share memory (design §6).
-- `MemorySaver` is **in-process only** — durable across invokes within a running
-  process, but *not* across restarts. A crash between pause and resume loses the
-  paused turn. A durable checkpointer (Redis/Postgres) is a noted future upgrade.
+1. **`propose_cart`** → `output` set → `finalize` → `{status:'complete'}`.
+2. **A spoken reply** (no tool call) → `reply` set → `finalize` → `{status:'reply'}`.
+
+**A reply is fire-and-forget — there is no pause, no interrupt, and no checkpointer resume.** The
+turn emits the reply and ends, releasing its per-cart FIFO slot. The customer's answer arrives as
+the **next transcript**, where `classify`'s pending-reply override force-routes it to `service` and
+the agent resolves it against `conversation_history`. This is why the old `MAX_CLARIFICATION_ROUNDS`
+cap and clarification stall timeout are gone: a multi-turn conversation is just turns.
+
+### 5.4 The spoken-reply contract (`graph/parse-spoken-reply.ts`)
+
+The reply is strict JSON `{"language": "...", "reply": "..."}`. **`language` is demanded FIRST for
+a generation-order reason, not a stylistic one:** the model writes left to right, so a
+`reply`-first shape lets it write the whole reply — drifting into whatever language
+`conversation_history` is in — and only then label what it already wrote, making `language`
+describe the drift instead of preventing it (observed: a zh → zh → en session answered in zh).
+Emitting the code first forces the choice before any reply token exists.
+
+The ordering is enforced **only by the prompt**. `parseSpokenReply` JSON-parses, so field order is
+irrelevant there and a model that slips back to `{reply, language}` still keeps its language.
+
+It degrades **per-field**, and each degradation is chosen so a customer never hears something
+worse than the alternative:
+
+| Input | Result | Why |
+|---|---|---|
+| `{"language":"es","reply":"¿Cuál prefieres?"}` | `{reply, language:'es'}` | the contract |
+| ` ```json {...}``` ` | fence stripped, then parsed | prompt forbids fences; models emit them anyway |
+| `Sure! {"reply":"..."}` | outermost `{...}` span parsed, prose dropped | requiring a bare object would read the braces aloud |
+| plain prose, no `{` | `{reply: <text>}` | never drop a reply — speak it as-is |
+| valid JSON, no usable `reply` | `{reply: null}` → `agent_no_terminal` | never read a JSON blob aloud |
+| `{"language":"Chinese","reply":"..."}` | `{reply}`, no language | an off-format code costs only the language; TTS falls back to `TTS_LANGUAGE` |
 
 ---
 
-## 6. What is persisted vs. what is sent to the LLM each turn
+## 6. What is persisted vs. what is sent to the LLM
 
-Three distinct sets are easy to conflate. The checkpointer persists the *entire*
-state blob per thread, but that is not the same as what carries forward across
-turns, which is not the same as what the model actually reads.
+Three distinct sets are easy to conflate. The checkpointer persists the *entire* state blob per
+thread, but that is not the same as what carries forward across turns, which is not the same as
+what the model actually reads.
 
-> **Scope note:** the third set below is rendered in `src/llm/prompt-builder.ts`
-> (`buildPrompt`), which is outside this doc's core scope but is the authoritative
-> last hop — `toInput` (§4 `parse`) produces the `OrderGraphInput`, and `buildPrompt`
-> decides which of its fields reach the model.
+### 6.1 Persisted across turns
 
-### 6.1 Persisted across turns (survives to influence the *next* fresh turn)
-
-The `MemorySaver` checkpoint holds the whole `OrderState` per thread, but on a fresh
-turn (entered at `START`) almost every channel is overwritten — by the invoke input
-(ids, `customer_text`, `supported_languages`, optional `language`) or by the nodes
-(`cart_view`/`base_version` in `load_cart`, `candidates` in `retrieve`, `output` in
-`parse`, clarification channels cleared in `normalize`). The one channel with an
+The `MemorySaver` checkpoint holds the whole `OrderState` per thread, but on each turn almost
+every channel is overwritten — by the invoke input (ids, `customer_text`, `supported_languages`),
+by the nodes (`intent` in `classify`, `cart_view`/`base_version` in `load_cart`), or by
+`normalize`'s explicit reset (the terminals + the agent scratchpad). The one channel with an
 **append** reducer, and thus the only meaningful cross-turn carryover, is:
 
-- **`history`** — the `finalize`-appended `HistoryTurn[]`, capped at
-  `LIMITS.maxHistoryTurns = 6` (oldest→newest). Everything else is effectively
-  per-turn even though it is checkpointed.
+- **`history`** — the `finalize`-appended `HistoryTurn[]`, capped at `LIMITS.maxHistoryTurns = 6`
+  (oldest→newest). Everything else is effectively per-turn even though it is checkpointed.
 
-(Within a *single* paused turn, the checkpoint additionally preserves the live
-`clarification_answer`/`clarification_question`/`output` across the interrupt — see
-§5 — but those are cleared before the next fresh turn.)
+### 6.2 Recomputed every turn
 
-### 6.2 Recomputed every turn (not carried forward)
-
-`customer_text` (normalized), `cart_view`, `base_version`, `candidates`, `output`,
-and the input ids (re-supplied on each invoke). `base_version` is captured at
+`customer_text` (normalized), `intent`, `cart_view`, `base_version`, the terminals, the agent
+scratchpad, and the input ids (re-supplied on each invoke). `base_version` is captured at
 `load_cart` and returned in the `complete` result, but it is **not** sent to the LLM.
 
 ### 6.3 Actually sent to the LLM
 
-`toInput` builds an `OrderGraphInput` with: `request_id`, `session_id`, `cart_id`,
-`pos_config_id`, `customer_text`, `current_cart`, `candidate_items`, `history`,
-`supported_languages`, and — only when present — `language`,
-`clarification_answer`, and `clarification_question`.
+`buildAgentMessages` (`llm/agent-prompt-builder.ts`) builds a two-message seed transcript:
 
-`buildPrompt` then forwards only a **subset** into the user-message JSON. The
-clarification answer and its question are rendered together as a single nested
-`clarification` object so the model sees them as a pair:
+- **system** — `buildAgentSystemPrompt()`: the WORKFLOW (search first, then either `propose_cart`
+  or a spoken reply), the KEY RULES for operations, the CONTEXT RULES, and the LANGUAGE section.
+  It embeds the **JSON Schema for a `propose_cart` operation**, generated from
+  `cartOperationSchema` via `z.toJSONSchema` (with a `scrubSchema` pass to drop sentinel
+  `maximum`/`$schema` noise), so the advertised shape can't drift from validation. The schema pins
+  STRUCTURE only; the prose KEY RULES carry the semantics a schema can't express (key provenance,
+  the inline-modifier rule, matching a cart line by name).
+- **user** — `buildAgentUserMessage(ctx)`, exactly three fields:
 
 ```jsonc
 {
-  "request_id":           "...",
   "customer_text":        "...",          // normalized utterance
-  "language":             "...",          // if present
   "current_cart":         { ... },        // self-describing CartView
-  "candidate_items":      [ ... ],        // this turn's retrieval
-  "conversation_history": [ ... ],        // = state `history`, RENAMED
-  "clarification": {                      // present only on a resumed turn
-    "question":           "...",          // = state `clarification_question`
-    "answer":             "..."           // = state `clarification_answer`
-  }
+  "conversation_history": [ ... ]         // = state `history`, RENAMED
 }
 ```
 
-Plus a **static system prompt** (operation rules + allowed-operation list derived
-from `cartOperationSchema`).
-
-| `OrderGraphInput` field | Reaches the LLM? | Notes |
+| State / input | Reaches the LLM? | Notes |
 |---|---|---|
-| `request_id` | yes | correlation only |
-| `customer_text` | yes | the utterance |
-| `language` | yes (if set) | |
-| `current_cart` | yes | source of truth for what's in the cart |
-| `candidate_items` | yes | |
+| `customer_text` | yes | the utterance; also the **sole** authority on reply language |
+| `cart_view` | yes → as **`current_cart`** | source of truth for what's in the cart |
 | `history` | yes → as **`conversation_history`** | reference-only |
-| `clarification_answer` | yes (resume only) | rendered inside the `clarification` object |
-| `clarification_question` | yes (resume only) | rendered inside the `clarification` object |
-| `session_id` | **no** | dropped by `buildPrompt` |
-| `cart_id` | **no** | dropped |
-| `pos_config_id` | **no** | dropped |
-| `supported_languages` | **no** | dropped |
-| `base_version` | **no** | graph-internal; rides resumes, returned in result |
+| candidate items | **not up front** | the agent fetches them via `search_menu_semantic` |
+| `request_id` / `session_id` / `cart_id` / `pos_config_id` | **no** | correlation + menu scope only |
+| `base_version` | **no** | graph-internal; returned in the result |
+| `supported_languages` | **no** | dead channel — see below |
 
-### 6.4 The clarification loop and the remaining prompt gap
+> **No language hint is passed, on purpose.** The STT code tags nearly every turn `en`, and a
+> wrong hint is worse than none — it argues the customer spoke English when they plainly didn't.
+> The agent reads the language off `customer_text`, which is the actual evidence.
 
-A resumed turn used to re-emit the *same* `clarification_question` — the observable
-`clarification_needed → answered → clarification_needed` loop, bounded by
-`MAX_CLARIFICATION_ROUNDS`. Two things drove it; one is now fixed:
-
-1. **~~`clarification_question` is never sent.~~ Fixed.** The question is now threaded
-   `state → toInput → OrderGraphInput → buildPrompt` and rendered in the nested
-   `clarification` object alongside the answer, so on a resumed turn the model sees
-   the question it asked paired with the customer's reply. (Previously the Q/A pair
-   only entered `conversation_history` *after* `finalize`, which has not run for the
-   in-flight turn.)
-2. **Still open — the system prompt does not document `clarification`.** The object
-   now appears in the user JSON, but no instruction tells the model it is its prior
-   question plus the customer's reply, to resolve the order from it, and not to
-   re-ask. Until that one prompt line is added, a resumed `parse` can still re-read
-   the ambiguous `customer_text` and ask again — the plumbing gives the model the
-   context, but not yet the instruction to use it.
+> **Known dead code** (left from the agent rework, documented rather than silently carried):
+> `supported_languages` is threaded input → state but read by nothing and always `[]` (there is a
+> TODO to source it from `voice_restaurant_settings`); `TIMEOUTS.clarificationMs` and
+> `schemas/clarification.schema.ts` have no consumers now that replies don't pause the graph; and
+> `StubLlmProvider.complete` still returns `needs_clarification`/`clarification_question` fields
+> that the output schema no longer has (harmless — it degrades to `service` either way).
 
 ---
 
 ## 7. Output contract & failure modes
 
-`schemas/order-graph-output.schema.ts` (zod):
+`schemas/order-graph-output.schema.ts` (zod) is now minimal — clarification fields are gone,
+because a clarification is a spoken reply, not a proposal:
 
 ```ts
-operations:            z.array(cartOperationSchema).default([]),
-needs_clarification:   z.boolean().default(false),
-clarification_question:z.string().nullable().default(null),
-clarification_options: z.array(z.string()).optional(),
-// .refine: needs_clarification=true  ⇒  clarification_question !== null
+const outputSchema = z.object({
+  operations: z.array(cartOperationSchema).default([]),
+});
 ```
 
-- Lenient defaults mean a minimal `{}` from the model still validates as
-  "propose nothing." The `.refine` is the one hard cross-field rule: you cannot ask
-  for clarification without a question.
-- `parseOrderGraphOutput` returns a `Result`; on failure it carries a
-  repair-friendly message from `formatZodError` (`zod-error.ts`) that feeds
-  straight back into the repair prompt.
+`parseOrderGraphOutput` returns a `Result`; on failure it carries a repair-friendly message from
+`formatZodError` (`zod-error.ts`) that feeds straight back to the agent as the tool result.
 
-How the graph turn can end:
+How the graph turn can end (`OrderGraph.interpret`, checked in this order):
 
 | Outcome | Trigger | Surfaced as |
 |---|---|---|
-| Proposal | `parse` → `finalize → END`, `output.operations` | `GraphTurnResult.complete` → `order.operations_proposed` |
-| Clarification | `parse` → `clarify` → `interrupt` | `GraphTurnResult.clarify` → service emits `order.clarification_needed` |
-| Parse failure | repair loop exhausted → `parse` throws | node logs `order.node_failed`; `invoke()` rejects → service `voice.session_failed` (`order_parse_failed`) |
-| Node fault | any node throws (e.g. Redis in `load_cart`) | `order.node_failed` (tagged with node) → `invoke()` rejects → service fails the turn |
+| Junk | `intent === 'junk'` — the agent never ran | `{status:'junk'}` → service logs `order.intent_junk`, ends quietly |
+| Failure | `failure_reason` set (`agent_step_limit`, `agent_no_terminal`) | `{status:'fail', reason}` → `voice.session_failed` |
+| Proposal | `output` set by a validated `propose_cart` | `{status:'complete'}` → `order.operations_proposed` |
+| Reply | `reply` set by a spoken terminal | `{status:'reply', reply, language?}` → `order.reply` |
+| Node fault | any node throws (e.g. Redis in `load_cart`) | `order.node_failed` (tagged with node) → `invoke()` rejects → service catches → `fail` (`order_parse_failed`) |
 
-Two service-level guards wrap the graph (outside this doc's scope, but they bound
-the loop): a `TIMEOUTS.clarificationMs = 30_000` stall timeout and a
-`MAX_CLARIFICATION_ROUNDS = 3` cap. See `ordering/overview.md` §Clarification.
+The order matters: `junk` is checked first (nothing ran), then `failure_reason` (so a step-limit
+bail isn't misread as a silent success), then the terminals. A run that reaches the end with
+neither a terminal nor a failure reason falls through to a defensive
+`{status:'fail', reason:'agent_no_terminal'}`.
+
+Note the two failure *paths*: the agent's own dead-ends surface as a `fail` **result**, whereas a
+node throw **rejects** `invoke()` and is caught by the service. Both end as
+`voice.session_failed`, distinguished by `reason`.
 
 ---
 
 ## 8. Invariants worth preserving
 
-1. **`finalize` is the only path to `END`.** Both propose and post-clarify routes
-   pass through it, so history is recorded exactly once. Don't add an edge that
-   skips it.
-2. **`normalize` runs only on fresh turns and must clear the clarification
-   channels.** This is what makes `clarification_answer` one-shot. Resumes
-   intentionally bypass it.
-3. **`base_version` is captured once at `load_cart` and never rewritten.** It must
-   ride resumes unchanged so the proposal's version matches the snapshot it was
-   computed from.
-4. **`clarify` must null out `output`.** Otherwise the stale clarify-output could be
-   read as a completed proposal after resume.
-5. **Reducers stay pure/deterministic** (LangGraph requirement) — see the extracted
-   `mergeHistory`.
-6. **No numeric ids in the prompt-facing views.** `cart_view` exposes
-   keys/names/`line_id` only, by design, so the model can't confuse a
-   `product_tmpl_id`/`ptav_id` for a `line_id`.
+1. **`finalize` is the only path to `END` for a turn that ran the agent.** Every agent route
+   passes through it, so history is recorded exactly once. Don't add an edge that skips it.
+   (`junk` is the deliberate exception — it must NOT be recorded.)
+2. **`normalize` must clear every turn-scoped channel.** The checkpointer persists everything, so
+   a channel left unclear leaks into the next turn. Adding a turn-scoped channel means adding it
+   to `normalize`'s reset.
+3. **`base_version` is captured once at `load_cart` and never rewritten**, so the proposal's
+   version matches the snapshot it was computed from.
+4. **The loop routers stay channel-driven.** `tools → agent` must fire whenever no terminal was
+   written; that is what makes a failed `propose_cart` retriable rather than fatal.
+5. **`output` and `reply` are mutually exclusive per turn.** Never both propose and speak.
+6. **Reducers stay pure/deterministic** (LangGraph requirement) — see the extracted `mergeHistory`.
+7. **No numeric ids in the prompt-facing views.** `cart_view` exposes keys/names/`line_id` only,
+   by design, so the model can't confuse a `product_tmpl_id`/`ptav_id` for a `line_id`.
+8. **`reply_language` stays turn-scoped.** A language declaration is evidence about the turn that
+   made it; sharing the channel once leaked it into later turns that declared none.
 
 ---
 
@@ -557,19 +498,19 @@ the loop): a `TIMEOUTS.clarificationMs = 30_000` stall timeout and a
 
 | File | Role |
 |---|---|
-| `order-graph.ts` | Façade: `start()` / `interpret()`, thread config; maps intent → `GraphTurnResult`. |
-| `graph/build-graph.ts` | Node definitions, edges, intent routing, compile+checkpointer. |
-| `graph/intents.ts` | `intentSchema` + `INTENT_ROUTE` — the intent set and its routing table. |
+| `order-graph.ts` | Façade: `start()` / `interpret()`, thread config; maps channels → `GraphTurnResult`. |
+| `graph/build-graph.ts` | Node definitions, edges, intent routing, the agent ⇄ tools loop, compile+checkpointer. |
+| `graph/intents.ts` | `intentSchema` (`service`/`junk`) + `INTENT_ROUTE` — the intent set and its routing table. |
 | `graph/state.ts` | `OrderState` annotations, `lww`/`appendHistory` reducers, `mergeHistory`. |
 | `graph/instrument.ts` | `node(name, fn)` — per-node error logging, bubble-up passthrough. |
-| `nodes/classify-intent.node.ts` | LLM intent classifier; defaults to `order` on any failure. |
-| `nodes/suggest.node.ts` | `generateSuggestion` — LLM recommender for the `suggest` intent; filters to candidates, degrades to a fallback reply. |
-| `schemas/suggestion.schema.ts` | `Suggestion`/`SuggestedItem` types + `parseSuggestion` (zod). |
+| `graph/parse-spoken-reply.ts` | `parseSpokenReply` — the `{language, reply}` terminal, degrading per-field. |
+| `tools/tool-specs.ts` | `TOOL_NAMES` + `TOOL_SPECS` — the tools advertised to the agent. |
+| `tools/run-tools.ts` | The `tools` node: executes calls, appends results, sets `output` on a valid `propose_cart`. |
+| `nodes/classify-intent.node.ts` | LLM junk-gate classifier; degrades to `service` on any failure. |
 | `nodes/normalize-transcript.node.ts` | Whitespace normalization. |
 | `nodes/load-cart.node.ts` | `loadCart` + `buildCartView` (self-describing projection). |
-| `nodes/retrieve-candidates.node.ts` | Candidate retrieval wrapper. |
-| `nodes/parse-order.node.ts` | Single LLM parse call. |
-| `nodes/validate-operations.node.ts` | JSON + zod validation → `Result`. |
-| `nodes/parse-and-validate.node.ts` | Parse + schema-repair retry loop. |
-| `schemas/order-graph-input.schema.ts` | `OrderGraphInput`, `CartView`, `HistoryTurn` types. |
-| `schemas/order-graph-output.schema.ts` | Output zod schema + `parseOrderGraphOutput`. |
+| `llm/agent-prompt-builder.ts` | The agent's system prompt + user context (the seed transcript). |
+| `llm/intent-prompt-builder.ts` | `buildIntentPrompt` — the binary junk-gate prompt. |
+| `schemas/order-graph-input.schema.ts` | `CartView`, `CartLineView`, `HistoryTurn` types. |
+| `schemas/order-graph-output.schema.ts` | `propose_cart`'s output zod schema + `parseOrderGraphOutput`. |
+| `schemas/cart-operation.schema.ts` | The operation union — drives both prompt and validation. |
