@@ -20,20 +20,26 @@ describe('classifyIntent', () => {
     }
   });
 
-  it('defaults to order on non-JSON output', async () => {
-    expect(await classifyIntent(fakeLlm('not json at all'), 'x')).toBe('order');
+  it('defaults to service on non-JSON output', async () => {
+    expect(await classifyIntent(fakeLlm('not json at all'), 'x')).toBe('service');
   });
 
-  it('defaults to order on a valid-but-non-object payload (JSON null)', async () => {
-    expect(await classifyIntent(fakeLlm('null'), 'x')).toBe('order');
+  it('defaults to service on a valid-but-non-object payload (JSON null)', async () => {
+    expect(await classifyIntent(fakeLlm('null'), 'x')).toBe('service');
   });
 
-  it('defaults to order on an unrecognized intent label', async () => {
-    expect(await classifyIntent(fakeLlm(JSON.stringify({ intent: 'banana' })), 'x')).toBe('order');
+  it('defaults to service on an unrecognized intent label', async () => {
+    expect(await classifyIntent(fakeLlm(JSON.stringify({ intent: 'banana' })), 'x')).toBe('service');
   });
 
-  it('defaults to order when the LLM call throws', async () => {
+  // The pre-binary label set. A model still echoing an old prompt must degrade to the pipeline,
+  // not be read as a routable intent.
+  it('defaults to service on a retired intent label', async () => {
+    expect(await classifyIntent(fakeLlm(JSON.stringify({ intent: 'suggest' })), 'x')).toBe('service');
+  });
+
+  it('defaults to service when the LLM call throws', async () => {
     const llm = fakeLlm(() => Promise.reject(new Error('boom')));
-    expect(await classifyIntent(llm, 'x')).toBe('order');
+    expect(await classifyIntent(llm, 'x')).toBe('service');
   });
 });

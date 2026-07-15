@@ -59,7 +59,14 @@ deterministic source of truth.
   sentinel `maximum`/`$schema` noise) so the advertised shape can't drift from validation. The
   schema pins STRUCTURE only; the prose KEY RULES still carry the semantics a schema can't
   express (key provenance, the inline-modifier rule, matching a cart line by name).
-- `intent-prompt-builder.ts` builds the junk-gate classifier prompt (`{intent}` JSON).
+- `intent-prompt-builder.ts` builds the junk-gate classifier prompt (`{intent}` JSON). The choice
+  is BINARY — `service` (anything a server could act on: ordering, edits, recommendations, menu
+  questions) vs `junk` (greetings, small talk, noise, off-topic) — because the agent decides the
+  outcome itself, so a finer label would be read by nothing downstream. `service` is defined by
+  inclusion, with an explicit "prefer `service` whenever it could plausibly be acted on" tiebreak:
+  the gate's only real failure mode is dropping a live order, and the agent can always ask a
+  follow-up. The label union renders from `intentSchema.options`, so the prompt can't drift from
+  the set the classifier validates against.
 
 ## Dependencies
 - `ordering/schemas/order-graph-input` + `cart-operation` (prompt-facing types + allowed ops).
@@ -71,7 +78,7 @@ deterministic source of truth.
 - `agent-prompt-builder.ts` — `buildAgentMessages`/`buildAgentSystemPrompt` (the agent loop).
 - `intent-prompt-builder.ts` — `buildIntentPrompt` (the classifier).
 - `llm-client.ts` — `createLlmProvider` switch + `StubLlmProvider` (`complete` yields a
-  non-intent JSON that degrades to `order`; `chat` replays an optional scripted `ChatResult[]`
+  non-intent JSON that degrades to `service`; `chat` replays an optional scripted `ChatResult[]`
   for deterministic agent-loop tests).
 - `openai-compatible-provider.ts` — `OpenAiCompatibleLlmProvider` (Ollama/OpenAI/…),
   `complete` + `chat`.
