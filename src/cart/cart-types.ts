@@ -29,8 +29,6 @@ export interface CartLine {
   names: Record<LangCode, string>;
   quantity: number;
   modifiers: CartModifier[];
-  combo_id?: number;
-  combo_choices?: ProductId[];
 }
 
 /** The full cart snapshot — mirrors the Redis value. */

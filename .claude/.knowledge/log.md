@@ -7,6 +7,19 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — Drop the unused combo fields from `CartLine`
+- **What:** Removed `combo_id?` and `combo_choices?` from `CartLine` in the backend and frontend
+  types and from the two `design.md` cart specs (§Redis value, §17.3). They were declared but
+  never read or written anywhere — no producer, no consumer.
+- **Why:** Combos on a cart line were not intended; the vestigial optional fields implied a
+  supported feature that does not exist.
+- **Where:** `src/cart/cart-types.ts`, `frontend/src/realtime/messages.ts`, `docs/design.md`.
+- **Notes:** Odoo's *own* combo schema (`product_combo`, `product_combo_item`) is untouched — it
+  is real upstream POS structure we read, documented in `docs/menu_restaurant_schema.md`. The
+  "Odoo holds … combos" lines in `design.md` §17 and `persistence/overview.md` are statements
+  about Odoo, not our cart, and stay as-is. No stored-cart migration needed: the fields were
+  optional and never written, so existing Redis carts do not carry them.
+
 ## 2026-07-14 — Reply JSON is `{language, reply}`: declare the language before writing it
 - **What:** Flipped the spoken-reply terminal's field order from `{reply, language}` to
   `{language, reply}` in the agent prompt, and reworked the **LANGUAGE** section to require the
