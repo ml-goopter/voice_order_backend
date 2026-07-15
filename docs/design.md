@@ -1029,7 +1029,7 @@ interface HistoryTurn {
 
 interface OrderGraphInput {
   request_id: RequestId; session_id: SessionId; cart_id: CartId; pos_config_id: PosConfigId;
-  customer_text: string; language?: LangCode;
+  customer_text: string;               // no language: STT detection is not plumbed (§text-to-speech)
   current_cart: CartView; candidate_items: CandidateItem[];
   history: HistoryTurn[];              // oldest → newest, for reference resolution
   supported_languages: LangCode[];
@@ -1064,7 +1064,7 @@ interface OrderProposal {
 Payloads for the core events in §2. Modules communicate ONLY through these.
 
 ```ts
-'stt.final_transcript.received': { request_id; session_id; cart_id; pos_config_id; text; language? }
+'stt.final_transcript.received': { request_id; session_id; cart_id; pos_config_id; text }
 'order.operations_proposed':     { session_id; proposal: OrderProposal }
 'order.clarification_needed':    { cart_id; session_id; request_id; question; options? }
 'order.clarification_answered':  { cart_id; session_id; request_id; answer }
@@ -1089,7 +1089,7 @@ Payloads for the core events in §2. Modules communicate ONLY through these.
 
 // Outbound (gateway → app)
 { type: 'voice.partial_transcript'; session_id; text }        // display-only
-{ type: 'voice.final_transcript';   session_id; text; language? }
+{ type: 'voice.final_transcript';   session_id; text }              // display-only; no language
 { type: 'order.clarification_needed'; cart_id; request_id; question; options? }
 { type: 'order.reply';              cart_id; request_id; reply }         // spoken clarify/recommend (one merged outcome)
 { type: 'cart.updated';             cart_id; version; cart: Cart }

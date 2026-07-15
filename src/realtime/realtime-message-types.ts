@@ -44,7 +44,6 @@ export interface FinalTranscriptMsg {
   type: 'voice.final_transcript';
   session_id: SessionId;
   text: string;
-  language?: string;
 }
 export interface OrderReplyMsg {
   type: 'order.reply';

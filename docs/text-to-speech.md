@@ -26,7 +26,8 @@ order.reply (bus, carries language)
 
 The trigger is the existing `order.reply` **bus event** — no new internal event is
 introduced. The `request_id` on the reply correlates the audio stream to the reply text.
-The `language` is the customer's STT-detected language for the turn (see Multilingual below).
+The `language` is the language the agent declared it wrote the reply in, defaulting to `en` when it
+declared none (see Multilingual below).
 
 **Why per-segment.** Each `tts.audio_chunk` is a **complete, standalone** audio file (a
 self-contained mp3), not a slice of one continuous stream — mid-stream slices of a single mp3
@@ -62,12 +63,29 @@ the old audio. Stopping TTS the moment the customer starts speaking again (`voic
 **out of scope** for now.
 
 ### Multilingual
-The customer's spoken language is detected by STT per turn and already flows through the ordering
-graph and into the LLM prompt, which is instructed to **reply in the same language**. So the
-`order.reply` text is already in the customer's language; the only job for TTS is to speak it in
-that language. The detected language rides the `order.reply` event → `TtsService.speak(…, language)`
-→ `provider.synthesize(…, language)`. `toCartesiaLanguage()` maps the Odoo `res.lang` code (`en_US`)
-to Cartesia's ISO-639-1 code (`en`), falling back to `TTS_LANGUAGE` when the turn detected none.
+The LLM is instructed to **reply in the customer's language**, so the `order.reply` text is already
+in it; the only job for TTS is to speak it in that language.
+
+**The language comes from the agent, and ONLY from the agent.** The agent ends a spoken turn with
+strict JSON `{reply, language}` and declares the ISO-639-1 code of the language it actually wrote the
+reply in (see `agent-tools.md` §3). That value rides the `order.reply` event →
+`TtsService.speak(…, language)` → `provider.synthesize(…, language)`. `toCartesiaLanguage()` maps the
+code to Cartesia's primary subtag (`en_US`/`zh-CN` → `en`/`zh`). When the agent declares no usable
+language the reply falls back to **`TTS_LANGUAGE`** (in `order-understanding-service.ts`), so the
+deployment's configured default still decides what an undeclared reply is spoken in.
+
+**STT's detected language is not consulted at all** — not even as a fallback. It was the original
+source but proved unreliable: AssemblyAI's default streaming model returns `en` for every turn, and
+the multilingual/pro tier needs entitlement that isn't reliably in effect. The agent writes the
+reply, so it is the only thing that knows the language. `ordering/graph/parse-spoken-reply.ts`
+shape-checks the declared code and drops anything that isn't a language code (an agent that says
+`"Chinese"` yields no language → `TTS_LANGUAGE`, rather than forwarding garbage to Cartesia).
+
+> `TTS_LANGUAGE` is applied at the **reply** boundary rather than inside the provider: `order.reply`
+> is the only `speak` caller, so defaulting in `order-understanding-service.ts` is what keeps the
+> knob live — hardcoding `en` there would silently override an operator who set it to anything else.
+> Because that boundary always resolves a language, `language` is **required** from `speak` down
+> through `synthesize`, and providers carry no default of their own.
 
 `sonic-3.5` is multilingual (42 languages) and a **multi-locale Cartesia voice** speaks each one via
 the `language` param while preserving its timbre — so a single `TTS_VOICE_ID` covers all languages.
@@ -98,7 +116,7 @@ sub-segmenting — correct, just a higher time-to-first-audio for those language
 | `CARTESIA_API_KEY` | — | required for `cartesia` (else falls back to noop) |
 | `TTS_MODEL` | `sonic-3.5` | Cartesia Sonic model (multilingual) |
 | `TTS_VOICE_ID` | (placeholder) | Cartesia voice UUID — use a multi-locale voice |
-| `TTS_LANGUAGE` | `en` | ISO-639-1 fallback when the turn detected no language |
+| `TTS_LANGUAGE` | `en` | ISO-639-1 fallback when the agent declared no reply language |
 | `TTS_ENCODING` | `mp3` | audio encoding streamed to the client (`mp3` \| `linear16`) |
 | `TTS_SAMPLE_RATE` | `24000` | Hz of the emitted audio; also required by the mp3 container |
 | `TTS_BIT_RATE` | `128000` | mp3 bit rate (bps) for the Cartesia mp3 container |

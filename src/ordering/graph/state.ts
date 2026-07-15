@@ -47,7 +47,8 @@ export const OrderState = Annotation.Root({
   cart_id: Annotation<CartId>(),
   pos_config_id: Annotation<PosConfigId>(),
   customer_text: Annotation<string>(),
-  language: lww<LangCode | undefined>(() => undefined),
+  // No STT-detected `language` input: the graph does not depend on STT language detection at all.
+  // The agent reads the language off `customer_text` and declares it (see `reply_language`).
   supported_languages: lww<LangCode[]>(() => []),
 
   // ── working state (filled by nodes) ──
@@ -60,6 +61,11 @@ export const OrderState = Annotation.Root({
   // Both cleared by `normalize` (the checkpointer persists everything, so anything left would leak).
   output: lww<OrderGraphOutput | null>(() => null),
   reply: lww<string | null>(() => null),
+  // The language the agent declared it wrote `reply` in — the sole source of the reply's language.
+  // Turn-scoped: a declaration is evidence about the turn that made it, so it must not outlive that
+  // turn (a shared channel once leaked it into later turns that declared none). Cleared by
+  // `normalize`; when absent the caller defaults the reply to English.
+  reply_language: lww<LangCode | undefined>(() => undefined),
   // ── agent scratchpad (turn-scoped; docs/agent-tools.md §5) ──
   // The tool-calling transcript for THIS turn (assistant tool_calls ↔ tool results). Manually
   // appended by the `agent`/`tools` nodes and CLEARED by `normalize` each turn — it must never

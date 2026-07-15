@@ -30,7 +30,7 @@ export class TtsService {
 
   constructor(private readonly provider: TtsProvider) {}
 
-  speak(conn: ClientConnection, ctx: TtsContext, text: string, language?: LangCode): void {
+  speak(conn: ClientConnection, ctx: TtsContext, text: string, language: LangCode): void {
     const segments = segmentText(text);
     if (segments.length === 0) return;
 
@@ -57,7 +57,7 @@ export class TtsService {
     segments: string[],
     controller: AbortController,
     log: ReturnType<typeof logger.child>,
-    language?: LangCode,
+    language: LangCode,
   ): Promise<void> {
     const { signal } = controller;
     try {

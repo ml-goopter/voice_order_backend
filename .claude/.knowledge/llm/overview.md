@@ -37,9 +37,15 @@ deterministic source of truth.
   request must echo unchanged or it 400s. A tool-calls-only assistant turn also omits
   `content` (a null content beside `tool_calls` is rejected by some compat endpoints).
 - `agent-prompt-builder.ts` builds the agent's seed transcript: a system message fixing the
-  tool workflow (search first, then EITHER `propose_cart` OR a plain spoken reply) and the
-  operation contract (keys from search results, edits target `line_id`, only `add_item` omits
-  it), plus a user message with the utterance, `current_cart`, and `conversation_history`.
+  tool workflow (search first, then EITHER `propose_cart` OR a spoken reply emitted as strict
+  JSON `{reply, language}`, where `language` is the ISO-639-1 code of the language the agent
+  wrote the reply in — parsed by `ordering/graph/parse-spoken-reply.ts` and forwarded to TTS)
+  and the operation contract (keys from search results, edits target `line_id`, only `add_item`
+  omits it), plus a user message with the utterance, `current_cart`, and `conversation_history`.
+  A dedicated **LANGUAGE** section makes `customer_text` the sole authority on which language to
+  reply in and requires matching the LATEST utterance (so a mid-conversation switch is honoured;
+  history is context for intent, not evidence of language). No language hint is passed in the user
+  context — the STT code tags nearly every turn `en`, and a wrong hint is worse than none.
   Candidates are NOT pre-fetched — the agent retrieves them via `search_menu_semantic`.
   The system prompt also embeds the **JSON Schema for a `propose_cart` operation**, generated
   from `cartOperationSchema` via `z.toJSONSchema` (with a small `scrubSchema` pass to drop the

@@ -12,7 +12,6 @@ export interface OrderGraphParams {
   cart_id: CartId;
   pos_config_id: PosConfigId;
   text: string;
-  language?: LangCode;
   supported_languages: LangCode[];
 }
 
@@ -26,7 +25,7 @@ export interface OrderGraphParams {
  */
 export type GraphTurnResult =
   | { status: 'complete'; output: OrderGraphOutput; base_version: number }
-  | { status: 'reply'; reply: string }
+  | { status: 'reply'; reply: string; language?: LangCode }
   | { status: 'junk' }
   | { status: 'fail'; reason: string };
 
@@ -35,6 +34,10 @@ type InvokeReturn = {
   output: OrderGraphOutput | null;
   base_version: number;
   reply: string | null;
+  /** The language the agent declared it wrote `reply` in; absent when it declared none. Its own
+   *  channel, not the STT `language` input — so "absent" really means the agent stayed silent on
+   *  it, and the caller's fallback to the STT code actually fires. */
+  reply_language?: LangCode;
   failure_reason: string | undefined;
 };
 
@@ -65,7 +68,6 @@ export class OrderGraph {
       pos_config_id: p.pos_config_id,
       customer_text: p.text,
       supported_languages: p.supported_languages,
-      ...(p.language !== undefined ? { language: p.language } : {}),
     };
     const out = (await this.graph.invoke(input, this.threadConfig(p.pos_config_id, p.cart_id))) as InvokeReturn;
     return this.interpret(out);
@@ -78,7 +80,10 @@ export class OrderGraph {
     if (out.failure_reason !== undefined) return { status: 'fail', reason: out.failure_reason };
     // Otherwise the outcome is however the agent ended the turn: committed operations, or spoke.
     if (out.output !== null) return { status: 'complete', output: out.output, base_version: out.base_version };
-    if (out.reply !== null) return { status: 'reply', reply: out.reply };
+    if (out.reply !== null) {
+      const lang = out.reply_language;
+      return { status: 'reply', reply: out.reply, ...(lang !== undefined ? { language: lang } : {}) };
+    }
     // Defensive: the agent finished with neither a terminal nor a recorded failure reason.
     return { status: 'fail', reason: 'agent_no_terminal' };
   }

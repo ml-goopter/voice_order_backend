@@ -31,7 +31,7 @@ export interface AppConfig {
   readonly cartesiaApiKey: string;
   readonly ttsModel: string; // Cartesia Sonic model, e.g. 'sonic-3.5' (multilingual)
   readonly ttsVoiceId: string; // Cartesia voice UUID (a multi-locale voice speaks all languages)
-  readonly ttsLanguage: string; // ISO-639-1 fallback language when the turn detected none (e.g. 'en')
+  readonly ttsLanguage: string; // ISO-639-1 fallback when the agent declared no reply language (e.g. 'en')
   readonly ttsEncoding: string; // audio encoding streamed to the client ('mp3' default; 'linear16' etc.)
   readonly ttsSampleRate: number; // Hz of the emitted audio; mp3 container also requires it (Cartesia)
   readonly ttsBitRate: number; // mp3 bit rate for the Cartesia mp3 container (bps)

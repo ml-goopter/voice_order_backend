@@ -30,8 +30,10 @@ turn logic — it is a pure text→audio side-effect of `order.reply`.
   self-contained mp3) for a segment — not a slice of a continuous stream — so the client
   plays each chunk on its own as it arrives (progressive playback). Matches the mic contract
   (audio is base64 inside JSON, §3).
-- **Provider abstraction (mirrors STT):** `TtsProvider.synthesize(text, signal, language?)` returns a
+- **Provider abstraction (mirrors STT):** `TtsProvider.synthesize(text, signal, language)` returns a
   `Promise<Buffer>` — one complete audio file per segment, cancellable via the `AbortSignal`.
+  `language` is **required**: the reply boundary always resolves one, so no provider carries a
+  default of its own.
   `CartesiaTtsProvider` awaits the REST response and returns its bytes as one buffer;
   the Cartesia-specific call is an injected `SpeakFn` (built in `tts-client.ts`) so tests
   skip the network. `createTtsProvider()` selects by `config.ttsProvider`; `NoopTtsProvider`
@@ -41,10 +43,12 @@ turn logic — it is a pure text→audio side-effect of `order.reply`.
   voice: { mode: 'id', id }, language, output_format })` per segment; the `Response` body is drained
   to bytes (`arrayBuffer()`). One request per segment cuts time-to-first-audio. The model is
   `sonic-3.5` (multilingual, 42 languages) and the voice is a Cartesia UUID (`TTS_VOICE_ID`).
-- **Multilingual:** the customer's language is detected by STT and rides `order.reply` (see
-  Mechanics/`events`). `TtsService.speak(conn, ctx, text, language)` forwards it to `synthesize`;
-  `toCartesiaLanguage()` maps the Odoo `res.lang` code (`en_US`) to Cartesia's ISO-639-1 language
-  (`en`), falling back to `TTS_LANGUAGE` when the turn detected none. A single multi-locale Cartesia
+- **Multilingual:** the reply's language is declared by the **agent that wrote it** (STT detection is
+  not consulted at all) and rides `order.reply` (see Mechanics/`events`).
+  `TtsService.speak(conn, ctx, text, language)` forwards it to `synthesize`; `toCartesiaLanguage()`
+  takes the primary subtag (`en_US`/`zh-CN` → `en`/`zh`) and is total — every caller supplies a real
+  code. The `TTS_LANGUAGE` fallback for an undeclared reply is applied upstream, in
+  `order-understanding-service` (the sole `speak` caller), not here. A single multi-locale Cartesia
   voice speaks each language via the `language` param (its timbre is preserved across languages).
 - **Encoding:** `mp3` by default (each segment's mp3 is self-describing and plays straight
   through a client media player). Cartesia's mp3 container needs `TTS_SAMPLE_RATE` + `TTS_BIT_RATE`
@@ -66,15 +70,15 @@ turn logic — it is a pure text→audio side-effect of `order.reply`.
   once via the factory (`tts.cartesia_no_key` / `tts.noop_provider_in_use`).
 
 ## Dependencies
-- `events` (EventBus) — the `order.reply` trigger (consumed in the gateway), which now carries the
-  detected `language`.
+- `events` (EventBus) — the `order.reply` trigger (consumed in the gateway), which carries the
+  agent-declared `language` (required).
 - `realtime` (`ClientConnection`) — sends the `tts.*` frames; the gateway owns sockets and
   constructs `TtsService`.
 - `config/env` — provider/key/model/voice/language/encoding settings.
 - `@cartesia/cartesia-js` — Cartesia Sonic REST TTS client (`tts.generate`).
 
 ## Key files
-- `tts/tts-types.ts` — `TtsProvider` interface (`synthesize(text, signal, language?) → Promise<Buffer>`).
+- `tts/tts-types.ts` — `TtsProvider` interface (`synthesize(text, signal, language) → Promise<Buffer>`).
 - `tts/segment-text.ts` — `segmentText(reply)`: split a reply into ≈sentence segments.
 - `tts/cartesia-tts-provider.ts` — Cartesia Sonic provider + injectable `SpeakFn`; awaits one buffer
   per segment. `toCartesiaLanguage()` maps `res.lang` (`en_US`) → Cartesia language (`en`).

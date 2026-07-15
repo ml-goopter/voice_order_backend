@@ -28,7 +28,7 @@ export function createTtsProvider(): TtsProvider {
       }
       // mp3 is self-describing; only raw PCM (linear16) advertises a sample rate to the client.
       const sampleRate = config.ttsEncoding === 'linear16' ? config.ttsSampleRate : undefined;
-      return new CartesiaTtsProvider(config.ttsEncoding, sampleRate, config.ttsLanguage, defaultSpeakFn());
+      return new CartesiaTtsProvider(config.ttsEncoding, sampleRate, defaultSpeakFn());
     default:
       return new NoopTtsProvider();
   }

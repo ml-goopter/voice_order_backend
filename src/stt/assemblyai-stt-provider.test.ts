@@ -48,12 +48,12 @@ function turn(partial: Partial<TurnEvent>): TurnEvent {
 function collectHandlers() {
   return {
     partials: [] as string[],
-    finals: [] as Array<{ text: string; language?: string }>,
+    finals: [] as Array<{ text: string }>,
     errors: [] as string[],
     handlers(): SttStreamHandlers {
       return {
         onPartial: (t) => this.partials.push(t),
-        onFinal: (t, lang) => this.finals.push({ text: t, ...(lang !== undefined ? { language: lang } : {}) }),
+        onFinal: (t) => this.finals.push({ text: t }),
         onError: (e) => this.errors.push(e.message),
       };
     },
@@ -82,16 +82,17 @@ describe('AssemblyAiSttProvider', () => {
     expect(sink.finals).toHaveLength(0);
   });
 
-  it('emits onFinal once, on the formatted end-of-turn, with the language', async () => {
+  it('emits onFinal once, on the formatted end-of-turn', async () => {
     const { fake, sink } = await open();
     // Unformatted end-of-turn comes first and must NOT fire a final.
     fake.fire('turn', turn({ transcript: 'two burgers', end_of_turn: true, turn_is_formatted: false, turn_order: 1 }));
     expect(sink.finals).toHaveLength(0);
-    // Formatted end-of-turn fires the final.
+    // Formatted end-of-turn fires the final. `language_code` is deliberately ignored — the turn's
+    // detected language is not reported to anyone (docs/text-to-speech.md §Multilingual).
     fake.fire('turn', turn({ transcript: 'Two burgers.', end_of_turn: true, turn_is_formatted: true, turn_order: 1, language_code: 'en' }));
     // A duplicate formatted event for the same turn must not double-fire.
     fake.fire('turn', turn({ transcript: 'Two burgers.', end_of_turn: true, turn_is_formatted: true, turn_order: 1 }));
-    expect(sink.finals).toEqual([{ text: 'Two burgers.', language: 'en' }]);
+    expect(sink.finals).toEqual([{ text: 'Two burgers.' }]);
   });
 
   it('surfaces provider errors via onError', async () => {

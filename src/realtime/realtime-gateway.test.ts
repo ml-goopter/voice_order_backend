@@ -73,7 +73,9 @@ describe('RealtimeGateway — order.reply', () => {
       session_id: 's1',
       request_id: 'r1',
       reply: 'How about a Coke?',
+      language: 'en',
     });
+    // The client frame carries no language — it displays the text; only TTS needs the language.
     expect(a.send).toHaveBeenCalledWith({
       type: 'order.reply',
       cart_id: 'cart_1',
@@ -91,11 +93,12 @@ describe('RealtimeGateway — order.reply', () => {
       session_id: 's1',
       request_id: 'r1',
       reply: 'How about a Coke?',
+      language: 'en',
     });
-    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, 'How about a Coke?', undefined);
+    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, 'How about a Coke?', 'en');
   });
 
-  it('forwards the detected language so TTS speaks it in the customer language', () => {
+  it("forwards the agent-declared language so TTS speaks it in the reply's language", () => {
     const { bus, gw, tts } = makeGateway();
     const a = conn('s1', 'cart_1');
     gw.onConnect(a);
@@ -104,9 +107,9 @@ describe('RealtimeGateway — order.reply', () => {
       session_id: 's1',
       request_id: 'r1',
       reply: '¿Una Coca-Cola?',
-      language: 'es_ES',
+      language: 'es',
     });
-    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, '¿Una Coca-Cola?', 'es_ES');
+    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, '¿Una Coca-Cola?', 'es');
   });
 
   it('is a no-op (no send, no TTS) when the session has no socket', () => {
@@ -117,6 +120,7 @@ describe('RealtimeGateway — order.reply', () => {
         session_id: 'missing',
         request_id: 'r',
         reply: 'q',
+        language: 'en',
       }),
     ).not.toThrow();
     expect(tts.speak).not.toHaveBeenCalled();

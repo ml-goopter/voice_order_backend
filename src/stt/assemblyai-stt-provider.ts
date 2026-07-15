@@ -1,7 +1,6 @@
 import { AssemblyAI, type StreamingTranscriber, type TurnEvent } from 'assemblyai';
 import type { SttProvider } from './stt-provider.js';
 import type { SttStream, SttStreamHandlers } from './stt-types.js';
-import type { LangCode } from '../shared/types.js';
 import { config } from '../config/env.js';
 
 /** Client audio contract: raw PCM16, mono, `config.sttSampleRate` Hz (design §5). */
@@ -44,7 +43,7 @@ export class AssemblyAiSttProvider implements SttProvider {
       if (!turn.turn_is_formatted || turn.turn_order === lastFinalTurn || !text) return;
       lastFinalTurn = turn.turn_order;
       finalDelivered = true;
-      handlers.onFinal(text, turn.language_code as LangCode | undefined);
+      handlers.onFinal(text);
     });
 
     transcriber.on('error', (err: Error) => handlers.onError(err));
