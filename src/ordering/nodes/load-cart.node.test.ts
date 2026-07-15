@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildCartView } from './load-cart.node.js';
 import type { MenuLookup } from '../../menu/menu-service.js';
 import type { MenuItem } from '../../menu/menu-types.js';
-import type { Cart } from '../../cart/cart-types.js';
+import type { Cart, CartLine, CartModifier } from '../../cart/cart-types.js';
 
 const CHICKEN: MenuItem = {
   product_tmpl_id: 10,
@@ -25,6 +25,12 @@ function fakeMenu(catalog: MenuItem[]): MenuLookup {
   };
 }
 
+/** A stored line/modifier carries display names snapshotted at add time, but `buildCartView`
+ * never reads them — it re-resolves every name from the menu — so these fixtures fill the
+ * required fields with a placeholder that would be obvious if it ever surfaced in a view. */
+const mod = (ptav_id: CartModifier['ptav_id']): CartModifier => ({ ptav_id, name: 'SNAPSHOT_UNREAD' });
+const cartLine = (l: Omit<CartLine, 'name' | 'names'>): CartLine => ({ ...l, name: 'SNAPSHOT_UNREAD', names: {} });
+
 function cartWith(items: Cart['items']): Cart {
   return {
     cart_id: 'cart_1',
@@ -41,7 +47,7 @@ function cartWith(items: Cart['items']): Cart {
 describe('buildCartView (Plan A self-describing cart)', () => {
   it('enriches a line with name, key, resolved current modifiers, and available_modifiers', async () => {
     const cart = cartWith([
-      { line_id: 'ln_1', product_tmpl_id: 10, quantity: 2, modifiers: [{ ptav_id: 100 }] },
+      cartLine({ line_id: 'ln_1', product_tmpl_id: 10, quantity: 2, modifiers: [mod(100)] }),
     ]);
     const view = await buildCartView(fakeMenu([CHICKEN]), cart);
 
@@ -63,7 +69,7 @@ describe('buildCartView (Plan A self-describing cart)', () => {
 
   it('degrades gracefully when the item is missing from the menu', async () => {
     const cart = cartWith([
-      { line_id: 'ln_x', product_tmpl_id: 999, quantity: 1, modifiers: [{ ptav_id: 5 }] },
+      cartLine({ line_id: 'ln_x', product_tmpl_id: 999, quantity: 1, modifiers: [mod(5)] }),
     ]);
     const view = await buildCartView(fakeMenu([CHICKEN]), cart);
     const line = view.items[0]!;
@@ -76,7 +82,7 @@ describe('buildCartView (Plan A self-describing cart)', () => {
   it('falls back to a non-en_US name (never the numeric id) when en_US is absent', async () => {
     const zhChicken: MenuItem = { ...CHICKEN, names: { zh_CN: '甜酸鸡' } };
     const cart = cartWith([
-      { line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [] },
+      cartLine({ line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [] }),
     ]);
     const view = await buildCartView(fakeMenu([zhChicken]), cart);
     // The line still names itself (localized), so the model can match "the chicken" → line_id.
@@ -86,7 +92,7 @@ describe('buildCartView (Plan A self-describing cart)', () => {
 
   it('drops an attached ptav_id that is not a modifier of the item', async () => {
     const cart = cartWith([
-      { line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [{ ptav_id: 999 }] },
+      cartLine({ line_id: 'ln_1', product_tmpl_id: 10, quantity: 1, modifiers: [mod(999)] }),
     ]);
     const view = await buildCartView(fakeMenu([CHICKEN]), cart);
     expect(view.items[0]!.modifiers).toEqual([]);
