@@ -1,9 +1,15 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { HttpOdooClient, OdooError } from './odoo-client.js';
 import type { InsertCartRequest } from './insert-cart-request.js';
+import type { QuoteRequest } from './quote-request.js';
 
 const REQ: InsertCartRequest = {
   cart_id: 'cart_1',
+  pos_config_id: 7,
+  items: [{ line_id: 'ln_1', product_tmpl_id: 100, quantity: 1 }],
+};
+
+const QUOTE_REQ: QuoteRequest = {
   pos_config_id: 7,
   items: [{ line_id: 'ln_1', product_tmpl_id: 100, quantity: 1 }],
 };
@@ -153,5 +159,71 @@ describe('HttpOdooClient.insertCart', () => {
     await new HttpOdooClient('http://odoo.test/', 'k').insertCart(REQ);
 
     expect((f.mock.calls[0] as [string, RequestInit])[0]).toBe('http://odoo.test/goopter_cart_api/v1/cart');
+  });
+});
+
+describe('HttpOdooClient.quote', () => {
+  // The real goopter_cart_api quote shape (verified against jadegarden1).
+  const PRICED = {
+    currency: 'CAD',
+    decimal_places: 2,
+    lines: [{ line_id: 'ln_1', product_id: 19896, full_product_name: 'A1. Spring Roll', quantity: 1, price_unit: 2.25, price_subtotal: 2.25, price_subtotal_incl: 2.36 }],
+    amount_subtotal: 2.25,
+    amount_tax: 0.11,
+    amount_total: 2.36,
+  };
+
+  it('returns the priced quote from the addon response', async () => {
+    stubFetch({ jsonrpc: '2.0', id: 1, result: PRICED });
+
+    expect(await client().quote(QUOTE_REQ)).toEqual(PRICED);
+  });
+
+  it('POSTs a JSON-RPC envelope to the quote route with a bearer key', async () => {
+    const f = stubFetch({ jsonrpc: '2.0', result: PRICED });
+
+    await client().quote(QUOTE_REQ);
+
+    const [url, init] = f.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://odoo.test/goopter_cart_api/v1/quote');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>).authorization).toBe('Bearer key_123');
+    expect(JSON.parse(init.body as string)).toEqual({ jsonrpc: '2.0', method: 'call', params: QUOTE_REQ });
+  });
+
+  it('treats an HTTP 200 carrying an `error` member as a FAILURE', async () => {
+    stubFetch({
+      jsonrpc: '2.0',
+      id: 1,
+      error: { message: 'Odoo Server Error', data: { message: "Product 'X' is not available in the POS.", name: 'UserError' } },
+    });
+
+    await expect(client().quote(QUOTE_REQ)).rejects.toThrow(OdooError);
+    await expect(client().quote(QUOTE_REQ)).rejects.toThrow('not available in the POS');
+  });
+
+  it('rejects a reply whose order amounts are missing or non-numeric', async () => {
+    // The guard: a malformed price must be a clean OdooError, never an `undefined`/NaN total
+    // silently written onto the cart.
+    stubFetch({ jsonrpc: '2.0', result: { currency: 'CAD', decimal_places: 2, lines: [] } });
+
+    await expect(client().quote(QUOTE_REQ)).rejects.toThrow(/no numeric amounts/);
+  });
+
+  it('rejects a null result rather than proxying it', async () => {
+    stubFetch({ jsonrpc: '2.0', result: null });
+
+    await expect(client().quote(QUOTE_REQ)).rejects.toThrow(/no numeric amounts/);
+  });
+
+  it('surfaces a transport failure as an OdooError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('ECONNREFUSED');
+      }),
+    );
+
+    await expect(client().quote(QUOTE_REQ)).rejects.toThrow(/odoo request failed: ECONNREFUSED/);
   });
 });
