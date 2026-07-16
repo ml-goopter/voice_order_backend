@@ -11,6 +11,7 @@ import type { CartOperation } from '../contracts/cart-operation.schema.js';
 import { CartController } from './cart-controller.js';
 import { InMemoryCartRepository } from './cart-repository.js';
 import type { Cart } from './cart-types.js';
+import type { QuoteResponse } from '../odoo/quote-request.js';
 import { NotFoundError } from '../shared/errors.js';
 
 const POS: PosConfigId = 1;
@@ -81,6 +82,38 @@ function confirmHarness(): Harness & { confirmed: Cart[] } {
   bus.on('cart.operation_rejected', (e) => rejected.push(e));
   return { bus, cache, repo, controller, updated, rejected, confirmed };
 }
+
+/**
+ * Harness whose repo prices carts via `responder` (standing in for the Odoo quote), capturing
+ * every cart it was asked to price. A thrown response exercises the controller's best-effort
+ * fallback to locally-computed totals.
+ */
+function quoteHarness(responder: (cart: Cart) => Promise<QuoteResponse>): Harness & { quoted: Cart[] } {
+  const quoted: Cart[] = [];
+  const bus = new EventBus();
+  const cache = new InMemoryCartCache();
+  const repo = new (class extends InMemoryCartRepository {
+    override async quoteCart(cart: Cart): Promise<QuoteResponse> {
+      quoted.push(cart);
+      return responder(cart);
+    }
+  })(cache);
+  const controller = new CartController(cache, makeMenu(), repo, bus);
+  const updated: CartUpdated[] = [];
+  const rejected: CartOperationRejected[] = [];
+  bus.on('cart.updated', (e) => updated.push(e));
+  bus.on('cart.operation_rejected', (e) => rejected.push(e));
+  return { bus, cache, repo, controller, updated, rejected, quoted };
+}
+
+const PRICED: QuoteResponse = {
+  currency: 'CAD',
+  decimal_places: 2,
+  lines: [],
+  amount_subtotal: 22.45,
+  amount_tax: 1.13,
+  amount_total: 23.58,
+};
 
 let seq = 0;
 function proposal(operations: CartOperation[], overrides: Partial<OrderProposal> = {}): OrderProposal {
@@ -399,6 +432,72 @@ describe('CartController.applyProposal', () => {
       expect(cart?.table_id).toBe(12);
       expect(cart?.items).toHaveLength(1); // and the cart was not reset to empty
       expect(cart?.version).toBe(1);
+    });
+  });
+
+  describe('authoritative quote pricing', () => {
+    it('overwrites the local totals with the POS quote before persisting', async () => {
+      const h = quoteHarness(async () => PRICED);
+
+      await h.controller.applyProposal(proposal([addBurger]));
+
+      // Persisted cart and the broadcast both carry the authoritative, tax-included cents
+      // (22.45 / 1.13 / 23.58 → ×100), not the local estimate (base 500, tax 0).
+      const cart = await h.cache.get(CART);
+      expect(cart).toMatchObject({ subtotal_cents: 2245, tax_cents: 113, total_cents: 2358 });
+      expect(h.updated[0]!.cart).toMatchObject({ subtotal_cents: 2245, tax_cents: 113, total_cents: 2358 });
+      // Priced against the post-apply cart (the burger is present).
+      expect(h.quoted).toHaveLength(1);
+      expect(h.quoted[0]!.items).toHaveLength(1);
+      expect(h.quoted[0]!.version).toBe(1);
+    });
+
+    it('keeps the local totals and still emits cart.updated when the quote fails (best-effort)', async () => {
+      const h = quoteHarness(async () => {
+        throw new Error('odoo unreachable');
+      });
+
+      await h.controller.applyProposal(proposal([addBurger]));
+
+      // The edit is not lost: cart.updated still fires, with the local estimate (base 500).
+      const cart = await h.cache.get(CART);
+      expect(cart?.version).toBe(1);
+      expect(cart).toMatchObject({ subtotal_cents: 500, tax_cents: 0, total_cents: 500 });
+      expect(h.updated).toHaveLength(1);
+      expect(h.updated[0]!.cart).toMatchObject({ subtotal_cents: 500, total_cents: 500 });
+      expect(h.rejected).toHaveLength(0);
+    });
+
+    it('does not quote when every op is rejected (nothing applied)', async () => {
+      const h = quoteHarness(async () => PRICED);
+
+      await h.controller.applyProposal(proposal([{ action: 'remove_item', line_id: 'ln_missing' }]));
+
+      expect(h.quoted).toHaveLength(0);
+      expect(h.updated).toHaveLength(0);
+      expect(await h.cache.get(CART)).toBeUndefined();
+    });
+
+    it('does not quote a confirmed cart — ops reject with cart_confirmed, no re-price', async () => {
+      const h = quoteHarness(async () => PRICED);
+      await h.controller.applyProposal(proposal([addBurger])); // quoted once
+      await h.controller.confirm(CART);
+
+      await h.controller.applyProposal(proposal([addFries]));
+
+      // The confirmed branch rejects before the op loop, so no second quote.
+      expect(h.quoted).toHaveLength(1);
+      expect(h.rejected.at(-1)?.reason).toBe('cart_confirmed');
+    });
+
+    it('does not re-quote an idempotent replay of the same request', async () => {
+      const h = quoteHarness(async () => PRICED);
+      const p = proposal([addBurger]);
+      await h.controller.applyProposal(p);
+      await h.controller.applyProposal(p); // replay short-circuits before applying
+
+      expect(h.quoted).toHaveLength(1);
+      expect(h.updated).toHaveLength(1);
     });
   });
 });

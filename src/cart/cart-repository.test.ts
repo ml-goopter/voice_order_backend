@@ -72,6 +72,9 @@ function makeRepo(ttl: number, indexTtl = 86_400): { repo: RedisCartRepository; 
     insertCart: async () => {
       throw new Error('odoo must not be called');
     },
+    quote: async () => {
+      throw new Error('odoo must not be called');
+    },
   };
   return { repo: new RedisCartRepository(redis as unknown as Redis, ttl, odoo, indexTtl), redis };
 }
@@ -153,12 +156,48 @@ describe('RedisCartRepository', () => {
         seen.push(req);
         return 42;
       },
+      quote: async () => {
+        throw new Error('odoo.quote must not be called');
+      },
     };
     const repo = new RedisCartRepository(redis as unknown as Redis, 3600, odoo, 60);
     const cart = emptyCart('cart_x', 7, { device_id: 'dev_x', table_id: 3 });
 
     expect(await repo.confirmOrder(cart)).toBe(42);
     expect(seen).toEqual([{ cart_id: 'cart_x', pos_config_id: 7, items: [], table_id: 3 }]);
+  });
+
+  it('quoteCart maps the cart and hands it to Odoo, returning the priced totals', async () => {
+    const redis = new FakeRedis();
+    const seen: unknown[] = [];
+    const priced = {
+      currency: 'CAD',
+      decimal_places: 2,
+      lines: [],
+      amount_subtotal: 22.45,
+      amount_tax: 1.13,
+      amount_total: 23.58,
+    };
+    const odoo = {
+      insertCart: async () => {
+        throw new Error('odoo.insertCart must not be called');
+      },
+      quote: async (req: unknown) => {
+        seen.push(req);
+        return priced;
+      },
+    };
+    const repo = new RedisCartRepository(redis as unknown as Redis, 3600, odoo, 60);
+    const cart = emptyCart('cart_q', 7, { device_id: 'dev_q', table_id: 3 });
+    cart.items = [
+      { line_id: 'ln_1', product_tmpl_id: 100, names: {}, name: 'x', quantity: 2, modifiers: [{ ptav_id: 900, name: 'm' }] },
+    ];
+
+    expect(await repo.quoteCart(cart)).toEqual(priced);
+    // No cart_id / table_id (quote creates nothing); modifiers flattened to ptav_ids.
+    expect(seen).toEqual([
+      { pos_config_id: 7, items: [{ line_id: 'ln_1', product_tmpl_id: 100, quantity: 2, ptav_ids: [900] }] },
+    ]);
   });
 
   it('markProcessed sets a TTL-bounded ledger key', async () => {
@@ -195,7 +234,12 @@ class ThrowingEvalRedis {
 describe('RedisCartRepository — EVAL failure handling', () => {
   it('commitApplied rejects and writes nothing when the script errors', async () => {
     const redis = new ThrowingEvalRedis();
-    const odoo = { insertCart: async () => 0 };
+    const odoo = {
+      insertCart: async () => 0,
+      quote: async () => {
+        throw new Error('odoo.quote must not be called');
+      },
+    };
     const repo = new RedisCartRepository(redis as unknown as Redis, 3600, odoo, 86_400);
     await expect(repo.commitApplied(emptyCart('cart_h4', 1), 'req_h4')).rejects.toThrow();
     expect(redis.store.size).toBe(0);
