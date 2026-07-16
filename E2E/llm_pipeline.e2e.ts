@@ -284,7 +284,7 @@ async function seedCartWithLine(
   dishText: string,
   opts: { quantity?: number; withModifier?: RegExp } = {},
 ): Promise<{ line: CartLine; item: CandidateItem; seededMod: CandidateModifier | undefined }> {
-  const { items } = await menu.getCandidates(POS, dishText);
+  const { items } = await menu.searchMenu(POS, { query: dishText });
   const item = items[0];
   expect(item, `no candidate item for "${dishText}" — is the menu populated?`).toBeDefined();
 

@@ -56,7 +56,11 @@ It is a **pure proposer**; the Cart Module validates and applies.
     JSON blob carrying no usable `reply`, → `agent_no_terminal`.
   - **tools** (`tools/run-tools.ts`) executes the requested tool calls, appends their
     results to the turn scratchpad, and loops back to the agent. Two tools
-    (`tools/tool-specs.ts`): `search_menu_semantic` (wraps `menu.getCandidates`, loopable)
+    (`tools/tool-specs.ts`): `search_menu` (wraps `menu.searchMenu`, loopable — takes
+    `{query?, sort?, max_price_cents?, min_price_cents?, limit?}`; every field optional, so an
+    argument-less call is a valid "what's popular?" browse. Filters/sort are one tool rather
+    than the `filter_menu` + `popular_items` pair docs/agent-tools.md §2 sketched, so that
+    "popular AND has fish" is intersected server-side instead of by the model)
     and `propose_cart` (validates args against `order-graph-output` zod schema; a failure —
     including an **empty/absent `operations`** list — is a repair-friendly **tool error** the
     agent retries within `maxAgentSteps`, rather than a silent empty proposal; this replaces
@@ -103,7 +107,7 @@ It is a **pure proposer**; the Cart Module validates and applies.
 
 ## Dependencies
 - `@langchain/langgraph` (graph + checkpointer), `zod` (schemas).
-- `menu` (candidate search via the agent's `search_menu_semantic` tool + key resolution),
+- `menu` (candidate search via the agent's `search_menu` tool + key resolution),
   `llm` (`chat` tool-calling + intent `complete`), `redis` (CartCache load), `events`
   (EventBus). `register-handlers.ts` binds to the bus.
 
@@ -119,7 +123,7 @@ It is a **pure proposer**; the Cart Module validates and applies.
   aloud.
 - `nodes/*.node.ts` — `classify-intent` (LLM junk-gate classifier, defaults to `service`),
   `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)
-- `tools/tool-specs.ts` — `search_menu_semantic` + `propose_cart` specs; `tools/run-tools.ts` —
+- `tools/tool-specs.ts` — `search_menu` + `propose_cart` specs; `tools/run-tools.ts` —
   the `tools` node executing them.
 - `schemas/*.ts` — `cart-operation` (zod), `order-graph-output` (operations-only, zod),
   `order-graph-input` (CartView/HistoryTurn types), `clarification`/`proposal`, `zod-error`.

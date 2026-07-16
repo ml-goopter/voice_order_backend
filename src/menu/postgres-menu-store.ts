@@ -175,6 +175,41 @@ export class PostgresMenuStore implements MenuStore {
     }
   }
 
+  async popularity(pos: PosConfigId, windowDays: number): Promise<Map<ProductTmplId, number>> {
+    try {
+      // Two joins, both earning their place: `pos_order` carries the state + date filters,
+      // and `product_product` is the ONLY path from a line to a template id — `product_id`
+      // is not the template id, though it coincidentally matches often enough (61% Izumi vs
+      // 9% Jade) to hide the bug from anyone testing on one tenant.
+      //
+      // `item_vector` is matched with EXISTS, never a JOIN: it holds one row per
+      // (item, language), so a join would fan out and multiply sum(qty) by the language
+      // count — uniform inflation that leaves the ranking looking right while the counts lie.
+      // It also scopes to this restaurant and drops non-dishes, which are excluded at seed.
+      const { rows } = await this.pool.query<{ product_tmpl_id: number; qty_sold: string }>(
+        `SELECT pp.product_tmpl_id, sum(l.qty) AS qty_sold
+           FROM pos_order_line l
+           JOIN pos_order o        ON o.id = l.order_id
+           JOIN product_product pp ON pp.id = l.product_id
+          WHERE o.state IN ('paid','done','invoiced')
+            AND NOT l.is_reward_line
+            AND o.date_order >= now() - make_interval(days => $2)
+            AND EXISTS (SELECT 1
+                          FROM item_vector iv
+                         WHERE iv.product_tmpl_id = pp.product_tmpl_id
+                           AND iv.pos_config_id = $1)
+          GROUP BY pp.product_tmpl_id
+         HAVING sum(l.qty) > 0
+          ORDER BY qty_sold DESC`,
+        [pos, windowDays],
+      );
+      return new Map(rows.map((r) => [r.product_tmpl_id, Number(r.qty_sold)]));
+    } catch (err) {
+      logger.warn('menu.popularity_unavailable', { message: messageOf(err) });
+      return new Map();
+    }
+  }
+
   getItems(pos: PosConfigId, tmpls: ProductTmplId[]): Promise<MenuItem[]> {
     if (tmpls.length === 0) return Promise.resolve([]);
     return this.hydrate(pos, tmpls);

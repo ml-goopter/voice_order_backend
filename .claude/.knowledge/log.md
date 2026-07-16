@@ -7,6 +7,60 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — `order.agent_tool` logs outcome, duration, and args
+- **What:** Enriched the per-tool-call log line in `runTools`. It carried only `tool` +
+  `request_id` and was always `info`, so a validated `propose_cart` and an agent stuck retrying a
+  rejected one were indistinguishable in logs. Now every call logs `ok`, elapsed `ms`, `cart_id`,
+  and a tool-specific arg summary — for `search_menu` the filters the model actually sent plus a
+  `results` count, for `propose_cart` the `operations` count; the error branches log at `warn`
+  with the reason.
+- **Why:** The agent ⇄ tools loop was unobservable — a turn burning `maxAgentSteps` on repeated
+  tool errors looked identical to a healthy one, and `searchMenu` was untimed. With `search_menu`
+  taking filters, "which filter combination returned nothing" is now the interesting question, and
+  `{sort, max_price_cents, …, results: 0}` answers it directly.
+- **Where:** `src/ordering/tools/run-tools.ts`.
+- **Notes:** `ToolExecResult` gained `error?: string` and `meta?: Record<string, unknown>`. The
+  error branches set `error` alongside the existing `content`, whose strings are unchanged — the
+  agent's scratchpad is byte-identical, so this is observability-only with no behavior change.
+  `warn` (not `error`) is deliberate: a tool error is the agent's to retry, so `order.node_failed`
+  stays the signal for a genuinely broken turn. The search arg summary spreads the parsed args, so
+  absent optionals are simply not logged and a bare browse stays a bare line.
+
+## 2026-07-15 — Agent search: keywords + price filters + popularity ranking
+- **What:** Replaced the agent's `search_menu_semantic(query)` with `search_menu({query?,
+  sort?, max_price_cents?, min_price_cents?, limit?})`. Added `MenuStore.popularity()`
+  (live aggregate over `pos_order_line`), `MenuService.searchMenu()`, a coarse
+  `CandidateItem.popularity` tier (`top`/`popular`), `MatchOptions` on the matcher (price
+  filter + result cap), `POPULARITY` constants, and `MENU_EXCLUDED_CATEGORIES` applied by the
+  seed. Removed `MenuService.getCandidates` (`searchMenu` subsumes it) and ported its two E2E
+  callers to `searchMenu({query})`.
+- **Why:** The agent could only ask "is there an item whose NAME looks like this phrase", so
+  "what do you suggest?", "what's popular and has fish?", and "anything under $10?" were
+  unanswerable. Deferred in `docs/agent-tools.md` §2/§8; spec in
+  `docs/plans/agent-search-extension.md`.
+- **Where:** `src/menu/{menu-types,menu-store,menu-service,candidate-matcher,
+  postgres-menu-store,in-memory-menu-store}.ts`, `src/ordering/tools/{tool-specs,run-tools}.ts`,
+  `src/llm/agent-prompt-builder.ts`, `src/config/{env,constants}.ts`,
+  `scripts/populate-postgres-menu.ts`, `.env.example`, `E2E/{embedding,llm_pipeline}.e2e.ts`.
+- **Notes:** ONE tool, not the `filter_menu` + `popular_items` pair `agent-tools.md` sketched —
+  "popular AND has fish" is an intersection, and two tools would make the *model* intersect two
+  result sets (a step models get wrong, plus an extra round-trip on a voice path). Three traps,
+  each pinned by a test that was verified to fail when the bug is reintroduced: (1) rank by
+  **qty, never revenue** — Izumi is AYCE, 32% of its products are $0 and its top seller is $0
+  salmon; (2) **the relevance leg is taken UNCUT before the popularity re-rank**
+  (`match(…, {limit: Infinity})`) — any cut there is by relevance, so re-ranking what survives
+  answers "the N most fish-like, by popularity" not "the most popular fish". A finite pool only
+  moves the N at which that returns, so there is no pool constant; the final cut happens after
+  the re-rank. (3) **`item_vector` joined with EXISTS, never JOIN** — it holds one row per
+  (item, language), and a JOIN silently doubled every count on the live Jade DB while leaving
+  the ranking order identical. Popularity is a live aggregate (no cache), matching the module's
+  no-menu-cache stance; it degrades to an unranked list on any query error.
+  **Not fixed, wants its own ticket:** the seed writes `item_vector` from a bare
+  `available_in_pos AND active`, so "Discount" (Izumi 1308 / Jade 3796, `list_price = -1.00`)
+  and "Refund" (Izumi 1307 / Jade 32) are searchable and `propose_cart`-able today — a customer
+  saying "discount" can add a negative-price line. Neither ranks, so neither affects this
+  change.
+
 ## 2026-07-15 — `npm run typecheck` now type-checks the test files
 - **What:** Pointed the `typecheck` script at `tsconfig.test.json` (was `tsconfig.json --noEmit`,
   which EXCLUDES `src/**/*.test.ts`). `tsconfig.test.json` already existed and already did the

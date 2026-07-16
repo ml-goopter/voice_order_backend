@@ -136,7 +136,7 @@ describe('Embedding — candidate inspector', () => {
         }
 
         const query = process.env.QUERY ?? 'What would you suggest? Give me some suggestions';
-        const { items } = await menu.getCandidates(POS, query);
+        const { items } = await menu.searchMenu(POS, { query });
 
         const lines = [
             `[embedding.e2e] query=${JSON.stringify(query)} → ${items.length} candidate(s)`,

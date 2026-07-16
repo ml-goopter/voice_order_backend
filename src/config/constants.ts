@@ -28,3 +28,17 @@ export const LIMITS = {
   /** Transport-level retries (429/5xx/network) the OpenAI SDK performs per request. */
   llmTransportMaxRetries: 3,
 } as const;
+
+/**
+ * Popularity ranking, derived live from `pos_order_line` (there is no stored popularity —
+ * see docs/plans/agent-search-extension.md §5).
+ */
+export const POPULARITY = {
+  /** Trailing window of trade to rank over. Both live DBs hold ~1-7 weeks, so this is
+   *  currently "everything"; it exists so the window can't silently become "all time". */
+  windowDays: 90,
+  /** Rank boundaries for the coarse tier shown to the agent. A rank number would be false
+   *  precision on ~1 month of trade; a tier is honest at this sample size. */
+  topRank: 5,
+  popularRank: 20,
+} as const;
