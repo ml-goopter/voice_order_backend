@@ -28,6 +28,30 @@ timestamp: 2026-07-07
   per-cart apply lock, adding one Odoo round-trip per edit. The frontend guide's "`tax_cents` is
   always 0" note is now stale — `tax_cents` is populated on a successful quote.
 
+## 2026-07-15 — Make the in-memory store's lexical search mirror the SQL
+- **What:** `InMemoryMenuStore.lexicalSearch` matched a whole phrase by `includes` OR a fuzzy
+  score >= 0.6; `PostgresMenuStore.lexicalSearch` matches per WORD via `name ILIKE ANY('%word%')`
+  with no fuzzy leg. Extracted the word rule as `lexicalWords` in `menu-store.ts` (beside the
+  interface, so neither store owns it), had `lexicalTerms` delegate to it, and re-pointed the
+  double at it. Added three `InMemoryMenuStore.lexicalSearch` tests.
+- **Why:** Drift, not design. The double was written to mirror `RedisMenuStore`'s RediSearch
+  `FT.SEARCH` TEXT semantics; when Redis was removed (2026-07-13) the behavior was never
+  re-pointed at the ILIKE it now stands in for. The giveaway was a surviving `mirrors FT TEXT`
+  comment — that entry claims to have refreshed the file's stale Redis comments, and missed it.
+  The double backs ~86 tests, so its infidelity was silently mis-testing three modules:
+  - `['chicken burger']` returned only `Cheeseburger` (fuzzy), MISSING `Chicken Teriyaki Don` —
+    the double **under-recalled** what production retrieves, the damaging direction.
+  - `['a']` matched every name containing an "a"; the real query drops words under 2 chars.
+  - `[' ']` matched every multi-word name, since every such name `includes` a space.
+- **Where:** `src/menu/menu-store.ts`, `in-memory-menu-store.ts`, `postgres-menu-store.ts`,
+  `menu-service.test.ts`.
+- **Notes:** No production behavior change — `lexicalTerms` emits the same `%word%` set (now
+  lowercased, which `ILIKE` already ignored). `LEXICAL_LIMIT` (64) is deliberately not mirrored:
+  an unordered cap cannot bind on a double holding a handful of items. Each new test was verified
+  to fail against the old rule; the first draft of the fuzzy-leg test used a phrase scoring 0.417,
+  under the old 0.6 threshold, so it passed either way and pinned nothing — it now uses one at
+  0.917. **Adjacent rot, left alone:** `menu/overview.md` still documents `RedisMenuStore` and
+  `menu-index.ts` (deleted 2026-07-13) under a "Store, Redis (unwired)" bullet.
 ## 2026-07-16 — Cleanup + coverage refactor: `contracts/` extraction, silent-drop fix, dead-code/DRY
 - **What:** A whole-codebase cleanup pass in five parts. (1) **Dead code removed:** unused
   `isOk`/`newCartId`/`newSessionId`/`nowMs`/`OperationAction`; deleted `observability/metrics.ts`
