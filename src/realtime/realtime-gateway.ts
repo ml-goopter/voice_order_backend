@@ -68,6 +68,15 @@ export class RealtimeGateway {
 
   onConnect(conn: ClientConnection): void {
     this.registry.add(conn);
+    // The cart module creates the cart with its durable identity stamped, before any
+    // ordering happens — identity never threads through the ordering module.
+    this.bus.emit('client.connected', {
+      cart_id: conn.cart_id,
+      pos_config_id: conn.pos_config_id,
+      session_id: conn.session_id,
+      device_id: conn.device_id,
+      ...(conn.table_id !== undefined ? { table_id: conn.table_id } : {}),
+    });
     logger.info('ws.connect', { session_id: conn.session_id, cart_id: conn.cart_id });
   }
 

@@ -3,7 +3,7 @@ type: Concept
 title: Event Bus
 description: Typed EventEmitter wrapper + the AppEventMap contract.
 resource: src/events
-timestamp: 2026-07-07
+timestamp: 2026-07-15
 ---
 
 # Event Bus
@@ -14,9 +14,15 @@ modules stay decoupled behind event contracts rather than direct references.
 
 ## Mechanics
 - `event-types.ts` defines `AppEventMap` — event name → payload — covering the core
-  events: `stt.final_transcript.received`, `order.operations_proposed`,
+  events: `client.connected`, `stt.final_transcript.received`, `order.operations_proposed`,
   `order.clarification_needed`, `order.clarification_answered`, `cart.updated`,
   `cart.operation_rejected`, `voice.session_failed`, `voice.session_ended`.
+- **`client.connected`** (`{cart_id, pos_config_id, session_id, device_id, table_id?}`) is
+  emitted by the realtime gateway at `onConnect` and handled by the cart module, which
+  creates the cart with its durable identity stamped. It exists so identity does **not**
+  thread through the ordering module: the tempting path (transcript → graph input →
+  `OrderProposal` → `applyProposal`) would push `device_id`/`table_id` through the LLM
+  graph, which never reads them. One new contract instead of five changed ones.
 - `event-bus.ts` wraps Node's `EventEmitter` with generic `emit`/`on`/`off` keyed
   by `AppEventName`, so payloads are compile-checked. A singleton `eventBus` is the
   shared instance; each module's `register-handlers.ts` subscribes to it.

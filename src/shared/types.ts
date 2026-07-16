@@ -11,6 +11,7 @@ export type CartId = string; // e.g. "cart_456"; MUST be globally unique — it 
 export type SessionId = string; // e.g. "voice_session_123"
 export type RequestId = string; // e.g. "voice_final_abc123" (idempotency key)
 export type LineId = string; // e.g. "ln_1" (assigned by the Cart Module)
+export type DeviceId = string; // stable per client device; survives reconnect (session_id does not)
 
 // Odoo (POS) identities — integer primary keys
 export type PosConfigId = number; // pos_config.id (the "restaurant")

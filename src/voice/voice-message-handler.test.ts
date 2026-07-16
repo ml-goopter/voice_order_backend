@@ -36,6 +36,7 @@ function setup() {
     session_id: 's1',
     cart_id: 'c1',
     pos_config_id: 7,
+    device_id: 'dev_1',
     send: (m) => sent.push(m),
     close: () => undefined,
     isAlive: () => true,

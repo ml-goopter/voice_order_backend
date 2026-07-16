@@ -5,6 +5,14 @@ import { errorMeta } from '../shared/errors.js';
 
 /** Wire the Cart Module to the event bus (design §2/§9). */
 export function registerCartHandlers(bus: EventBus, controller: CartController): void {
+  bus.on('client.connected', (e) => {
+    // Create the cart with its device/table identity stamped before any ordering happens.
+    // Same last-resort guard as below: a rejection here must not escape unhandled.
+    controller.ensureCart(e).catch((err: unknown) => {
+      logger.error('cart.ensure_failed', { cart_id: e.cart_id, ...errorMeta(err) });
+    });
+  });
+
   bus.on('order.operations_proposed', (e) => {
     // applyProposal handles its own failures; this .catch is a last-resort guard so a
     // rejection can never escape as an unhandled promise and silently drop the turn.

@@ -7,6 +7,72 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — Cart traceability (device/table), the confirmation lock, and the Odoo insert
+- **What:** Carts now carry a durable identity and can actually be sent to the POS. Four
+  parts: (1) `Cart` gains `device_id` (the device that CREATED it) + `table_id?` (dine-in
+  only; absent = takeout/untabled), stamped at **connect** via a new `client.connected`
+  event and indexed in Redis at `device:{id}` / `table:{id}`; (2) a **confirmation lock** —
+  once `confirmed_at` is set, every further op is rejected with reason `cart_confirmed`,
+  nothing persists, `version` never bumps; (3) `src/odoo/` — a JSON-RPC client + a pure
+  `Cart` → `InsertCartRequest` mapping, replacing `confirmOrder`'s `cart.confirm_stub`;
+  (4) `src/api/http-router.ts` — the first REST route, `POST /v1/carts/:cart_id/confirm`.
+- **Why:** Three gaps. Nothing called Odoo (`confirmOrder` logged a stub and returned `0`,
+  and `CartController.confirm` — which already had the right shape — was called by nothing).
+  There was no REST API at all; the only HTTP server was the bare `createServer` inside
+  `websocket-server.ts` answering `/health`. And carts had **no durable identity**: the only
+  `session_id → cart_id` link was `ClientRegistry`'s in-memory map, which dies on
+  disconnect, and `RestaurantTableId` had been declared-but-unused since day one.
+- **Where:** New: `odoo/{odoo-client,cart-to-insert-request}.ts` (+ tests),
+  `api/http-router.ts` (+ test). Changed: `shared/types.ts` (`DeviceId`), `cart/cart-types.ts`
+  (identity + `confirmed_at`/`pos_order_id`; `emptyCart` 3rd arg), `cart/cart-controller.ts`
+  (`ensureCart`, the lock, `confirm` → `Promise<PosOrderId>`), `cart/cart-repository.ts`
+  (`COMMIT_CART_LUA`, `commitCreated`, real `confirmOrder`), `cart/register-handlers.ts`,
+  `auth/*`, `events/event-types.ts`, `realtime/{websocket-server,client-registry,realtime-gateway}.ts`,
+  `config/env.ts`, `.env.example`, `app.ts`.
+- **Notes:**
+  - **New env:** `ODOO_API_URL`, `ODOO_API_KEY`, `ODOO_API_DATABASE`,
+    `DEVICE_INDEX_TTL_SECONDS` (default 24h). `ODOO_API_URL` is the Odoo **API**;
+    `ODOO_DATABASE_URL` remains the unrelated Postgres/pgvector menu read path.
+  - **Verified against the live addon** (`goopter_cart_api` installed into `jadegarden1`,
+    Odoo 19). Two contract facts the plan/SPEC did not have, both fixed here:
+    (1) insert returns the id as **`order_id`**, not `pos_order_id` as the plan assumed —
+    alongside `pos_reference`/`tracking_number`/`inserted_line_ids`/totals, of which we read
+    only `order_id`; (2) the instance serves 5 databases with no `dbfilter`, so every call
+    404s with `"No database is selected"` until an **`X-Odoo-Database`** header names one —
+    added to `HttpOdooClient` via `ODOO_API_DATABASE`. Confirmed end-to-end through the real
+    client: a real draft `pos_order` created, a replay idempotent (same `order_id`, strict
+    append-only), and a bad `product_tmpl_id` surfaced as `OdooError` (the 200-on-error path
+    against real Odoo). Test orders were cleaned up.
+  - **Review hardening:** two robustness fixes. (1) `http-router.ts` decoded the `cart_id`
+    path segment *outside* the try, so a malformed `%`-escape (`POST /v1/carts/%/confirm`)
+    threw a synchronous `URIError` out of the request listener → uncaught → process crash;
+    the decode now sits inside `confirmCart` and answers **400**. (2) `odoo-client.ts`
+    guards `result?.order_id` — a JSON-RPC `result: null` slips past the result-present
+    check, and the deref would otherwise throw a raw `TypeError` (500) instead of `OdooError`
+    (502).
+  - **`device_id` is now REQUIRED on the `/ws` upgrade** — a client connecting without it is
+    closed with `4001`. This is a breaking change for existing frontends. `table_id` is
+    optional.
+  - **The 200-on-error trap:** the far side's JSON-RPC answers HTTP 200 *with the error in
+    the body*, so `odoo-client` branches on `body.error`, never `res.ok`. Our own REST route
+    deliberately does the opposite (honest 404/502) — do not propagate their convention.
+  - **`device_id` is optional on the `Cart` type** although conceptually total: `emptyCart`
+    also builds throwaway carts for prompt views and resume snapshots that are never
+    persisted. The plan claimed the write path guarantees it, but `applyProposal`'s
+    `emptyCart` fallback persists a cart with **no** identity, so the Lua indexes
+    conditionally rather than writing a literal `device:undefined` key.
+  - **Deviation from the plan:** the plan had the confirmation lock `return` after pushing
+    rejections. That would be a bug — `return` inside the `try` skips the emit block below
+    it, so the customer would never hear the rejection. Used an `else` branch instead.
+  - **Verified against the live addon** (see the dedicated note above): the insert returns
+    `order_id`, and this multi-database instance needs an `X-Odoo-Database` header. Both were
+    initially wrong/absent (the plan assumed `pos_order_id` and no header) and are fixed.
+  - The frontend clears its cart view on the 200, so `confirm` emits no `cart.updated`.
+    Consequence: after confirming, the view is empty while the backend cart is frozen — a
+    further utterance is rejected with `cart_confirmed`. Starting a second round needs a new
+    `cart_id` (frontend work, out of scope).
+  - `ClientRegistry.byCart` stays a `Set` (only its docstring changed): collapsing it to one
+    connection would let a reconnect's late `close` delete the live socket.
 ## 2026-07-15 — Document how required modifiers are identified
 - **What:** Added a "Required modifiers" section to
   `docs/pos-product-modifier-order-schema.md` establishing that requiredness is not stored

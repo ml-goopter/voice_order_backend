@@ -30,7 +30,11 @@ export interface AppConfig {
 
   readonly redisUrl: string;
   readonly odooDatabaseUrl: string; // Postgres (Odoo POS DB) that also holds our `item_vector` table
+  readonly odooApiUrl: string; // base URL of the Odoo instance serving goopter_cart_api (NOT the DB above)
+  readonly odooApiKey: string; // Odoo API key of the integration user (bearer auth)
+  readonly odooApiDatabase: string; // Odoo database name; '' when the instance resolves one itself
   readonly cartIdempotencyTtlSeconds: number; // TTL on the cart idempotency ledger (design §9)
+  readonly deviceIndexTtlSeconds: number; // TTL on the device:/table: cart traceability indexes
 
   readonly sttProvider: string; // 'assemblyai' | ...
   readonly sttSampleRate: number; // Hz of the client PCM16 stream (design §5)
@@ -80,7 +84,11 @@ export const config: AppConfig = {
 
   redisUrl: str('REDIS_URL', 'redis://localhost:6379'),
   odooDatabaseUrl: str('ODOO_DATABASE_URL', 'postgres://localhost:5432/odoo'),
+  odooApiUrl: str('ODOO_API_URL', 'http://localhost:8069'),
+  odooApiKey: str('ODOO_API_KEY', ''),
+  odooApiDatabase: str('ODOO_API_DATABASE', ''),
   cartIdempotencyTtlSeconds: int('CART_IDEMPOTENCY_TTL_SECONDS', 86_400),
+  deviceIndexTtlSeconds: int('DEVICE_INDEX_TTL_SECONDS', 86_400),
 
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
   sttSampleRate: int('STT_SAMPLE_RATE', 16_000),
