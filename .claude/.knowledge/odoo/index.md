@@ -1,14 +1,14 @@
 ---
 type: Index
 title: odoo bundle
-description: JSON-RPC client that inserts confirmed carts into the POS, and the Cart → request mapping.
-timestamp: 2026-07-15
+description: JSON-RPC client for the goopter_cart_api addon — inserts confirmed carts and quotes prices.
+timestamp: 2026-07-16
 ---
 
 # odoo
 
-The write path into the POS: maps a confirmed `Cart` onto the `goopter_cart_api` addon's
-insert contract and POSTs it over JSON-RPC. The addon lives in **another repo** —
-`SPEC.md` (repo root) is its contract, not something built here.
+The JSON-RPC client for the `goopter_cart_api` addon: the write path (maps a confirmed `Cart`
+onto the insert contract and POSTs it, on confirm) plus a read-only price `quote` (on each cart
+apply). The addon lives in **another repo** — `SPEC.md` is its contract, not built here.
 
 - [overview.md](./overview.md) — purpose, mechanics, dependencies, files.

@@ -4,7 +4,9 @@ import type { Cart } from './cart-types.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import { cartKey } from '../redis/cart-cache.js';
 import type { OdooClient } from '../odoo/odoo-client.js';
+import type { QuoteResponse } from '../odoo/quote-request.js';
 import { toInsertCartRequest } from './cart-to-insert-request.js';
+import { toQuoteRequest } from './cart-to-quote-request.js';
 import { logger } from '../config/logger.js';
 
 export type Outcome = 'applied' | 'rejected' | 'duplicate' | 'superseded';
@@ -24,6 +26,8 @@ export interface CartRepository {
   /** Persist a newly created cart and its device/table indexes. No request to mark. */
   commitCreated(cart: Cart): Promise<void>;
   confirmOrder(cart: Cart): Promise<PosOrderId>;
+  /** Price the cart against Odoo (read-only, creates nothing). Server-authoritative totals. */
+  quoteCart(cart: Cart): Promise<QuoteResponse>;
 }
 
 /** Idempotency-ledger key. TTL-bounded (see RedisCartRepository) so it never grows without limit. */
@@ -129,6 +133,11 @@ export class RedisCartRepository implements CartRepository {
   async confirmOrder(cart: Cart): Promise<PosOrderId> {
     return await this.odoo.insertCart(toInsertCartRequest(cart));
   }
+
+  /** Quote: ask Odoo to price the cart's items server-authoritatively. Creates nothing. */
+  async quoteCart(cart: Cart): Promise<QuoteResponse> {
+    return await this.odoo.quote(toQuoteRequest(cart));
+  }
 }
 
 /**
@@ -162,5 +171,13 @@ export class InMemoryCartRepository implements CartRepository {
   async confirmOrder(cart: Cart): Promise<PosOrderId> {
     logger.warn('cart.confirm_stub', { cart_id: cart.cart_id });
     return 0;
+  }
+
+  /**
+   * Stub by design — tests must never reach Odoo. Throws so the controller's best-effort
+   * pricing falls back to the locally-computed totals; override it to observe/verify quoting.
+   */
+  async quoteCart(cart: Cart): Promise<QuoteResponse> {
+    throw new Error(`quoteCart stub: override to price cart ${cart.cart_id}`);
   }
 }

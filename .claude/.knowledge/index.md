@@ -30,7 +30,7 @@ sit behind interfaces with stub implementations (search `TODO`).
 | [menu](./menu/index.md) | Candidate matching before the LLM; Postgres/pgvector + Odoo JOINs (design §7) |
 | [llm](./llm/index.md) | Cloud LLM abstraction + prompt building (design §8) |
 | [cart](./cart/index.md) | Sole writer of cart state: validate → apply → persist (design §9) |
-| [odoo](./odoo/index.md) | JSON-RPC client that inserts confirmed carts into the POS (contract: `SPEC.md`) |
+| [odoo](./odoo/index.md) | JSON-RPC client for the POS: inserts confirmed carts and quotes prices (contract: `SPEC.md`) |
 | [events](./events/index.md) | Typed in-process event bus + event contracts (design §2) |
 | [contracts](./contracts/index.md) | Neutral cross-module wire shapes (cart operations, proposal, prompt cart view, intent) |
 | [persistence](./persistence/index.md) | Redis (carts), Postgres/pgvector (menu), Odoo-referenced source of truth |

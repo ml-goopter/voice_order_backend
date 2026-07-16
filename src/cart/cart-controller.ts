@@ -11,6 +11,7 @@ import { CartRejectedError, NotFoundError, errorMeta } from '../shared/errors.js
 import { emptyCart } from './cart-types.js';
 import type { Cart } from './cart-types.js';
 import { applyOperation } from './cart-operation-applier.js';
+import { applyQuoteToCart } from './apply-quote.js';
 import { logger } from '../config/logger.js';
 
 /**
@@ -95,6 +96,16 @@ export class CartController {
 
           if (applied > 0) {
             cart = { ...cart, version: cart.version + 1 };
+            // Best-effort: replace our untaxed local estimate with the POS's authoritative,
+            // tax-included quote before persisting, so the cart in Redis (and the cart.updated
+            // broadcast) carries the real price. A quote failure (Odoo down, an item pulled
+            // mid-flow) must NOT lose a valid edit — we keep the local totals and move on; the
+            // next successful edit re-quotes. Confirm remains the point that enforces pricing.
+            try {
+              cart = applyQuoteToCart(cart, await this.repo.quoteCart(cart));
+            } catch (err) {
+              log.warn('cart.quote_failed', errorMeta(err));
+            }
             // Atomic: persist the cart AND mark the request processed together (§9).
             await this.repo.commitApplied(cart, proposal.request_id);
             updatedCart = cart;

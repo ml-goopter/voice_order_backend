@@ -7,6 +7,27 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-16 — Re-price each cart apply against the Odoo quote (authoritative totals in Redis)
+- **What:** `CartController.applyProposal` now, after a successful apply, calls the new
+  `OdooClient.quote` (via `repo.quoteCart` → `POST /goopter_cart_api/v1/quote`) and
+  `applyQuoteToCart` overwrites the cart's `subtotal_cents`/`tax_cents`/`total_cents` with the
+  POS's **tax-included** totals (decimals → cents) before `commitApplied` persists to Redis. So
+  `cart.updated` carries the real charge, not our untaxed estimate. **Best-effort:** a quote
+  failure logs `cart.quote_failed` and keeps the local estimate — a pricing outage never loses
+  a valid edit. **No new events**; no REST route.
+- **Why:** Our local `(base + Σ surcharge) × qty` pricing has no tax, so it diverged from the
+  bill. The Odoo quote route already exists and is the price the POS will actually charge.
+- **Where:** `odoo` (new `quote` method + `quote-request.ts`: `QuoteRequest`/`QuoteResponse`/
+  `QuoteLine`, verified shape), `cart` (`cart-to-quote-request.ts` mapper, `apply-quote.ts`,
+  controller + repository `quoteCart`). Tests: `cart-controller.test.ts`, `apply-quote.test.ts`,
+  `odoo-client.test.ts`, `cart-repository.test.ts`.
+- **Notes:** Verified end-to-end against the live jadegarden1 addon (2 items → 22.45/1.13/23.58
+  → cents 2245/113/2358). `applyQuoteToCart` asserts `decimal_places === 2` (both deployments are
+  CAD); a non-2dp currency would need the `*_cents` `/100` contract revisited. `toQuoteRequest`
+  sends no `preset_id`, so the quote matches insert's dine-in charge. Quote runs inside the
+  per-cart apply lock, adding one Odoo round-trip per edit. The frontend guide's "`tax_cents` is
+  always 0" note is now stale — `tax_cents` is populated on a successful quote.
+
 ## 2026-07-15 — Make the in-memory store's lexical search mirror the SQL
 - **What:** `InMemoryMenuStore.lexicalSearch` matched a whole phrase by `includes` OR a fuzzy
   score >= 0.6; `PostgresMenuStore.lexicalSearch` matches per WORD via `name ILIKE ANY('%word%')`

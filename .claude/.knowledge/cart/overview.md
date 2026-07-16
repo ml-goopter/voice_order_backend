@@ -3,7 +3,7 @@ type: Concept
 title: Cart Module
 description: Deterministic sole writer — apply lock, optimistic version/rebase, idempotency.
 resource: src/cart
-timestamp: 2026-07-15
+timestamp: 2026-07-16
 ---
 
 # Cart Module
@@ -12,8 +12,9 @@ timestamp: 2026-07-15
 The only module that mutates cart state (design §9). Consumes `client.connected` (to
 create the cart with its durable identity) and `order.operations_proposed`, validates +
 applies operations, assigns `line_id`s, bumps the version, persists, and broadcasts
-`cart.updated`. Rejected ops surface as `cart.operation_rejected`. Confirms carts into
-Odoo via the [odoo](../odoo/overview.md) client.
+`cart.updated`. Rejected ops surface as `cart.operation_rejected`. Re-prices each apply
+against the POS's authoritative quote, and confirms carts, via the
+[odoo](../odoo/overview.md) client.
 
 ## Mechanics
 - **Applier** (`cart-operation-applier.ts`) is validate-and-apply in one: resolves
@@ -46,10 +47,16 @@ Odoo via the [odoo](../odoo/overview.md) client.
   - **Rebase per op** — every op is re-validated against the **current** cart, not
     the stale `base_version`; `add_item` always applies, stale edits reject
     individually, the rest apply.
-  - Bumps `version`, then `commitApplied` writes the cart blob, the idempotency mark AND
-    the device/table indexes in one Redis Lua script (so a crash can't leave the cart
-    persisted but the request un-marked → double-apply on retry), snapshots, emits
-    `cart.updated`; emits `cart.operation_rejected` per failed op.
+  - Bumps `version`, then — **best-effort authoritative pricing** — `repo.quoteCart` asks
+    Odoo to price the post-apply cart (`OdooClient.quote` → `/goopter_cart_api/v1/quote`) and
+    `applyQuoteToCart` overwrites the cart's `*_cents` with the returned **tax-included**
+    totals (decimals → cents). A quote failure (Odoo down, an item pulled mid-flow) is
+    swallowed with a `cart.quote_failed` warning and the **local estimate is kept**, so a
+    pricing outage never loses a valid edit; the next successful edit re-quotes. Then
+    `commitApplied` writes the cart blob, the idempotency mark AND the device/table indexes in
+    one Redis Lua script (so a crash can't leave the cart persisted but the request un-marked →
+    double-apply on retry), snapshots, emits `cart.updated`; emits `cart.operation_rejected`
+    per failed op.
   - **Infra failure** — the compute-and-persist section is wrapped in try/catch. An
     unexpected throw (Redis/menu down) aborts before any persist, leaves the
     `request_id` un-marked (so a retry reprocesses), and emits one
@@ -70,34 +77,40 @@ Odoo via the [odoo](../odoo/overview.md) client.
     far side's line uuid `{cart_id}:{line_id}` makes the insert idempotent (SPEC
     § Idempotency), so a replay creates no duplicate lines. We inherit idempotency from
     the far side rather than implementing our own.
-- **Pricing** sums `(base_price_cents + Σ modifier price_extra_cents) × quantity` per
-  line — the surcharge is per unit (TODO tax). Both the base price and the modifier
-  surcharges are read live from the `MenuLookup` on every reprice, never from the
-  line's snapshot: the line snapshots `name`/`names` for display only. The applier is
-  async; repricing batches every line through one `getItems` (MGET) rather than a
-  lookup per line, and builds the ptav→surcharge map from that same read.
+- **Pricing** is two-layer. The applier computes a **local estimate** —
+  `(base_price_cents + Σ modifier price_extra_cents) × quantity` per line, surcharge per unit,
+  **no tax** — read live from the `MenuLookup` on every reprice (never from the line's
+  snapshot, which is `name`/`names` for display only; batched through one `getItems` MGET).
+  Then the controller replaces that estimate with the **POS's server-authoritative quote**
+  (`applyQuoteToCart`, see above): the persisted `*_cents` are Odoo's tax-included totals on a
+  successful quote, and fall back to the local (untaxed) estimate only when the quote fails.
+  So `cart.updated` now carries the real charge, not just our guess.
 
 ## Dependencies
 - `persistence` (CartCache, CartRepository — both Redis-backed, with in-memory
   doubles for tests), `menu` (resolution + prices), `events` (EventBus), `odoo`
-  (`OdooClient` + the `Cart` → `InsertCartRequest` mapping). `register-handlers.ts` binds
-  `client.connected` and `order.operations_proposed`.
+  (`OdooClient` + the `Cart` → `InsertCartRequest`/`QuoteRequest` mappings). `register-handlers.ts`
+  binds `client.connected` and `order.operations_proposed`.
 
 ## Key files
 - `cart-controller.ts`, `cart-operation-applier.ts`, `cart-validator.ts`,
-  `cart-repository.ts`, `cart-types.ts`, `register-handlers.ts`,
-  `cart-to-insert-request.ts` (the `Cart`→`InsertCartRequest` mapper, moved here from `odoo/`
-  so odoo doesn't depend on cart; the wire types stay in `odoo/insert-cart-request.ts`).
+  `cart-repository.ts`, `cart-types.ts`, `register-handlers.ts`.
+- `cart-to-insert-request.ts` / `cart-to-quote-request.ts` — the `Cart`→`InsertCartRequest` /
+  `Cart`→`QuoteRequest` mappers, kept here so odoo doesn't depend on cart; the wire types stay
+  in `odoo/insert-cart-request.ts` / `odoo/quote-request.ts`.
+- `apply-quote.ts` — `applyQuoteToCart`: folds a `QuoteResponse`'s `amount_*` decimals into the
+  cart's integer `*_cents` (×100; guards `decimal_places === 2`).
 
 ## Not done yet
-- **Tax pricing is still a stub.** This module prices a cart itself
-  (`(base + Σ modifier price_extra) × qty`, tax TODO), while Odoo reprices
-  server-authoritatively and ignores our numbers by contract (SPEC § Never trust client
-  prices). **So the total the customer hears can differ from the bill — tax alone
-  guarantees it today.** Accepted deliberately; do not "fix" it by sending our `*_cents`
-  to Odoo, which drops them.
+- **Local pricing is now a fallback, not the number of record.** Each successful apply
+  re-prices via the Odoo quote and stores the tax-included total; the untaxed
+  `(base + Σ modifier price_extra) × qty` estimate is used **only** when the quote call fails.
+  Two consequences remain: (1) a customer editing while Odoo is unreachable sees the untaxed
+  estimate until the next successful quote; (2) `applyQuoteToCart` assumes a 2-decimal currency
+  (CAD in both deployments) and throws otherwise — a non-2dp currency needs the `*_cents`
+  contract revisited end-to-end.
 - **Takeout is not usable end-to-end** even though `table_id?` makes this side ready: the
   far side treats every cart as dine-in and takes no `preset_id`, so a takeout cart is
   taxed dine-in (SPEC § Open questions — resolved #2). The blocker is `preset_id`, not
-  the identity model.
-- No `/quote` route — we never ask Odoo for a price before confirming.
+  the identity model. `toQuoteRequest` likewise never sends `preset_id`, so the quote matches
+  the dine-in charge insert produces.
