@@ -196,6 +196,39 @@ describe('MenuService.searchMenu', () => {
   });
 });
 
+describe('InMemoryMenuStore.lexicalSearch', () => {
+  // The double is only useful if it retrieves what `name ILIKE ANY('%word%')` retrieves. It
+  // previously mirrored the RediSearch store deleted on 2026-07-13 (whole-phrase `includes` OR
+  // fuzzy >= 0.6), which both over- and under-recalled against the SQL it now stands in for.
+  const menu = [item(1, 'Cheeseburger', 800), item(2, 'Chicken Teriyaki Don', 1400)];
+
+  it('matches per WORD, not on the whole phrase', async () => {
+    const store = InMemoryMenuStore.of(POS, menu);
+
+    // The regression that mattered: the phrase matched 'Cheeseburger' fuzzily but MISSED
+    // 'Chicken Teriyaki Don', so the double under-recalled what production would retrieve.
+    expect([...(await store.lexicalSearch(POS, ['chicken burger']))].sort()).toEqual([1, 2]);
+  });
+
+  it('does not match a typo — the SQL side is a plain ILIKE with no fuzzy leg', async () => {
+    const store = InMemoryMenuStore.of(POS, menu);
+
+    // 'cheesburger' is 0.917 similar to 'Cheeseburger', so the old fuzzy leg retrieved it while
+    // `ILIKE '%cheesburger%'` finds nothing. Any phrase under the old 0.6 threshold (e.g.
+    // 'burgr', at 0.417) would pass this test against either rule and pin nothing.
+    expect([...(await store.lexicalSearch(POS, ['cheesburger']))]).toEqual([]);
+  });
+
+  it('drops words under 2 characters and phrases with no usable word', async () => {
+    const store = InMemoryMenuStore.of(POS, menu);
+
+    // 'a' as a substring hits both names; the real query never gets the chance, and a bare
+    // space matched every multi-word name.
+    expect([...(await store.lexicalSearch(POS, ['a']))]).toEqual([]);
+    expect([...(await store.lexicalSearch(POS, ['!', ' ']))]).toEqual([]);
+  });
+});
+
 describe('InMemoryMenuStore.popularity', () => {
   it('drops items that net <= 0, mirroring the store HAVING clause that hides a refund product', async () => {
     // A refund product nets negative (refund lines carry negative qty), which is why the real

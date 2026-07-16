@@ -3,6 +3,7 @@ import { config } from '../config/env.js';
 import type { PosConfigId, ProductTmplId } from '../shared/types.js';
 import type { CandidateModifier, MenuItem } from './menu-types.js';
 import type { MenuStore } from './menu-store.js';
+import { lexicalWords } from './menu-store.js';
 import { logger } from '../config/logger.js';
 import { messageOf } from '../shared/errors.js';
 
@@ -36,19 +37,11 @@ export function encodeVector(vector: number[]): string {
 }
 
 /**
- * The lexical `ILIKE` patterns for a set of phrases: words stripped to
- * letters/digits (dropping query metacharacters), each wrapped as `%word%`.
+ * The lexical `ILIKE` patterns for a set of phrases: {@link lexicalWords} wrapped as `%word%`.
  * Empty when no usable word remains (caller then does no lexical search).
  */
 export function lexicalTerms(phrases: string[]): string[] {
-  const terms = new Set<string>();
-  for (const phrase of phrases) {
-    for (const word of phrase.split(/\s+/)) {
-      const t = word.replace(/[^\p{L}\p{N}]/gu, '');
-      if (t.length >= 2) terms.add(`%${t}%`);
-    }
-  }
-  return [...terms];
+  return lexicalWords(phrases).map((w) => `%${w}%`);
 }
 
 interface ItemRow {

@@ -1,11 +1,8 @@
 import type { PosConfigId, ProductTmplId } from '../shared/types.js';
 import type { MenuItem, MenuVector } from './menu-types.js';
 import type { MenuStore } from './menu-store.js';
+import { lexicalWords } from './menu-store.js';
 import type { EmbeddingService } from './embedding-service.js';
-import { similarity } from './fuzzy-matcher.js';
-
-/** A name matches a phrase if it contains it or is fuzzy-close (mirrors FT TEXT). */
-const LEXICAL_FUZZY = 0.6;
 
 /** An item with its precomputed name vectors (one per language). */
 interface IndexedMenuItem {
@@ -100,14 +97,21 @@ export class InMemoryMenuStore implements MenuStore {
     return Promise.resolve(new Map(top));
   }
 
+  /**
+   * Mirrors `PostgresMenuStore.lexicalSearch`: per-WORD substring over every language's name,
+   * via the shared {@link lexicalWords} rule. There is no fuzzy leg — the SQL side is a plain
+   * `ILIKE`, so matching a near-miss here would make the double recall items production never
+   * retrieves. `LEXICAL_LIMIT` (64) is deliberately NOT mirrored: it is an unordered cap that
+   * cannot bind on a double holding a handful of items, and faking it would only add
+   * nondeterminism.
+   */
   lexicalSearch(pos: PosConfigId, phrases: string[]): Promise<Set<ProductTmplId>> {
+    const words = lexicalWords(phrases);
+    if (words.length === 0) return Promise.resolve(new Set());
     const ids = new Set<ProductTmplId>();
     for (const { item } of this.indexed(pos)) {
       const names = Object.values(item.names).map((n) => n.toLowerCase());
-      const hit = phrases.some((p) =>
-        names.some((n) => n.includes(p) || similarity(p, n) >= LEXICAL_FUZZY),
-      );
-      if (hit) ids.add(item.product_tmpl_id);
+      if (words.some((w) => names.some((n) => n.includes(w)))) ids.add(item.product_tmpl_id);
     }
     return Promise.resolve(ids);
   }
