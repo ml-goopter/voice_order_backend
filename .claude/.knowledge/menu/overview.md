@@ -43,12 +43,19 @@ the test/dev double.
   empty → the matcher's fuzzy fallback. Uses a shared `pg.Pool`
   (`db/postgres-client.ts`). `pos_config_id` scoping lives entirely in `item_vector`
   (Odoo's `available_in_pos` is a global flag).
-- **Interface** (`menu-store.ts`): the `MenuStore` interface only — the contract
-  the matcher and cart lookups run against (`ensureIndex`, `knnSearch`,
-  `lexicalSearch`, `getItems`, `allItems`, `getItem`, `getItemByKey`).
+- **Interface** (`menu-store.ts`): the `MenuStore` interface — the contract the
+  matcher and cart lookups run against (`ensureIndex`, `knnSearch`,
+  `lexicalSearch`, `getItems`, `allItems`, `getItem`, `getItemByKey`) — plus
+  `lexicalWords`, the lexical retrieval rule BOTH stores share: split each phrase on
+  whitespace, strip non-alphanumerics, keep words of 2+ characters, lowercase; a name
+  matches if it CONTAINS any of them. It sits beside the interface, not in either
+  store, so the two cannot mean different things by "lexical" — which is exactly what
+  happened once (see `log.md`, 2026-07-15).
   `InMemoryMenuStore` (`in-memory-menu-store.ts`) is the test/dev double (KNN as an
-  in-process cosine scan, lexical as substring+fuzzy); it is NOT wired into the
-  production app.
+  in-process cosine scan; lexical via `lexicalWords`, mirroring the store's
+  `ILIKE ANY(%word%)` with no fuzzy leg). It is NOT wired into the production app,
+  but it backs ~86 tests across the menu, cart, and ordering modules, so its fidelity
+  to `PostgresMenuStore` is what those tests are worth.
 - **Store, Redis (unwired)** (`menu-store.ts`): `MenuStore` interface + mapping
   helpers (`toMenuItem`/`toCandidateModifier`). `RedisMenuStore`
   reads the seeded item blobs (`menu:item:{pos}:{id}`) and searches the RediSearch

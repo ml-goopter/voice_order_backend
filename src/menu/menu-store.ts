@@ -2,6 +2,24 @@ import type { PosConfigId, ProductTmplId } from '../shared/types.js';
 import type { MenuItem } from './menu-types.js';
 
 /**
+ * The lexical retrieval rule, shared by every `MenuStore` so the implementations cannot drift:
+ * split each phrase on whitespace, strip non-alphanumerics, keep words of 2+ characters. A name
+ * matches if it CONTAINS any of them. Words are lowercased here because the rule is
+ * case-insensitive — that is `PostgresMenuStore`'s `name ILIKE ANY('%word%')`, stated once so an
+ * in-memory implementation cannot quietly mean something else.
+ */
+export function lexicalWords(phrases: string[]): string[] {
+  const words = new Set<string>();
+  for (const phrase of phrases) {
+    for (const word of phrase.split(/\s+/)) {
+      const w = word.replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+      if (w.length >= 2) words.add(w);
+    }
+  }
+  return [...words];
+}
+
+/**
  * The query surface the matcher and cart lookups run against. Backed by
  * Postgres/pgvector in production (`PostgresMenuStore`); an in-memory
  * implementation drives the tests. Every call hits the store at request time —
@@ -18,8 +36,8 @@ export interface MenuStore {
    */
   knnSearch(pos: PosConfigId, queryVectors: number[][], k: number): Promise<Map<ProductTmplId, number>>;
   /**
-   * Lexical retrieval over the indexed `name` text: the `product_tmpl_id`s whose
-   * names match the phrases (fuzzy/token). Complements KNN so lexically-close items
+   * Lexical retrieval over the indexed `name` text: the `product_tmpl_id`s whose names contain
+   * any word of the phrases, per {@link lexicalWords}. Complements KNN so lexically-close items
    * the vector recall misses are still retrieved. Empty when the index is missing.
    */
   lexicalSearch(pos: PosConfigId, phrases: string[]): Promise<Set<ProductTmplId>>;
