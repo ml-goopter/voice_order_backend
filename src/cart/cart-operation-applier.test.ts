@@ -8,7 +8,7 @@ import type { MenuItem } from '../menu/menu-types.js';
 import { applyOperation } from './cart-operation-applier.js';
 import { emptyCart, type Cart } from './cart-types.js';
 import type { MenuLookup } from '../menu/menu-service.js';
-import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
+import type { CartOperation } from '../contracts/cart-operation.schema.js';
 
 const POS: PosConfigId = 1;
 

@@ -14,6 +14,7 @@ function conn(session_id: string, cart_id: string): FakeConn {
     session_id,
     cart_id,
     pos_config_id: 1,
+    device_id: 'dev_1',
     send: vi.fn(),
     close: vi.fn(),
     isAlive: () => true,
@@ -189,6 +190,38 @@ describe('RealtimeGateway — cart.operation_rejected targeting', () => {
       reason: 'x',
       message: 'y',
     });
+    expect(a.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('RealtimeGateway — voice.session_failed bridge', () => {
+  // Reproduces the silent-drop bug: the ordering module fails a turn on the bus but owns no
+  // socket; without this subscriber the failure never reached the customer.
+  it('relays an ordering failure to the session socket as a voice.error', () => {
+    const { bus, gw } = makeGateway();
+    const a = conn('s1', 'cart_1');
+    gw.onConnect(a);
+    bus.emit('voice.session_failed', {
+      session_id: 's1',
+      cart_id: 'cart_1',
+      reason: 'order_parse_failed',
+      message: 'Sorry, I could not process that. Please try again.',
+    });
+    expect(a.send).toHaveBeenCalledWith({
+      type: 'voice.error',
+      session_id: 's1',
+      reason: 'order_parse_failed',
+      message: 'Sorry, I could not process that. Please try again.',
+    });
+  });
+
+  it('sends to nobody when the session has no socket', () => {
+    const { bus, gw } = makeGateway();
+    const a = conn('s1', 'cart_1');
+    gw.onConnect(a);
+    expect(() =>
+      bus.emit('voice.session_failed', { session_id: 'gone', cart_id: 'cart_1', reason: 'x', message: 'y' }),
+    ).not.toThrow();
     expect(a.send).not.toHaveBeenCalled();
   });
 });

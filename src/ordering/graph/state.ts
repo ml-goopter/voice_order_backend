@@ -2,9 +2,9 @@ import { Annotation } from '@langchain/langgraph';
 import type { CartId, LangCode, PosConfigId, RequestId, SessionId } from '../../shared/types.js';
 import type { AgentMessage } from '../../llm/llm-provider.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
-import type { CartView, HistoryTurn } from '../schemas/order-graph-input.schema.js';
-import { DEFAULT_INTENT } from './intents.js';
-import type { Intent } from './intents.js';
+import type { CartView, HistoryTurn } from '../../contracts/cart-view.js';
+import { DEFAULT_INTENT } from '../../contracts/intent.js';
+import type { Intent } from '../../contracts/intent.js';
 import { LIMITS } from '../../config/constants.js';
 
 /** last-write-wins channel with a default, so it can be read before it is written. */

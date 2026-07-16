@@ -6,6 +6,7 @@ function conn(session_id: string, cart_id: string): ClientConnection {
     session_id,
     cart_id,
     pos_config_id: 1,
+    device_id: 'dev_1',
     send: vi.fn(),
     close: vi.fn(),
     isAlive: () => true,

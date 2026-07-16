@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyIntent } from './classify-intent.node.js';
-import { intentSchema } from '../graph/intents.js';
+import { intentSchema } from '../../contracts/intent.js';
 import type { LlmPrompt, LlmProvider } from '../../llm/llm-provider.js';
 
 /** An LlmProvider whose single reply is fixed (or throws). */

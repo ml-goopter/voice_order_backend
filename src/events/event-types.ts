@@ -2,10 +2,18 @@
  * The internal event contract between modules (design §2 "Core internal events").
  * Modules communicate ONLY through these events; direct calls stay within a module.
  */
-import type { CartId, LangCode, PosConfigId, RequestId, SessionId } from '../shared/types.js';
+import type {
+  CartId,
+  DeviceId,
+  LangCode,
+  PosConfigId,
+  RequestId,
+  RestaurantTableId,
+  SessionId,
+} from '../shared/types.js';
 import type { Cart } from '../cart/cart-types.js';
-import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
-import type { OrderProposal } from '../ordering/schemas/proposal.js';
+import type { CartOperation } from '../contracts/cart-operation.schema.js';
+import type { OrderProposal } from '../contracts/proposal.js';
 
 /** No `language`: STT's per-turn language detection is not used anywhere (docs/text-to-speech.md
  *  §Multilingual). The agent declares the reply's language instead — see `OrderReply.language`. */
@@ -59,10 +67,30 @@ export interface CartOperationRejected {
   operation?: CartOperation;
 }
 
+/**
+ * A client socket authenticated and attached to a cart. The cart module uses this to create the
+ * cart with its durable identity (device, and table for dine-in) before any ordering happens —
+ * identity is not threaded through the ordering module, which has no use for it.
+ */
+export interface ClientConnected {
+  cart_id: CartId;
+  pos_config_id: PosConfigId;
+  session_id: SessionId;
+  device_id: DeviceId;
+  table_id?: RestaurantTableId;
+}
+
+/**
+ * A turn failed inside a module that owns no client socket (the ordering service). The realtime
+ * gateway subscribes and relays it to the customer's socket as a `voice.error` frame. Voice's own
+ * STT/timeout failures notify the client directly (they hold the socket) and do not emit this.
+ */
 export interface VoiceSessionFailed {
   session_id: SessionId;
   cart_id: CartId;
   reason: string;
+  /** Customer-facing text the gateway relays in the `voice.error` frame. */
+  message: string;
 }
 
 export interface VoiceSessionEnded {
@@ -72,6 +100,7 @@ export interface VoiceSessionEnded {
 
 /** Event name → payload. Keys mirror design §2. */
 export interface AppEventMap {
+  'client.connected': ClientConnected;
   'stt.final_transcript.received': SttFinalTranscriptReceived;
   'order.operations_proposed': OrderOperationsProposed;
   'order.reply': OrderReply;

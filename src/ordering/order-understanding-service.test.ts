@@ -7,7 +7,7 @@ import { InMemoryMenuStore } from '../menu/in-memory-menu-store.js';
 import type { MenuItem } from '../menu/menu-types.js';
 import type { Cart, CartLine, CartModifier } from '../cart/cart-types.js';
 import type { AgentMessage, ChatResult, LlmPrompt, LlmProvider, ToolCall, ToolSpec } from '../llm/llm-provider.js';
-import type { Intent } from './graph/intents.js';
+import type { Intent } from '../contracts/intent.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
 import { LIMITS } from '../config/constants.js';
@@ -274,6 +274,9 @@ describe('OrderUnderstandingService', () => {
     expect(proposed).toHaveLength(0);
     expect(failed).toHaveLength(1);
     expect(failed[0]!.reason).toBe('agent_step_limit');
+    // Carries a customer-facing message the gateway relays as a voice.error (the bridge to the client).
+    expect(typeof failed[0]!.message).toBe('string');
+    expect((failed[0]!.message as string).length).toBeGreaterThan(0);
     expect(llm.chatCalls).toBe(LIMITS.maxAgentSteps); // maxAgentSteps LLM turns, then the loop bails
   });
 
@@ -409,7 +412,7 @@ describe('OrderUnderstandingService', () => {
     const { service, bus, llm } = await makeService(
       [[searchWith({ sort: 'popularity' }), jsonReply('Our Coke is a favourite!', 'en')]],
       cartWith(0),
-      () => 'suggest',
+      () => 'service',
       [
         [12, 50], // Coke
         [10, 2], // Chicken Burger
@@ -437,7 +440,7 @@ describe('OrderUnderstandingService', () => {
         ],
       ],
       cartWith(0),
-      () => 'suggest',
+      () => 'service',
       [
         [12, 50], // Coke — popular, but not a chicken burger
         [10, 2],

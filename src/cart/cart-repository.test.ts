@@ -28,9 +28,10 @@ describe('InMemoryCartRepository', () => {
   });
 });
 
-/** Fake ioredis capturing the cart+ledger EVAL writes and EX TTLs — the surface RedisCartRepository uses. */
+/** Fake ioredis capturing the EVAL writes, sets and EX TTLs — the surface RedisCartRepository uses. */
 class FakeRedis {
   readonly store = new Map<string, string>();
+  readonly sets = new Map<string, Set<string>>();
   readonly ttl = new Map<string, number>();
 
   async exists(key: string): Promise<number> {
@@ -41,11 +42,21 @@ class FakeRedis {
     this.write(key, value, seconds);
   }
 
-  /** Mirrors COMMIT_APPLIED_LUA: KEYS[1]=ARGV[1], KEYS[2]=ARGV[2] EX ARGV[3], atomically. */
+  /** Mirrors COMMIT_CART_LUA, including its empty-KEY / 'skip'-ARGV opt-outs. */
   async eval(_script: string, _numKeys: number, ...args: string[]): Promise<void> {
-    const [cartK, reqK, cartVal, mark, seconds] = args;
+    const [cartK, reqK, deviceK, tableK, cartVal, mark, seconds, cartId, indexSeconds] = args;
     this.write(cartK!, cartVal!);
-    this.write(reqK!, mark!, Number(seconds));
+    if (mark !== 'skip') this.write(reqK!, mark!, Number(seconds));
+    for (const k of [deviceK, tableK]) {
+      if (k === '') continue;
+      let set = this.sets.get(k!);
+      if (!set) {
+        set = new Set();
+        this.sets.set(k!, set);
+      }
+      set.add(cartId!);
+      this.ttl.set(k!, Number(indexSeconds));
+    }
   }
 
   private write(key: string, value: string, seconds?: number): void {
@@ -54,9 +65,15 @@ class FakeRedis {
   }
 }
 
-function makeRepo(ttl: number): { repo: RedisCartRepository; redis: FakeRedis } {
+/** Repo under test. The OdooClient throws: nothing here should reach Odoo. */
+function makeRepo(ttl: number, indexTtl = 86_400): { repo: RedisCartRepository; redis: FakeRedis } {
   const redis = new FakeRedis();
-  return { repo: new RedisCartRepository(redis as unknown as Redis, ttl), redis };
+  const odoo = {
+    insertCart: async () => {
+      throw new Error('odoo must not be called');
+    },
+  };
+  return { repo: new RedisCartRepository(redis as unknown as Redis, ttl, odoo, indexTtl), redis };
 }
 
 describe('RedisCartRepository', () => {
@@ -71,6 +88,77 @@ describe('RedisCartRepository', () => {
     expect(redis.store.get('cart:req:req_9')).toBe('applied');
     expect(redis.ttl.get('cart:req:req_9')).toBe(3600);
     expect(await repo.wasProcessed('req_9')).toBe(true);
+  });
+
+  it('commitApplied lands the cart, ledger and BOTH indexes together', async () => {
+    const { repo, redis } = makeRepo(3600, 60);
+    const cart = emptyCart('cart_t', 1, { device_id: 'dev_a', table_id: 12 });
+
+    await repo.commitApplied(cart, 'req_t');
+
+    expect(redis.store.get('cart:cart_t')).toBe(JSON.stringify(cart));
+    expect(redis.store.get('cart:req:req_t')).toBe('applied');
+    expect(redis.sets.get('device:dev_a')).toEqual(new Set(['cart_t']));
+    expect(redis.sets.get('table:12')).toEqual(new Set(['cart_t']));
+    expect(redis.ttl.get('device:dev_a')).toBe(60);
+    expect(redis.ttl.get('table:12')).toBe(60);
+  });
+
+  it('writes only the device index for a takeout cart (no table_id)', async () => {
+    const { repo, redis } = makeRepo(3600, 60);
+
+    await repo.commitCreated(emptyCart('cart_to', 1, { device_id: 'dev_b' }));
+
+    expect(redis.sets.get('device:dev_b')).toEqual(new Set(['cart_to']));
+    // No table key at all — an untabled order indexes nowhere by table.
+    expect([...redis.sets.keys()]).toEqual(['device:dev_b']);
+  });
+
+  it('commitCreated writes the cart and index but marks no request', async () => {
+    const { repo, redis } = makeRepo(3600, 60);
+    const cart = emptyCart('cart_c', 1, { device_id: 'dev_c' });
+
+    await repo.commitCreated(cart);
+
+    expect(redis.store.get('cart:cart_c')).toBe(JSON.stringify(cart));
+    expect(redis.sets.get('device:dev_c')).toEqual(new Set(['cart_c']));
+    // The create path has no request_id; the 'skip' sentinel must leave the ledger alone.
+    expect([...redis.store.keys()]).toEqual(['cart:cart_c']);
+  });
+
+  it('a device accumulates one cart per order in its index (Set, not overwrite)', async () => {
+    const { repo, redis } = makeRepo(3600, 60);
+
+    await repo.commitCreated(emptyCart('cart_1', 1, { device_id: 'dev_d' }));
+    await repo.commitCreated(emptyCart('cart_2', 1, { device_id: 'dev_d' }));
+
+    expect(redis.sets.get('device:dev_d')).toEqual(new Set(['cart_1', 'cart_2']));
+  });
+
+  it('indexes nowhere when the cart has no identity (applyProposal fallback)', async () => {
+    const { repo, redis } = makeRepo(3600, 60);
+
+    // emptyCart with no identity — never `device:undefined`.
+    await repo.commitApplied(emptyCart('cart_orphan', 1), 'req_o');
+
+    expect(redis.store.get('cart:cart_orphan')).toBeDefined();
+    expect(redis.sets.size).toBe(0);
+  });
+
+  it('confirmOrder maps the cart and hands it to Odoo, returning the pos_order_id', async () => {
+    const redis = new FakeRedis();
+    const seen: unknown[] = [];
+    const odoo = {
+      insertCart: async (req: unknown) => {
+        seen.push(req);
+        return 42;
+      },
+    };
+    const repo = new RedisCartRepository(redis as unknown as Redis, 3600, odoo, 60);
+    const cart = emptyCart('cart_x', 7, { device_id: 'dev_x', table_id: 3 });
+
+    expect(await repo.confirmOrder(cart)).toBe(42);
+    expect(seen).toEqual([{ cart_id: 'cart_x', pos_config_id: 7, items: [], table_id: 3 }]);
   });
 
   it('markProcessed sets a TTL-bounded ledger key', async () => {
@@ -107,7 +195,8 @@ class ThrowingEvalRedis {
 describe('RedisCartRepository — EVAL failure handling', () => {
   it('commitApplied rejects and writes nothing when the script errors', async () => {
     const redis = new ThrowingEvalRedis();
-    const repo = new RedisCartRepository(redis as unknown as Redis, 3600);
+    const odoo = { insertCart: async () => 0 };
+    const repo = new RedisCartRepository(redis as unknown as Redis, 3600, odoo, 86_400);
     await expect(repo.commitApplied(emptyCart('cart_h4', 1), 'req_h4')).rejects.toThrow();
     expect(redis.store.size).toBe(0);
   });

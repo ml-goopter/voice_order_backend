@@ -6,8 +6,9 @@ import { newLineId } from '../shared/ids.js';
 import { nowIso } from '../shared/time.js';
 import type { MenuLookup } from '../menu/menu-service.js';
 import type { CandidateModifier } from '../menu/menu-types.js';
+import { displayName } from '../shared/display-name.js';
 import type { Cart, CartLine, CartModifier } from './cart-types.js';
-import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
+import type { CartOperation } from '../contracts/cart-operation.schema.js';
 
 const reject = (reason: string, message: string): Result<Cart, CartRejectedError> =>
   err(new CartRejectedError(reason, message));
@@ -57,13 +58,13 @@ export async function applyOperation(
       const modifiers: CartModifier[] = [];
       for (const ref of op.modifiers) {
         const mod = item.modifiers.find((m) => m.modifier_key === ref.modifier_key);
-        if (!mod) return reject('invalid_modifier', `${item.names['en_US'] ?? item.menu_item_key} does not support that option.`);
+        if (!mod) return reject('invalid_modifier', `${displayName(item.names, item.menu_item_key)} does not support that option.`);
         modifiers.push(toCartModifier(mod));
       }
       const line: CartLine = {
         line_id: newLineId(),
         product_tmpl_id: item.product_tmpl_id,
-        name: item.names['en_US'] ?? Object.values(item.names)[0] ?? item.menu_item_key,
+        name: displayName(item.names, item.menu_item_key),
         // Snapshot every language's name so the client can display in the customer's
         // locale; `name` above stays the single-string default/fallback.
         names: item.names,

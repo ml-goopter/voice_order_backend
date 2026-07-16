@@ -50,7 +50,7 @@ export class VoiceMessageHandler {
           // A final that lands after the session already went terminal (timeout-failed,
           // ended, or interrupted) must not touch the cart — the customer was already
           // asked to repeat (§11.2 C).
-          if (session.status === 'ended' || session.status === 'failed' || session.status === 'interrupted') return;
+          if (session.isTerminal) return;
           session.finalReceived = true;
           // Display twin of the partial: show the customer what we heard. Display-only —
           // the backend acts on its own internal copy (the bus event below), never this.
@@ -102,11 +102,6 @@ export class VoiceMessageHandler {
             reason: 'stt_failed',
             message: 'Speech recognition disconnected. Please repeat your last sentence.',
           });
-          this.bus.emit('voice.session_failed', {
-            session_id: session.session_id,
-            cart_id: session.cart_id,
-            reason: 'stt_failed',
-          });
         },
       });
     } catch (error) {
@@ -123,11 +118,6 @@ export class VoiceMessageHandler {
         reason: 'stt_failed',
         message: 'Speech recognition is unavailable. Please try again.',
       });
-      this.bus.emit('voice.session_failed', {
-        session_id: session.session_id,
-        cart_id: session.cart_id,
-        reason: 'stt_failed',
-      });
       return;
     }
     // Flush audio that arrived during the connect round-trip so the onset of speech
@@ -141,7 +131,7 @@ export class VoiceMessageHandler {
     const session = this.manager.get(conn.session_id);
     if (!session || session.stopping) return;
     // Terminal sessions get nothing more (a late chunk must never revive a flushed/failed turn).
-    if (session.status === 'ended' || session.status === 'failed' || session.status === 'interrupted') return;
+    if (session.isTerminal) return;
     const audio = Buffer.from(msg.audio, 'base64');
     if (!session.stream || session.status !== 'listening') {
       // Stream still connecting: retain the onset of speech (bounded) instead of
@@ -186,11 +176,6 @@ export class VoiceMessageHandler {
         session_id: session.session_id,
         reason: 'final_transcript_timeout',
         message: 'I did not catch that. Please try again.',
-      });
-      this.bus.emit('voice.session_failed', {
-        session_id: session.session_id,
-        cart_id: session.cart_id,
-        reason: 'final_transcript_timeout',
       });
     }, TIMEOUTS.finalTranscriptMs);
   }

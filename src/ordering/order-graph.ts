@@ -3,7 +3,7 @@ import type { MenuService } from '../menu/menu-service.js';
 import type { LlmProvider } from '../llm/llm-provider.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import type { OrderGraphOutput } from './schemas/order-graph-output.schema.js';
-import type { Intent } from './graph/intents.js';
+import type { Intent } from '../contracts/intent.js';
 import { buildOrderGraph } from './graph/build-graph.js';
 
 export interface OrderGraphParams {

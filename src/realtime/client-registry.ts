@@ -1,4 +1,4 @@
-import type { CartId, PosConfigId, SessionId } from '../shared/types.js';
+import type { CartId, DeviceId, PosConfigId, RestaurantTableId, SessionId } from '../shared/types.js';
 import type { OutboundMessage } from './realtime-message-types.js';
 
 /** One live client socket. The transport (ws) implements `send`/`close`. */
@@ -6,14 +6,19 @@ export interface ClientConnection {
   readonly session_id: SessionId;
   readonly cart_id: CartId;
   readonly pos_config_id: PosConfigId; // resolved at auth time
+  readonly device_id: DeviceId; // resolved at auth time; stable across reconnects
+  readonly table_id?: RestaurantTableId; // dine-in only; absent = takeout/untabled
   send(msg: OutboundMessage): void;
   close(): void;
   isAlive(): boolean;
 }
 
 /**
- * Tracks connected clients by session and cart. A cart may have several sockets
- * (multi-device / reconnect), so cart.updated broadcasts to all of them (§9 Tier 2).
+ * Tracks connected clients by session and cart. `byCart` is a Set because sockets on one cart can
+ * overlap transiently: on reconnect the new socket is added before the old one's close fires (up to
+ * heartbeatTimeoutMs / reconnectWindowMs, constants.ts). Removing by identity — rather than
+ * clearing the cart key — is what keeps the live socket reachable. cart.updated broadcasts to all
+ * (design §9 Tier 2, §"Concurrency on a shared cart").
  */
 export class ClientRegistry {
   private readonly bySession = new Map<SessionId, ClientConnection>();

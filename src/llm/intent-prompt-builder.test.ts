@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildIntentPrompt } from './intent-prompt-builder.js';
-import { intentSchema } from '../ordering/graph/intents.js';
+import { intentSchema } from '../contracts/intent.js';
 
 describe('buildIntentPrompt', () => {
   it('produces a non-empty system prompt that names every intent', () => {

@@ -1,12 +1,12 @@
-import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type RequestListener, type Server } from 'node:http';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { RealtimeGateway } from './realtime-gateway.js';
 import type { ClientConnection } from './client-registry.js';
 import type { OutboundMessage } from './realtime-message-types.js';
 import { authenticate } from '../auth/session-auth.js';
-import { healthCheck } from '../api/health.routes.js';
 import { TIMEOUTS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
+import { messageOf } from '../shared/errors.js';
 
 export interface WebSocketServerHandle {
   /** The underlying HTTP server (also serves `/health`); exposed for tests/shutdown. */
@@ -18,20 +18,17 @@ export interface WebSocketServerHandle {
 const CLOSE_UNAUTHENTICATED = 4001;
 
 /**
- * Real `ws` transport (design §4). Attaches a WebSocket server (path `/ws`) to an
- * HTTP server that also answers `GET /health`. For each socket it authenticates,
- * adapts it to a `ClientConnection`, forwards messages/close to the gateway, and
- * runs heartbeat ping/pong (§3/§11.1). It owns transport only — no cart logic.
+ * Real `ws` transport (design §4). Attaches a WebSocket server (path `/ws`) to the HTTP
+ * server that serves the REST routes (see api/http-router.ts). For each socket it
+ * authenticates, adapts it to a `ClientConnection`, forwards messages/close to the gateway,
+ * and runs heartbeat ping/pong (§3/§11.1). It owns transport only — no cart logic.
  */
-export function startWebSocketServer(gateway: RealtimeGateway, port: number): WebSocketServerHandle {
-  const http = createServer((req, res) => {
-    if (req.method === 'GET' && (req.url === '/health' || req.url === '/healthz')) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(healthCheck()));
-      return;
-    }
-    res.writeHead(404).end();
-  });
+export function startWebSocketServer(
+  gateway: RealtimeGateway,
+  port: number,
+  requestHandler: RequestListener,
+): WebSocketServerHandle {
+  const http = createServer(requestHandler);
 
   const wss = new WebSocketServer({ server: http, path: '/ws' });
 
@@ -51,12 +48,14 @@ export function startWebSocketServer(gateway: RealtimeGateway, port: number): We
       return;
     }
 
-    const { cart_id, pos_config_id } = auth.value;
+    const { cart_id, pos_config_id, device_id, table_id } = auth.value;
     session_id = auth.value.session_id;
     const conn: ClientConnection = {
       session_id,
       cart_id,
       pos_config_id,
+      device_id,
+      ...(table_id !== undefined ? { table_id } : {}),
       send(msg: OutboundMessage) {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg));
       },
@@ -77,7 +76,7 @@ export function startWebSocketServer(gateway: RealtimeGateway, port: number): We
       gateway.onRawMessage(conn, data.toString()).catch((err: unknown) => {
         logger.warn('ws.message_error', {
           session_id,
-          error: err instanceof Error ? err.message : String(err),
+          error: messageOf(err),
         });
       });
     });
@@ -118,14 +117,21 @@ function paramsFromUrl(url: string | undefined): {
   session_id?: string;
   cart_id?: string;
   pos_config_id?: number;
+  device_id?: string;
+  table_id?: number;
 } {
   const q = new URL(url ?? '/', 'http://localhost').searchParams;
   const pos = q.get('pos_config_id');
   const posNum = pos === null ? undefined : Number.parseInt(pos, 10);
+  const table = q.get('table_id');
+  const tableNum = table === null ? undefined : Number.parseInt(table, 10);
   return {
     ...(q.get('token') !== null ? { token: q.get('token') as string } : {}),
     ...(q.get('session_id') !== null ? { session_id: q.get('session_id') as string } : {}),
     ...(q.get('cart_id') !== null ? { cart_id: q.get('cart_id') as string } : {}),
     ...(posNum !== undefined && !Number.isNaN(posNum) ? { pos_config_id: posNum } : {}),
+    ...(q.get('device_id') !== null ? { device_id: q.get('device_id') as string } : {}),
+    // Absent (or unparseable) → takeout/untabled, which is a valid order.
+    ...(tableNum !== undefined && !Number.isNaN(tableNum) ? { table_id: tableNum } : {}),
   };
 }

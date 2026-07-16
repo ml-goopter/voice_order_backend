@@ -31,6 +31,124 @@ timestamp: 2026-07-07
   under the old 0.6 threshold, so it passed either way and pinned nothing — it now uses one at
   0.917. **Adjacent rot, left alone:** `menu/overview.md` still documents `RedisMenuStore` and
   `menu-index.ts` (deleted 2026-07-13) under a "Store, Redis (unwired)" bullet.
+## 2026-07-16 — Cleanup + coverage refactor: `contracts/` extraction, silent-drop fix, dead-code/DRY
+- **What:** A whole-codebase cleanup pass in five parts. (1) **Dead code removed:** unused
+  `isOk`/`newCartId`/`newSessionId`/`nowMs`/`OperationAction`; deleted `observability/metrics.ts`
+  (zero call sites) and `ordering/schemas/clarification.schema.ts` (superseded by `OrderReply`).
+  (2) **Bug fix:** `voice.session_failed` was emitted by the ordering service but had **no
+  consumer**, so a failed turn was silently dropped. The realtime gateway now subscribes and
+  relays it to the customer's socket as a `voice.error` (event gained a customer-facing `message`);
+  voice's own STT/timeout failures still `conn.send` directly and no longer emit the event, so
+  there is exactly one error frame per path. (3) **DRY:** new `shared/display-name.ts` (`displayName`)
+  replacing 5 copies of the `en_US ?? first-value ?? fallback` chain; `messageOf()` reuse (4 sites);
+  `VoiceSession.isTerminal` getter. (4) **Coverage:** +36 unit tests — the three previously
+  zero-test modules `auth/session-auth`, `config/env`, `config/logger`, plus `ordering/graph/instrument`
+  and `llm/agent-prompt-builder` (coverage lost when `prompt-builder.ts` was renamed). (5) **New
+  `src/contracts/` bundle** for cross-module wire contracts (see Where).
+- **Why:** Reduce complexity + improve coverage. The shared wire schemas lived inside `ordering/`,
+  which forced a **reversed dependency** (`llm` → `ordering`) and coupled `events` to a business
+  module; `cart` and `odoo` imported each other. Moving the contracts to a neutral home removes all
+  three couplings and de-nests the schemas.
+- **Where:** New `src/contracts/` holds `cart-operation.schema.ts` (+ test), `proposal.ts`,
+  `cart-view.ts` (was `ordering/schemas/order-graph-input.schema.ts`), and `intent.ts`
+  (`intentSchema`/`Intent`/`DEFAULT_INTENT`, split out of `ordering/graph/intents.ts` — `INTENT_ROUTE`
+  stays there). `zod-error.ts` → `shared/`. The `Cart`→`InsertCartRequest` mapper moved to
+  `cart/cart-to-insert-request.ts`; the wire types (`InsertCartRequest`/`RequestLine`) stay in odoo as
+  `odoo/insert-cart-request.ts`. ~20 importer paths updated across cart/llm/events/ordering/odoo.
+- **Notes:** Behavior-preserving except one intentional improvement — the applier `invalid_modifier`
+  reject message went 2-level→3-level `displayName`, so an item lacking `en_US` now shows a localized
+  name instead of its internal key (matches the adjacent cart-line name). `voice.session_ended` is
+  still emitted with no consumer (pre-existing, a clean end already reaches the client via
+  `cart.updated`/`order.reply`) — left for a follow-up. Two invariants now hold and are grep-checkable:
+  `llm` imports nothing from `ordering`, `odoo` imports nothing from `cart`, `events` imports nothing
+  from `ordering`. 400 tests pass; `npm run typecheck` clean. Plan: `docs/plans/refactor.md`.
+
+## 2026-07-15 — Cart traceability (device/table), the confirmation lock, and the Odoo insert
+- **What:** Carts now carry a durable identity and can actually be sent to the POS. Four
+  parts: (1) `Cart` gains `device_id` (the device that CREATED it) + `table_id?` (dine-in
+  only; absent = takeout/untabled), stamped at **connect** via a new `client.connected`
+  event and indexed in Redis at `device:{id}` / `table:{id}`; (2) a **confirmation lock** —
+  once `confirmed_at` is set, every further op is rejected with reason `cart_confirmed`,
+  nothing persists, `version` never bumps; (3) `src/odoo/` — a JSON-RPC client + a pure
+  `Cart` → `InsertCartRequest` mapping, replacing `confirmOrder`'s `cart.confirm_stub`;
+  (4) `src/api/http-router.ts` — the first REST route, `POST /v1/carts/:cart_id/confirm`.
+- **Why:** Three gaps. Nothing called Odoo (`confirmOrder` logged a stub and returned `0`,
+  and `CartController.confirm` — which already had the right shape — was called by nothing).
+  There was no REST API at all; the only HTTP server was the bare `createServer` inside
+  `websocket-server.ts` answering `/health`. And carts had **no durable identity**: the only
+  `session_id → cart_id` link was `ClientRegistry`'s in-memory map, which dies on
+  disconnect, and `RestaurantTableId` had been declared-but-unused since day one.
+- **Where:** New: `odoo/{odoo-client,cart-to-insert-request}.ts` (+ tests),
+  `api/http-router.ts` (+ test). Changed: `shared/types.ts` (`DeviceId`), `cart/cart-types.ts`
+  (identity + `confirmed_at`/`pos_order_id`; `emptyCart` 3rd arg), `cart/cart-controller.ts`
+  (`ensureCart`, the lock, `confirm` → `Promise<PosOrderId>`), `cart/cart-repository.ts`
+  (`COMMIT_CART_LUA`, `commitCreated`, real `confirmOrder`), `cart/register-handlers.ts`,
+  `auth/*`, `events/event-types.ts`, `realtime/{websocket-server,client-registry,realtime-gateway}.ts`,
+  `config/env.ts`, `.env.example`, `app.ts`.
+- **Notes:**
+  - **New env:** `ODOO_API_URL`, `ODOO_API_KEY`, `ODOO_API_DATABASE`,
+    `DEVICE_INDEX_TTL_SECONDS` (default 24h). `ODOO_API_URL` is the Odoo **API**;
+    `ODOO_DATABASE_URL` remains the unrelated Postgres/pgvector menu read path.
+  - **Verified against the live addon** (`goopter_cart_api` installed into `jadegarden1`,
+    Odoo 19). Two contract facts the plan/SPEC did not have, both fixed here:
+    (1) insert returns the id as **`order_id`**, not `pos_order_id` as the plan assumed —
+    alongside `pos_reference`/`tracking_number`/`inserted_line_ids`/totals, of which we read
+    only `order_id`; (2) the instance serves 5 databases with no `dbfilter`, so every call
+    404s with `"No database is selected"` until an **`X-Odoo-Database`** header names one —
+    added to `HttpOdooClient` via `ODOO_API_DATABASE`. Confirmed end-to-end through the real
+    client: a real draft `pos_order` created, a replay idempotent (same `order_id`, strict
+    append-only), and a bad `product_tmpl_id` surfaced as `OdooError` (the 200-on-error path
+    against real Odoo). Test orders were cleaned up.
+  - **Review hardening:** two robustness fixes. (1) `http-router.ts` decoded the `cart_id`
+    path segment *outside* the try, so a malformed `%`-escape (`POST /v1/carts/%/confirm`)
+    threw a synchronous `URIError` out of the request listener → uncaught → process crash;
+    the decode now sits inside `confirmCart` and answers **400**. (2) `odoo-client.ts`
+    guards `result?.order_id` — a JSON-RPC `result: null` slips past the result-present
+    check, and the deref would otherwise throw a raw `TypeError` (500) instead of `OdooError`
+    (502).
+  - **`device_id` is now REQUIRED on the `/ws` upgrade** — a client connecting without it is
+    closed with `4001`. This is a breaking change for existing frontends. `table_id` is
+    optional.
+  - **The 200-on-error trap:** the far side's JSON-RPC answers HTTP 200 *with the error in
+    the body*, so `odoo-client` branches on `body.error`, never `res.ok`. Our own REST route
+    deliberately does the opposite (honest 404/502) — do not propagate their convention.
+  - **`device_id` is optional on the `Cart` type** although conceptually total: `emptyCart`
+    also builds throwaway carts for prompt views and resume snapshots that are never
+    persisted. The plan claimed the write path guarantees it, but `applyProposal`'s
+    `emptyCart` fallback persists a cart with **no** identity, so the Lua indexes
+    conditionally rather than writing a literal `device:undefined` key.
+  - **Deviation from the plan:** the plan had the confirmation lock `return` after pushing
+    rejections. That would be a bug — `return` inside the `try` skips the emit block below
+    it, so the customer would never hear the rejection. Used an `else` branch instead.
+  - **Verified against the live addon** (see the dedicated note above): the insert returns
+    `order_id`, and this multi-database instance needs an `X-Odoo-Database` header. Both were
+    initially wrong/absent (the plan assumed `pos_order_id` and no header) and are fixed.
+  - The frontend clears its cart view on the 200, so `confirm` emits no `cart.updated`.
+    Consequence: after confirming, the view is empty while the backend cart is frozen — a
+    further utterance is rejected with `cart_confirmed`. Starting a second round needs a new
+    `cart_id` (frontend work, out of scope).
+  - `ClientRegistry.byCart` stays a `Set` (only its docstring changed): collapsing it to one
+    connection would let a reconnect's late `close` delete the live socket.
+## 2026-07-15 — Document how required modifiers are identified
+- **What:** Added a "Required modifiers" section to
+  `docs/pos-product-modifier-order-schema.md` establishing that requiredness is not stored
+  anywhere and is implied solely by `product_attribute.display_type <> 'multi'`
+  (`radio`/`pills`/`select`). Records the per-tenant counts (jadegarden1: 39 groups on 38
+  products; pos_izumisushi: 0), the `initAttributes()` source evidence, and three traps: nothing
+  enforces requiredness server-side (clients must default to the first value in `sequence` order,
+  as the POS does), refund lines never carry modifier selections, and a group trimmed to one
+  option would stop being recorded because `isConfigurable()` skips the configurator.
+- **Why:** The doc previously said only that min/max selection limits are unavailable
+  (`goopter_pos_attribute_selection_limit` is uninstalled), leaving open whether *any* modifier
+  is required. Anything building a cart against this data needs to know which groups demand a
+  selection, and that the answer must be inferred from `display_type` rather than read from a
+  column that does not exist.
+- **Where:** `docs/pos-product-modifier-order-schema.md` (docs only — no code change).
+- **Notes:** Verified against the live databases on 2026-07-15. Two cross-tenant blind spots now
+  documented together: Izumi exercises no required-modifier logic, Jade Garden exercises almost
+  no modifier pricing — testing either alone hides a real bug class. The `display_type` signal
+  reflects POS behavior, not menu-author intent: Jade Garden models `Rice / Noodles` and
+  `cooking style` as `multi` despite their pick-one phrasing, so they read as optional.
 
 ## 2026-07-15 — `order.agent_tool` logs outcome, duration, and args
 - **What:** Enriched the per-tool-call log line in `runTools`. It carried only `tool` +

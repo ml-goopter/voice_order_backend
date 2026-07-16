@@ -4,7 +4,7 @@ import { ok } from '../shared/result.js';
 import type { CartRejectedError } from '../shared/errors.js';
 import type { MenuLookup } from '../menu/menu-service.js';
 import type { Cart } from './cart-types.js';
-import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
+import type { CartOperation } from '../contracts/cart-operation.schema.js';
 import { applyOperation } from './cart-operation-applier.js';
 
 /**

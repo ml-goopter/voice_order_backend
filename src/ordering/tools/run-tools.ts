@@ -4,7 +4,7 @@ import type { MenuService } from '../../menu/menu-service.js';
 import type { OrderStateType } from '../graph/state.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import { parseOrderGraphOutput } from '../schemas/order-graph-output.schema.js';
-import { formatZodError } from '../schemas/zod-error.js';
+import { formatZodError } from '../../shared/zod-error.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import { logger } from '../../config/logger.js';
 

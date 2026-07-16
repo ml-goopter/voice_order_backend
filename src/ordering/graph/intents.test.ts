@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { END } from '@langchain/langgraph';
-import { intentSchema, INTENT_ROUTE, DEFAULT_INTENT } from './intents.js';
+import { intentSchema, DEFAULT_INTENT } from '../../contracts/intent.js';
+import { INTENT_ROUTE } from './intents.js';
 
 describe('INTENT_ROUTE', () => {
   it('has a non-empty destination node for every intent (guards enum/route drift)', () => {

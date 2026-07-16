@@ -10,10 +10,10 @@
  * so callers stay throw-free and get a repair-friendly error message (§11.3).
  */
 import { z } from 'zod';
-import type { Result } from '../../shared/result.js';
-import { err, ok } from '../../shared/result.js';
-import { ValidationError } from '../../shared/errors.js';
-import { formatZodError } from './zod-error.js';
+import type { Result } from '../shared/result.js';
+import { err, ok } from '../shared/result.js';
+import { ValidationError } from '../shared/errors.js';
+import { formatZodError } from '../shared/zod-error.js';
 
 const modifierRef = z.object({ modifier_key: z.string().min(1) });
 
@@ -58,7 +58,6 @@ export type UpdateQuantityOp = z.infer<typeof updateQuantity>;
 export type AddModifierOp = z.infer<typeof addModifier>;
 export type RemoveModifierOp = z.infer<typeof removeModifier>;
 export type CartOperation = z.infer<typeof cartOperationSchema>;
-export type OperationAction = CartOperation['action'];
 
 export function parseCartOperation(u: unknown): Result<CartOperation> {
   const r = cartOperationSchema.safeParse(u);
