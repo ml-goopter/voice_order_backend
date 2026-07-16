@@ -3,6 +3,8 @@ import type { AddressInfo } from 'node:net';
 import { WebSocket } from 'ws';
 import { startWebSocketServer, type WebSocketServerHandle } from './websocket-server.js';
 import { RealtimeGateway } from './realtime-gateway.js';
+import { createHttpRouter } from '../api/http-router.js';
+import type { CartController } from '../cart/cart-controller.js';
 import { EventBus } from '../events/event-bus.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
 import { VoiceSessionManager } from '../voice/voice-session-manager.js';
@@ -39,6 +41,15 @@ function buildRejectingGateway(): RejectingGateway {
   return new RejectingGateway(bus, voice, new InMemoryCartCache(), new TtsService(createTtsProvider()));
 }
 
+/**
+ * These tests exercise transport only, so the controller is never reached: /health short-circuits
+ * before it and the confirm route is covered in api/http-router.test.ts. It exists here so the
+ * server keeps serving /health on the same port.
+ */
+function buildRouter() {
+  return createHttpRouter({} as CartController);
+}
+
 /** Resolve once the server is listening, returning its assigned ephemeral port. */
 function listeningPort(handle: WebSocketServerHandle): Promise<number> {
   return new Promise((resolve) => {
@@ -67,14 +78,14 @@ describe('startWebSocketServer', () => {
   let port: number;
 
   beforeEach(async () => {
-    handle = startWebSocketServer(buildGateway(), 0); // port 0 → OS-assigned ephemeral port
+    handle = startWebSocketServer(buildGateway(), 0, buildRouter()); // port 0 → OS-assigned ephemeral port
     port = await listeningPort(handle);
   });
 
   afterEach(() => handle.close());
 
   it('authenticates via query params and round-trips a connection.resume', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?session_id=s1&cart_id=c1&pos_config_id=7`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?session_id=s1&cart_id=c1&pos_config_id=7&device_id=d1`);
     await open(ws);
     ws.send(JSON.stringify({ type: 'connection.resume', session_id: 's1', cart_id: 'c1', last_seen_cart_version: 0 }));
     const msg = await nextMessage(ws);
@@ -89,7 +100,7 @@ describe('startWebSocketServer', () => {
   });
 
   it('replies with voice.error bad_message on a malformed frame', async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?session_id=s2&cart_id=c2&pos_config_id=7`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?session_id=s2&cart_id=c2&pos_config_id=7&device_id=d2`);
     await open(ws);
     ws.send('not json');
     const msg = await nextMessage(ws);
@@ -105,10 +116,10 @@ describe('startWebSocketServer', () => {
   });
 
   it('survives a rejecting message handler without crashing', async () => {
-    const rejecting = startWebSocketServer(buildRejectingGateway(), 0);
+    const rejecting = startWebSocketServer(buildRejectingGateway(), 0, buildRouter());
     try {
       const rejPort = await listeningPort(rejecting);
-      const ws = new WebSocket(`ws://127.0.0.1:${rejPort}/ws?session_id=s3&cart_id=c3&pos_config_id=7`);
+      const ws = new WebSocket(`ws://127.0.0.1:${rejPort}/ws?session_id=s3&cart_id=c3&pos_config_id=7&device_id=d3`);
       await open(ws);
       ws.send(JSON.stringify({ type: 'connection.resume', session_id: 's3', cart_id: 'c3', last_seen_cart_version: 0 }));
       // Give the rejected promise a tick to (fail to) surface; the .catch must swallow it.

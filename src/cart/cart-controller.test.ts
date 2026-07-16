@@ -11,6 +11,7 @@ import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js
 import { CartController } from './cart-controller.js';
 import { InMemoryCartRepository } from './cart-repository.js';
 import type { Cart } from './cart-types.js';
+import { NotFoundError } from '../shared/errors.js';
 
 const POS: PosConfigId = 1;
 const CART: CartId = 'cart_1';
@@ -56,6 +57,29 @@ function setup(): Harness {
   bus.on('cart.updated', (e) => updated.push(e));
   bus.on('cart.operation_rejected', (e) => rejected.push(e));
   return { bus, cache, repo, controller, updated, rejected };
+}
+
+/**
+ * Harness whose repo records confirmOrder calls and returns a fixed pos_order_id, standing in
+ * for the Odoo insert. InMemoryCartRepository's own confirmOrder is a stub by design, so tests
+ * never reach Odoo.
+ */
+function confirmHarness(): Harness & { confirmed: Cart[] } {
+  const confirmed: Cart[] = [];
+  const bus = new EventBus();
+  const cache = new InMemoryCartCache();
+  const repo = new (class extends InMemoryCartRepository {
+    override async confirmOrder(cart: Cart): Promise<PosOrderId> {
+      confirmed.push(cart);
+      return 77;
+    }
+  })(cache);
+  const controller = new CartController(cache, makeMenu(), repo, bus);
+  const updated: CartUpdated[] = [];
+  const rejected: CartOperationRejected[] = [];
+  bus.on('cart.updated', (e) => updated.push(e));
+  bus.on('cart.operation_rejected', (e) => rejected.push(e));
+  return { bus, cache, repo, controller, updated, rejected, confirmed };
 }
 
 let seq = 0;
@@ -249,36 +273,132 @@ describe('CartController.applyProposal', () => {
   });
 
   describe('confirm', () => {
-    it('is a no-op when the cart does not exist', async () => {
-      const confirmed: Cart[] = [];
-      const cache = new InMemoryCartCache();
-      const repo = new (class extends InMemoryCartRepository {
-        override async confirmOrder(cart: Cart): Promise<PosOrderId> {
-          confirmed.push(cart);
-          return 0;
-        }
-      })(cache);
-      const controller = new CartController(cache, makeMenu(), repo, new EventBus());
+    it('throws NotFoundError when the cart does not exist', async () => {
+      const { controller, confirmed } = confirmHarness();
 
-      await controller.confirm('missing');
+      // The API layer turns this into a 404.
+      await expect(controller.confirm('missing')).rejects.toThrow(NotFoundError);
       expect(confirmed).toHaveLength(0);
     });
 
-    it('confirms an existing cart through the repository', async () => {
-      const confirmed: Cart[] = [];
+    it('confirms an existing cart through the repository and returns the pos_order_id', async () => {
+      const { controller, confirmed } = confirmHarness();
+      await controller.applyProposal(proposal([addBurger]));
+
+      expect(await controller.confirm(CART)).toBe(77);
+      expect(confirmed).toHaveLength(1);
+      expect(confirmed[0]!.cart_id).toBe(CART);
+    });
+
+    it('persists confirmed_at + pos_order_id on the cart', async () => {
+      const { controller, cache } = confirmHarness();
+      await controller.applyProposal(proposal([addBurger]));
+
+      await controller.confirm(CART);
+
+      const cart = await cache.get(CART);
+      expect(cart?.pos_order_id).toBe(77);
+      expect(cart?.confirmed_at).toEqual(expect.any(String));
+    });
+
+    it('is idempotent — a double confirm calls Odoo exactly once', async () => {
+      const { controller, confirmed } = confirmHarness();
+      await controller.applyProposal(proposal([addBurger]));
+
+      expect(await controller.confirm(CART)).toBe(77);
+      expect(await controller.confirm(CART)).toBe(77); // returns the stored id, no second insert
+      expect(confirmed).toHaveLength(1);
+    });
+
+    it('propagates a repository failure and leaves the cart unconfirmed for a retry', async () => {
       const cache = new InMemoryCartCache();
       const repo = new (class extends InMemoryCartRepository {
-        override async confirmOrder(cart: Cart): Promise<PosOrderId> {
-          confirmed.push(cart);
-          return 0;
+        override async confirmOrder(): Promise<PosOrderId> {
+          throw new Error('no open session');
         }
       })(cache);
       const controller = new CartController(cache, makeMenu(), repo, new EventBus());
       await controller.applyProposal(proposal([addBurger]));
 
+      await expect(controller.confirm(CART)).rejects.toThrow('no open session');
+      expect((await cache.get(CART))?.confirmed_at).toBeUndefined();
+    });
+  });
+
+  describe('the confirmation lock', () => {
+    it('rejects every op against a confirmed cart without bumping the version', async () => {
+      const { controller, cache, rejected, updated } = confirmHarness();
+      await controller.applyProposal(proposal([addBurger]));
       await controller.confirm(CART);
-      expect(confirmed).toHaveLength(1);
-      expect(confirmed[0]!.cart_id).toBe(CART);
+      const before = await cache.get(CART);
+
+      await controller.applyProposal(proposal([addFries, addBurger]), 'sess_9');
+
+      expect(rejected).toHaveLength(2);
+      expect(rejected.map((r) => r.reason)).toEqual(['cart_confirmed', 'cart_confirmed']);
+      expect(rejected[0]!.message).toMatch(/kitchen/);
+      expect(rejected[0]!.session_id).toBe('sess_9'); // the customer actually hears it
+      // Nothing applied: same version, same items, no cart.updated.
+      const after = await cache.get(CART);
+      expect(after?.version).toBe(before?.version);
+      expect(after?.items).toHaveLength(1);
+      expect(updated).toHaveLength(1); // only the pre-confirm update
+    });
+
+    it('keeps a replayed request a silent no-op rather than a spurious rejection', async () => {
+      // Ordering is load-bearing: the lock sits AFTER the idempotency check, so a retry of an
+      // already-applied request stays silent instead of being rejected as 'cart_confirmed'.
+      const { controller, rejected } = confirmHarness();
+      const p = proposal([addBurger]);
+      await controller.applyProposal(p);
+      await controller.confirm(CART);
+
+      await controller.applyProposal(p); // same request_id, replayed after confirmation
+
+      expect(rejected).toHaveLength(0);
+    });
+  });
+
+  describe('ensureCart', () => {
+    const connected = {
+      cart_id: CART,
+      pos_config_id: POS,
+      session_id: 'sess_1',
+      device_id: 'dev_1',
+      table_id: 12,
+    };
+
+    it('creates the cart with its device and table stamped', async () => {
+      const h = setup();
+      await h.controller.ensureCart(connected);
+
+      const cart = await h.cache.get(CART);
+      expect(cart?.device_id).toBe('dev_1');
+      expect(cart?.table_id).toBe(12);
+      expect(cart?.version).toBe(0);
+    });
+
+    it('omits table_id for a takeout cart', async () => {
+      const h = setup();
+      await h.controller.ensureCart({ cart_id: CART, pos_config_id: POS, session_id: 's', device_id: 'dev_1' });
+
+      expect(await h.cache.get(CART)).not.toHaveProperty('table_id');
+    });
+
+    it('does not overwrite the identity of an existing cart (set-once)', async () => {
+      // A reconnect, or a second device joining, must not rewrite device_id: it means the
+      // device that CREATED the cart.
+      const h = setup();
+      await h.controller.ensureCart(connected);
+      await h.controller.applyProposal(proposal([addBurger]));
+
+      await h.controller.ensureCart({ ...connected, device_id: 'dev_2', session_id: 'sess_2', table_id: 99 });
+
+      const cart = await h.cache.get(CART);
+      expect(cart?.device_id).toBe('dev_1');
+      expect(cart?.table_id).toBe(12);
+      expect(cart?.items).toHaveLength(1); // and the cart was not reset to empty
+      expect(cart?.version).toBe(1);
     });
   });
 });

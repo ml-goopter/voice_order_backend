@@ -19,6 +19,7 @@ const conn = {
   session_id: 's1',
   cart_id: 'cart_1',
   pos_config_id: 1,
+  device_id: 'dev_1',
   send: vi.fn(),
   close: vi.fn(),
   isAlive: () => true,

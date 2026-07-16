@@ -2,7 +2,15 @@
  * The internal event contract between modules (design §2 "Core internal events").
  * Modules communicate ONLY through these events; direct calls stay within a module.
  */
-import type { CartId, LangCode, PosConfigId, RequestId, SessionId } from '../shared/types.js';
+import type {
+  CartId,
+  DeviceId,
+  LangCode,
+  PosConfigId,
+  RequestId,
+  RestaurantTableId,
+  SessionId,
+} from '../shared/types.js';
 import type { Cart } from '../cart/cart-types.js';
 import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
 import type { OrderProposal } from '../ordering/schemas/proposal.js';
@@ -59,6 +67,19 @@ export interface CartOperationRejected {
   operation?: CartOperation;
 }
 
+/**
+ * A client socket authenticated and attached to a cart. The cart module uses this to create the
+ * cart with its durable identity (device, and table for dine-in) before any ordering happens —
+ * identity is not threaded through the ordering module, which has no use for it.
+ */
+export interface ClientConnected {
+  cart_id: CartId;
+  pos_config_id: PosConfigId;
+  session_id: SessionId;
+  device_id: DeviceId;
+  table_id?: RestaurantTableId;
+}
+
 export interface VoiceSessionFailed {
   session_id: SessionId;
   cart_id: CartId;
@@ -72,6 +93,7 @@ export interface VoiceSessionEnded {
 
 /** Event name → payload. Keys mirror design §2. */
 export interface AppEventMap {
+  'client.connected': ClientConnected;
   'stt.final_transcript.received': SttFinalTranscriptReceived;
   'order.operations_proposed': OrderOperationsProposed;
   'order.reply': OrderReply;

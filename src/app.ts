@@ -25,6 +25,8 @@ import { registerOrderingHandlers } from './ordering/register-handlers.js';
 import { RedisCartRepository } from './cart/cart-repository.js';
 import { CartController } from './cart/cart-controller.js';
 import { registerCartHandlers } from './cart/register-handlers.js';
+import { HttpOdooClient } from './odoo/odoo-client.js';
+import { createHttpRouter } from './api/http-router.js';
 
 export interface App {
   readonly gateway: RealtimeGateway;
@@ -60,8 +62,9 @@ export function createApp(): App {
   const ordering = new OrderUnderstandingService(graph, bus);
   registerOrderingHandlers(bus, ordering);
 
-  // Cart (sole writer).
-  const repo = new RedisCartRepository(redis, config.cartIdempotencyTtlSeconds);
+  // Cart (sole writer). Confirmed carts are inserted into Odoo over its JSON-RPC API.
+  const odoo = new HttpOdooClient();
+  const repo = new RedisCartRepository(redis, config.cartIdempotencyTtlSeconds, odoo, config.deviceIndexTtlSeconds);
   const cartController = new CartController(carts, menu, repo, bus);
   registerCartHandlers(bus, cartController);
 
@@ -80,7 +83,7 @@ export function createApp(): App {
         logger.warn('menu.index_unavailable', { message: messageOf(err) });
       }
 
-      ws = startWebSocketServer(gateway, config.port);
+      ws = startWebSocketServer(gateway, config.port, createHttpRouter(cartController));
       logger.info('app.started', { port: config.port, env: config.nodeEnv });
     },
     async stop() {

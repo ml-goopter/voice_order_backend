@@ -10,6 +10,8 @@ timestamp: 2026-07-07
 Durable map of the codebase. Architecture and rationale live in
 [`design.cleaned.md`](../../design.cleaned.md); the menu/restaurant source of
 truth is [`menu_restaurant_schema.md`](../../menu_restaurant_schema.md) (Odoo POS).
+[`SPEC.md`](../../SPEC.md) is the contract for the **`goopter_cart_api` Odoo addon** we
+push confirmed carts to — it is implemented in another repo, not built here.
 
 The system is a TypeScript (ESM, `nodenext`) **event-driven modular monolith**:
 modules talk only through the typed in-process event bus; direct calls stay within
@@ -28,9 +30,10 @@ sit behind interfaces with stub implementations (search `TODO`).
 | [menu](./menu/index.md) | Candidate matching before the LLM; Postgres/pgvector + Odoo JOINs (design §7) |
 | [llm](./llm/index.md) | Cloud LLM abstraction + prompt building (design §8) |
 | [cart](./cart/index.md) | Sole writer of cart state: validate → apply → persist (design §9) |
+| [odoo](./odoo/index.md) | JSON-RPC client that inserts confirmed carts into the POS (contract: `SPEC.md`) |
 | [events](./events/index.md) | Typed in-process event bus + event contracts (design §2) |
 | [persistence](./persistence/index.md) | Redis (carts), Postgres/pgvector (menu), Odoo-referenced source of truth |
-| [platform](./platform/index.md) | Config, shared utils, auth, observability, composition root |
+| [platform](./platform/index.md) | Config, shared utils, auth, observability, REST router, composition root |
 
 ## Change history
 
