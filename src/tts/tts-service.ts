@@ -3,6 +3,7 @@ import type { ClientConnection } from '../realtime/client-registry.js';
 import type { TtsProvider } from './tts-types.js';
 import { segmentText } from './segment-text.js';
 import { logger } from '../config/logger.js';
+import { messageOf } from '../shared/errors.js';
 
 /** Correlation ids for one spoken reply's audio stream. */
 export interface TtsContext {
@@ -47,7 +48,7 @@ export class TtsService {
     this.inflight.set(ctx.session_id, controller);
 
     void this.stream(conn, ctx, segments, controller, log, language).catch((err) =>
-      log.error('tts.stream_error', { error: err instanceof Error ? err.message : String(err) }),
+      log.error('tts.stream_error', { error: messageOf(err) }),
     );
   }
 
@@ -82,10 +83,10 @@ export class TtsService {
             type: 'tts.error',
             session_id: ctx.session_id,
             request_id: ctx.request_id,
-            message: err instanceof Error ? err.message : String(err),
+            message: messageOf(err),
           });
           // Non-fatal: the reply text was already delivered, but the customer won't hear it.
-          log.warn('tts.synthesis_failed', { error: err instanceof Error ? err.message : String(err) });
+          log.warn('tts.synthesis_failed', { error: messageOf(err) });
           return;
         }
         if (signal.aborted) return;

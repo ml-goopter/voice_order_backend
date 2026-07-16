@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { AgentMessage } from './llm-provider.js';
-import type { CartView, HistoryTurn } from '../ordering/schemas/order-graph-input.schema.js';
-import { cartOperationSchema } from '../ordering/schemas/cart-operation.schema.js';
+import type { CartView, HistoryTurn } from '../contracts/cart-view.js';
+import { cartOperationSchema } from '../contracts/cart-operation.schema.js';
 
 // Derived from the output schema so the advertised operations can never drift from what
 // `propose_cart` validation accepts.

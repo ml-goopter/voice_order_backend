@@ -32,8 +32,9 @@ sit behind interfaces with stub implementations (search `TODO`).
 | [cart](./cart/index.md) | Sole writer of cart state: validate → apply → persist (design §9) |
 | [odoo](./odoo/index.md) | JSON-RPC client that inserts confirmed carts into the POS (contract: `SPEC.md`) |
 | [events](./events/index.md) | Typed in-process event bus + event contracts (design §2) |
+| [contracts](./contracts/index.md) | Neutral cross-module wire shapes (cart operations, proposal, prompt cart view, intent) |
 | [persistence](./persistence/index.md) | Redis (carts), Postgres/pgvector (menu), Odoo-referenced source of truth |
-| [platform](./platform/index.md) | Config, shared utils, auth, observability, REST router, composition root |
+| [platform](./platform/index.md) | Config, shared utils, auth, REST router, composition root |
 
 ## Change history
 

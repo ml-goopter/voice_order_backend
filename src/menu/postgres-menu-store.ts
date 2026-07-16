@@ -5,6 +5,7 @@ import type { CandidateModifier, MenuItem } from './menu-types.js';
 import type { MenuStore } from './menu-store.js';
 import { logger } from '../config/logger.js';
 import { messageOf } from '../shared/errors.js';
+import { displayName } from '../shared/display-name.js';
 
 /**
  * Over-fetch factor for KNN: an item explodes into one row per language name, so
@@ -19,10 +20,7 @@ const LEXICAL_LIMIT = 64;
 type Translatable = Record<string, string> | null;
 
 /** en_US-first, then any value, then the fallback. */
-function firstName(t: Translatable, fallback = ''): string {
-  if (!t) return fallback;
-  return t.en_US ?? Object.values(t)[0] ?? fallback;
-}
+const firstName = (t: Translatable, fallback = ''): string => displayName(t, fallback);
 
 /** The full translatable map, falling back to `alt` when `t` is null/empty (mirrors `firstName`). */
 function namesOf(t: Translatable, alt: Translatable): Record<string, string> {

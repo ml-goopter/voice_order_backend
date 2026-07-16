@@ -1,7 +1,7 @@
 import { config } from '../config/env.js';
 import { AppError, messageOf } from '../shared/errors.js';
 import type { PosOrderId } from '../shared/types.js';
-import type { InsertCartRequest } from './cart-to-insert-request.js';
+import type { InsertCartRequest } from './insert-cart-request.js';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const INSERT_CART_PATH = '/goopter_cart_api/v1/cart';

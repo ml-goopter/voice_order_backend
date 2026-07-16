@@ -100,10 +100,12 @@ It is a **pure proposer**; the Cart Module validates and applies.
 - **Service** (`order-understanding-service.ts`) enqueues the turn, runs the graph once, then
   emits `order.operations_proposed` (with the `OrderProposal`), `order.reply`, or
   `voice.session_failed` (reason `agent_step_limit` / `agent_no_terminal` / `order_parse_failed`).
-- **Contracts** in `schemas/`: `cart-operation` + `order-graph-output` are **zod** schemas
-  (`order-graph-output` is now operations-only — clarification is a reply, not an output);
-  `order-graph-input` holds prompt-facing `CartView`/`CartLineView`/`HistoryTurn` types; the
-  LLM speaks in `menu_item_key`/`modifier_key`; edits target a `line_id`.
+- **Contracts:** the cross-module wire shapes moved to `contracts/` — `cart-operation.schema`
+  (the operation zod schema), `proposal`, `cart-view` (prompt-facing `CartView`/`CartLineView`/
+  `HistoryTurn`), and `intent` (`intentSchema`/`DEFAULT_INTENT`). What stays in `schemas/` is
+  ordering-internal: `order-graph-output` (**zod**, now operations-only — clarification is a
+  reply, not an output) and `order-graph-input`. `graph/intents.ts` keeps only `INTENT_ROUTE`.
+  The LLM speaks in `menu_item_key`/`modifier_key`; edits target a `line_id`.
 
 ## Dependencies
 - `@langchain/langgraph` (graph + checkpointer), `zod` (schemas).
@@ -115,8 +117,8 @@ It is a **pure proposer**; the Cart Module validates and applies.
 - `order-understanding-service.ts`, `order-graph.ts` (façade), `cart-turn-queue.ts`,
   `register-handlers.ts`.
 - `graph/state.ts`, `graph/build-graph.ts` — LangGraph state + graph wiring (agent/tools nodes).
-- `graph/intents.ts` — `intentSchema` (`service`/`junk`) + `INTENT_ROUTE` binary junk-gate
-  (service → load_cart, junk → END).
+- `graph/intents.ts` — `INTENT_ROUTE` binary junk-gate (service → load_cart, junk → END). The
+  `intentSchema` label set it routes on lives in `contracts/intent.ts`.
 - `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` on any node throw.
 - `graph/parse-spoken-reply.ts` — pure parser for the agent's spoken terminal (the outermost `{…}`
   span → `SpokenReply`), degrading per-field so a format slip never drops a reply nor reads JSON
@@ -125,8 +127,9 @@ It is a **pure proposer**; the Cart Module validates and applies.
   `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)
 - `tools/tool-specs.ts` — `search_menu` + `propose_cart` specs; `tools/run-tools.ts` —
   the `tools` node executing them.
-- `schemas/*.ts` — `cart-operation` (zod), `order-graph-output` (operations-only, zod),
-  `order-graph-input` (CartView/HistoryTurn types), `clarification`/`proposal`, `zod-error`.
+- `schemas/*.ts` — ordering-internal only: `order-graph-output` (operations-only, zod) +
+  `order-graph-input`. The shared shapes (`cart-operation.schema`, `proposal`, `cart-view`,
+  `intent`) now live in `contracts/`; `zod-error` moved to `shared/`.
 - `order-understanding-service.test.ts` — happy path, edits, spoken-reply fire-and-forget
   (reply then answered next transcript), force-service after a reply, propose validation retry,
   step-limit fail, per-cart FIFO, history persistence, junk short-circuit, reply language

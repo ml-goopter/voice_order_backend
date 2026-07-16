@@ -85,7 +85,9 @@ Odoo via the [odoo](../odoo/overview.md) client.
 
 ## Key files
 - `cart-controller.ts`, `cart-operation-applier.ts`, `cart-validator.ts`,
-  `cart-repository.ts`, `cart-types.ts`, `register-handlers.ts`.
+  `cart-repository.ts`, `cart-types.ts`, `register-handlers.ts`,
+  `cart-to-insert-request.ts` (the `Cart`→`InsertCartRequest` mapper, moved here from `odoo/`
+  so odoo doesn't depend on cart; the wire types stay in `odoo/insert-cart-request.ts`).
 
 ## Not done yet
 - **Tax pricing is still a stub.** This module prices a cart itself

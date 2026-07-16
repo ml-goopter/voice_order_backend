@@ -47,6 +47,9 @@ function setup() {
     bus.on(name, (p) => (events[name] = [...(events[name] ?? []), p]));
   capture('stt.final_transcript.received');
   capture('voice.session_ended');
+  // Voice notifies the client of its own STT/timeout failures directly via a voice.error frame and
+  // does NOT emit voice.session_failed (that event is ordering-only, forwarded by the gateway).
+  // Captured here to pin that voice never emits it.
   capture('voice.session_failed');
 
   return { manager, stt, bus, handler, conn, sent, events };
@@ -129,7 +132,7 @@ describe('VoiceMessageHandler', () => {
       expect(events['voice.session_failed']).toBeUndefined(); // not yet
 
       vi.advanceTimersByTime(TIMEOUTS.finalTranscriptMs);
-      expect(events['voice.session_failed']).toEqual([{ session_id: 's1', cart_id: 'c1', reason: 'final_transcript_timeout' }]);
+      expect(events['voice.session_failed']).toBeUndefined(); // voice notifies the client directly, not via the bus
       expect(sent).toContainEqual({ type: 'voice.error', session_id: 's1', reason: 'final_transcript_timeout', message: 'I did not catch that. Please try again.' });
       expect(manager.get('s1')?.status).toBe('failed');
     } finally {
@@ -185,7 +188,7 @@ describe('VoiceMessageHandler', () => {
       expect(events['stt.final_transcript.received']).toBeUndefined(); // never reaches the cart
       expect(sent.some((m) => m.type === 'voice.final_transcript')).toBe(false); // nor the client display
       expect(events['voice.session_ended']).toBeUndefined();
-      expect(events['voice.session_failed']).toHaveLength(1);
+      expect(sent).toContainEqual({ type: 'voice.error', session_id: 's1', reason: 'final_transcript_timeout', message: 'I did not catch that. Please try again.' });
     } finally {
       vi.useRealTimers();
     }
@@ -219,8 +222,7 @@ describe('VoiceMessageHandler', () => {
       expect(stt.stream.stop).toHaveBeenCalledTimes(1); // not flushed twice
 
       vi.advanceTimersByTime(TIMEOUTS.finalTranscriptMs);
-      expect(events['voice.session_failed']).toHaveLength(1);
-      expect(sent.filter((m) => m.type === 'voice.error')).toHaveLength(1);
+      expect(sent.filter((m) => m.type === 'voice.error')).toHaveLength(1); // single failure notice, no orphaned timer
     } finally {
       vi.useRealTimers();
     }
@@ -251,7 +253,7 @@ describe('VoiceMessageHandler', () => {
 
     expect(manager.get('s1')).toBeUndefined(); // orphaned session torn down
     expect(sent).toContainEqual({ type: 'voice.error', session_id: 's1', reason: 'stt_failed', message: 'Speech recognition is unavailable. Please try again.' });
-    expect(events['voice.session_failed']).toEqual([{ session_id: 's1', cart_id: 'c1', reason: 'stt_failed' }]);
+    expect(events['voice.session_failed']).toBeUndefined(); // voice notifies directly; it does not emit this event
   });
 
   it('marks an in-flight session interrupted and closes the stream on disconnect', async () => {

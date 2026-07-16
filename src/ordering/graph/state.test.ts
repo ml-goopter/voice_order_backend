@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { HistoryTurn } from '../schemas/order-graph-input.schema.js';
+import type { HistoryTurn } from '../../contracts/cart-view.js';
 import { mergeHistory } from './state.js';
 
 describe('mergeHistory (Plan A conversation context)', () => {

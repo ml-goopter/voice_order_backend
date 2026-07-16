@@ -73,7 +73,8 @@ deterministic source of truth.
   the set the classifier validates against.
 
 ## Dependencies
-- `ordering/schemas/order-graph-input` + `cart-operation` (prompt-facing types + allowed ops).
+- `contracts/{cart-view, cart-operation.schema, intent}` (prompt-facing types, allowed ops, intent
+  label set) — the prompt builders speak these shared contracts and no longer reach into `ordering`.
   `config/env` for provider selection.
 
 ## Key files
