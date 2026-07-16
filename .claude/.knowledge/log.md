@@ -7,6 +7,27 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-15 — Document how required modifiers are identified
+- **What:** Added a "Required modifiers" section to
+  `docs/pos-product-modifier-order-schema.md` establishing that requiredness is not stored
+  anywhere and is implied solely by `product_attribute.display_type <> 'multi'`
+  (`radio`/`pills`/`select`). Records the per-tenant counts (jadegarden1: 39 groups on 38
+  products; pos_izumisushi: 0), the `initAttributes()` source evidence, and three traps: nothing
+  enforces requiredness server-side (clients must default to the first value in `sequence` order,
+  as the POS does), refund lines never carry modifier selections, and a group trimmed to one
+  option would stop being recorded because `isConfigurable()` skips the configurator.
+- **Why:** The doc previously said only that min/max selection limits are unavailable
+  (`goopter_pos_attribute_selection_limit` is uninstalled), leaving open whether *any* modifier
+  is required. Anything building a cart against this data needs to know which groups demand a
+  selection, and that the answer must be inferred from `display_type` rather than read from a
+  column that does not exist.
+- **Where:** `docs/pos-product-modifier-order-schema.md` (docs only — no code change).
+- **Notes:** Verified against the live databases on 2026-07-15. Two cross-tenant blind spots now
+  documented together: Izumi exercises no required-modifier logic, Jade Garden exercises almost
+  no modifier pricing — testing either alone hides a real bug class. The `display_type` signal
+  reflects POS behavior, not menu-author intent: Jade Garden models `Rice / Noodles` and
+  `cooking style` as `multi` despite their pick-one phrasing, so they read as optional.
+
 ## 2026-07-15 — `order.agent_tool` logs outcome, duration, and args
 - **What:** Enriched the per-tool-call log line in `runTools`. It carried only `tool` +
   `request_id` and was always `info`, so a validated `propose_cart` and an agent stuck retrying a
