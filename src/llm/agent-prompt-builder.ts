@@ -39,7 +39,7 @@ export interface AgentContext {
 
 /**
  * System prompt for the tool-calling ordering agent (docs/agent-tools.md §3). The model is NOT
- * handed pre-computed candidates — it must call `search_menu_semantic` to discover real menu keys.
+ * handed pre-computed candidates — it must call `search_menu` to discover real menu keys.
  * It ends the turn one of two ways: by calling `propose_cart` (a structured, validated action), or
  * by REPLYING with no tool call — strict JSON `{language, reply}` whose `reply` serves as both a
  * clarifying question and a recommendation (one merged "reply" outcome), and whose `language` tells
@@ -59,10 +59,21 @@ export function buildAgentSystemPrompt(): string {
     'or you reply to the customer in words — by using tools.',
     '',
     'WORKFLOW:',
-    '1. Call `search_menu_semantic` with a natural-language query to find the items the customer',
-    '   means. You may search several times (e.g. once per distinct item). Searches return',
-    '   candidate items with their real menu_item_key, name, base_price_cents, and',
-    '   available_modifiers (each with its own price_extra_cents).',
+    '1. Call `search_menu` to find the items the customer means. You may search several times',
+    '   (e.g. once per distinct item). Searches return candidate items with their real',
+    '   menu_item_key, name, base_price_cents, and available_modifiers (each with its own',
+    '   price_extra_cents).',
+    '   - "what is popular?" / "what do you suggest?" → search_menu with sort="popularity" and NO',
+    '     query. "what is popular and has fish?" → ONE call, {"query": "fish", "sort":',
+    '     "popularity"}. Never search twice and try to intersect the results yourself.',
+    '   - "anything under $10?" → {"max_price_cents": 1000}.',
+    '   - Popularity-sorted results carry a "popularity" tier ("top" or "popular"). You may say an',
+    '     item is one of our most popular when it is; never quote a rank or a number sold, and',
+    '     never claim popularity for an item whose tier is absent.',
+    '   - search_menu matches item NAMES. The menu carries NO ingredient, allergen, or dietary',
+    '     data, so you cannot answer what a dish contains, and you must never guess. If a customer',
+    '     asks about an allergy or a dietary need, say you cannot confirm it and offer to check',
+    '     with staff — do not infer it from an item name or from a "No <ingredient>" option.',
     '2. Then end the turn ONE of two ways:',
     '   - Call `propose_cart` with the operations to apply, when you know what to change.',
     '   - Otherwise, end the turn by SPEAKING: DO NOT call any tool, and output STRICT JSON',
@@ -91,7 +102,7 @@ export function buildAgentSystemPrompt(): string {
     '',
     'CONTEXT RULES:',
     'conversation_history holds prior turns (oldest → newest), each with the customer_text and — when you replied in words that turn — the agent_reply you spoke. Use it to infer intent, resolve references ("that", "the same"), and understand follow-ups. If your previous turn ended with a spoken reply (a question or a recommendation), the current customer_text may be answering it — combine them to resolve the original request. If the utterance plainly does not answer it, treat customer_text as a new request.',
-    'Your searches from earlier turns are NOT retained. When the customer refers to an item you named in a previous turn (e.g. "the first one", "the chicken one", "sure, add that"), re-run search_menu_semantic for that item this turn to recover its real menu_item_key before you propose_cart — never reuse a key from memory.',
+    'Your searches from earlier turns are NOT retained. When the customer refers to an item you named in a previous turn (e.g. "the first one", "the chicken one", "sure, add that"), re-run search_menu for that item this turn to recover its real menu_item_key before you propose_cart — never reuse a key from memory.',
     'current_cart remains the sole source of truth for what is currently in the order. Do not blindly replay prior requests; infer only the operation implied by the current customer_text and use current_cart for valid line_id values and current item state.',
     'When recommending, recommend ONLY items returned by your searches, use current_cart to avoid recommending something already ordered and to suggest complementary items, and keep the reply to one or two friendly spoken sentences.',
     '',
@@ -119,7 +130,7 @@ export function buildAgentSystemPrompt(): string {
 }
 
 /** The user turn: the utterance plus the context the agent reasons over. Candidates are omitted —
- *  the agent retrieves them itself via `search_menu_semantic`. No language hint is supplied: the
+ *  the agent retrieves them itself via `search_menu`. No language hint is supplied: the
  *  STT-detected code is unreliable (the default streaming model tags every turn `en`), and a WRONG
  *  hint is worse than none — it argues the customer spoke English when they plainly didn't. The
  *  agent reads the language off `customer_text` itself, which is the actual evidence. */

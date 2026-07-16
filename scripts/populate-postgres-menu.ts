@@ -67,8 +67,25 @@ async function main(): Promise<void> {
     // Ensure the table + indexes exist (idempotent).
     await new PostgresMenuStore(pool, config.embeddingDimensions).ensureIndex();
 
+    // Products in an excluded POS category (cover charges, discount products) are not dishes:
+    // keeping them out of `item_vector` keeps them out of every read path at once, which
+    // matters most for popularity — it ranks by qty, and a cover charge sells constantly
+    // (Izumi's "Adult" is its #2 seller). Matched by category NAME so the config stays legible
+    // and covers members added later. `IN (SELECT …)`, not a join: the category relation is an
+    // m2m and an item may hold several categories, which a join would fan out.
+    // NOT EXISTS, not NOT IN: `NOT IN` against a NULL from the subquery yields zero rows,
+    // which here would silently seed an empty menu.
     const { rows: templates } = await pool.query<TemplateRow>(
-      `SELECT id, name FROM product_template WHERE available_in_pos AND active ORDER BY id`,
+      `SELECT pt.id, pt.name FROM product_template pt
+        WHERE pt.available_in_pos AND pt.active
+          AND NOT EXISTS (
+                SELECT 1
+                  FROM pos_category_product_template_rel r
+                  JOIN pos_category pc ON pc.id = r.pos_category_id
+                 WHERE r.product_template_id = pt.id
+                   AND pc.name->>'en_US' = ANY($1::text[]))
+        ORDER BY pt.id`,
+      [config.menuExcludedCategories],
     );
     if (templates.length === 0) {
       console.warn('No available_in_pos templates found — nothing to seed.');

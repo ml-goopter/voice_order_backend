@@ -15,6 +15,14 @@ export interface CandidateModifier {
   price_extra_cents: Cents;
 }
 
+/**
+ * How well an item sells, as a coarse band rather than a rank or a count. Deliberately
+ * imprecise: popularity rests on ~1 month of trade, so "#3, 47 sold" would be false
+ * precision (and an odd thing for a restaurant to say aloud). Absent = unremarkable.
+ * See docs/plans/agent-search-extension.md §5.4.
+ */
+export type PopularityTier = 'top' | 'popular';
+
 /** A menu item the Candidate Matcher surfaced for a transcript chunk (design §7). */
 export interface CandidateItem {
   menu_item_key: string; // maps to product_tmpl_id
@@ -27,6 +35,24 @@ export interface CandidateItem {
   /** Base price before any modifier surcharge — the agent quotes it; the cart still prices. */
   base_price_cents: Cents;
   available_modifiers: CandidateModifier[];
+  /** Only populated on a popularity-sorted search — a relevance search runs no ranking query. */
+  popularity?: PopularityTier;
+}
+
+/**
+ * What the agent asked `search_menu` for (docs/plans/agent-search-extension.md §4).
+ *
+ * Fields are `?: T | undefined` rather than plain `?: T` because this is a parse boundary —
+ * the value comes straight from a zod `.optional()`, whose inferred type carries the explicit
+ * `undefined`. Every reader treats absent and undefined identically.
+ */
+export interface MenuSearchOptions {
+  /** Omit for a pure browse ("what's popular?"); then `sort` is forced to 'popularity'. */
+  query?: string | undefined;
+  sort?: 'relevance' | 'popularity' | undefined;
+  max_price_cents?: Cents | undefined;
+  min_price_cents?: Cents | undefined;
+  limit?: number | undefined;
 }
 
 export interface CandidateSet {

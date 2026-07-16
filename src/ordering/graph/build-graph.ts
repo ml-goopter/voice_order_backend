@@ -42,7 +42,7 @@ function lastAssistantHasToolCalls(s: OrderStateType): boolean {
 /**
  * The Order Understanding graph (docs/agent-tools.md §3). `normalize → classify → load_cart →
  * agent ⇄ tools → finalize`. `classify` is a binary junk-gate: `service` routes into the agent
- * pipeline, `junk` short-circuits to END. The agent drives retrieval (`search_menu_semantic`) and
+ * pipeline, `junk` short-circuits to END. The agent drives retrieval (`search_menu`) and
  * ends the turn either by committing operations (`propose_cart`) or by replying to the customer in
  * words (no tool call) — a single "reply" outcome that serves as both a clarifying question and a
  * recommendation. A reply is fire-and-forget: it ends the turn; the customer's answer arrives as

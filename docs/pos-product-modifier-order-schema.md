@@ -22,12 +22,15 @@ a placed order are actually represented.
    **per selected option** (not per attribute group) and is **already included in
    `price_unit`** — adding it again double-charges. See
    [Modifier pricing](#modifier-pricing).
-4. **The two tenants use modifiers in opposite ways** — Jade Garden's are
+4. **Requiredness is not stored.** No column expresses it. A group is required
+   iff `product_attribute.display_type <> 'multi'` — and even then nothing
+   enforces it server-side. See [Required modifiers](#required-modifiers).
+5. **The two tenants use modifiers in opposite ways** — Jade Garden's are
    ~all free exclusions, Izumi's are ~all paid surcharges. See
    [Tenant differences](#tenant-differences).
-5. The core column sets are **identical** across both databases; only physical
+6. The core column sets are **identical** across both databases; only physical
    column ordering differs. Any client can treat them as one schema.
-6. **No popularity data exists** anywhere — derive it from `pos_order_line`, and
+7. **No popularity data exists** anywhere — derive it from `pos_order_line`, and
    rank by qty rather than revenue. See
    [Sales data & popularity](#5-sales-data--popularity).
 
@@ -167,6 +170,95 @@ product                  | attribute | display_type | value       | price_extra
 B. Combination For One B | No Nuts   | multi        | No Peanuts  | 0.0
 B. Combination For One B | No Sauces | multi        | no Ginger   | 0.0
 ```
+
+### Required modifiers
+
+**There is no `required` column.** Neither `product_template_attribute_line` nor
+`product_attribute` has one, and `ir_model_fields` has no field matching
+`requir|min|max|limit|mandat` on any of the four attribute models. Requiredness
+is **implied entirely by `display_type`**:
+
+| `display_type` | Cardinality | Required? |
+|---|---|---|
+| `radio` / `pills` / `select` | exactly one | **yes** — one value is always selected |
+| `multi` | zero or more | no |
+
+The signature for a required group is therefore
+**`product_attribute.display_type <> 'multi'`**.
+
+```sql
+SELECT pt.id, pt.name->>'en_US' AS product, pa.name->>'en_US' AS required_group,
+       pa.display_type, ptal.value_count AS n_options
+FROM product_template_attribute_line ptal
+JOIN product_attribute pa ON pa.id = ptal.attribute_id
+JOIN product_template  pt ON pt.id = ptal.product_tmpl_id
+WHERE pa.display_type <> 'multi' AND pa.active
+  AND pt.active AND pt.available_in_pos;
+```
+
+|  | jadegarden1 | pos_izumisushi |
+|---|---|---|
+| Active POS products with a required group | **38** | **0** |
+| Required groups | **39** | **0** |
+
+Jade Garden's are `Noodles` (19 products), `selection` (16), `Glass / Carafe`
+(2), and one each of `Size`, `Soft Drinks`, `combo choices`. **Izumi uses
+`multi` exclusively, so it has no required modifiers at all** — a client tested
+only against Izumi never exercises this path.
+
+#### Why `display_type` is the signature
+
+`product_configurator_popup.js :: initAttributes()` builds combinations from only
+the non-multi lines and pre-selects a value for each:
+
+```js
+const values = attributes
+    .filter(({ attribute_id }) => attribute_id.display_type !== "multi")
+    .map((attribute) => attribute.values());
+```
+
+So a radio/pills/select group opens with exactly one value selected and the UI
+only lets the cashier *change* it, never clear it. A `multi` group initializes to
+`selected: []`.
+
+The stored data agrees. Of the order lines whose product carries a radio/pills
+group, 157/176 recorded a selection; all 19 exceptions are explained and none
+contradict the rule (17 are orders predating the ptal's `create_date`; 1 is a
+stale POS session — the menu is cached at session start; 1 is a refund line).
+`multi` groups recorded a selection on only 84/3,534 opportunities.
+
+#### Required means auto-satisfied, not enforced
+
+Two consequences a client must not get wrong:
+
+- **Nothing rejects a missing selection.** There is no server-side validation
+  (see [Hazards](#goopter_pos_attribute_selection_limit-is-not-installed)). An
+  order line omitting a radio selection is accepted — it just diverges from what
+  the POS would have stored. **To match POS behavior, default to the first value
+  in `sequence` order**, as `initAttributes()` does. The cashier is never
+  prompted to choose; the value is silently pre-picked.
+- **Refund lines never carry modifiers.** 0 of 12 in Jade Garden do, even when
+  the refunded source line does. Do not read requiredness compliance off a
+  refund line.
+
+#### Latent hole: single-value groups skip the configurator
+
+`product_template.js :: isConfigurable()` returns falsy unless some attribute
+line has `> 1` value or a value with `is_custom`. If *every* line on a product
+offered exactly one value, no configurator would open and **no attribute values
+would be recorded at all** — the single-value auto-select path in `pos_store.js`
+only fires for `create_variant = 'dynamic'`, and every attribute here is
+`no_variant`.
+
+This is currently harmless — every radio line in Jade Garden has ≥ 2 values — but
+trimming a radio group to one option would silently stop recording it.
+
+#### `display_type` is UI config, not semantics
+
+The flag records how the group renders, not what it means. Jade Garden models
+`Rice / Noodles` and `cooking style` as `multi` even though they read like
+pick-one choices, so by this rule they are **optional**. Requiredness inferred
+this way tracks the POS's actual behavior, not the menu author's intent.
 
 ### Counts
 
@@ -517,6 +609,7 @@ thing for a client to get right.
 | | jadegarden1 | pos_izumisushi |
 |---|---|---|
 | Attribute display types | `multi`, `radio`, `pills` | `multi` only |
+| Required groups (`display_type <> 'multi'`) | **39, on 38 products** | **0** |
 | ptav rows with `price_extra > 0` | **16 of 7,345 (0.2%)** | **3,438 of 4,202 (82%)** |
 | Combos | 35 | 0 |
 
@@ -530,6 +623,11 @@ sizes ("1/2 Carafe" +8.50, "L" +4.00, "Pepperoni" +3.00).
 Any pricing logic must read `price_extra` per ptav rather than assume modifiers
 are free; a client tested only against Jade Garden would appear correct while
 silently under-charging every Izumi order.
+
+The trap runs the other way for requiredness: **Izumi has no required groups at
+all**, so a client tested only against Izumi never exercises that path and would
+appear correct while dropping required selections on every Jade Garden order.
+Test both tenants — neither one alone covers the modifier surface.
 
 ---
 
@@ -560,6 +658,10 @@ There is therefore **no server-side enforcement of how many options may be
 chosen** for a `multi` attribute. A client cannot read min/max constraints from
 the database, and must not assume the server will reject an invalid selection
 count.
+
+This extends to requiredness: a required (`display_type <> 'multi'`) group is
+enforced only by the POS UI pre-selecting a value, never by the server. See
+[Required modifiers](#required-modifiers).
 
 ### Tables that look relevant but are not
 
