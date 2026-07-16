@@ -1,6 +1,6 @@
 import type { EventBus } from '../events/event-bus.js';
 import type { SttFinalTranscriptReceived } from '../events/event-types.js';
-import type { OrderProposal } from './schemas/proposal.js';
+import type { OrderProposal } from '../contracts/proposal.js';
 import type { GraphTurnResult } from './order-graph.js';
 import { OrderGraph } from './order-graph.js';
 import { CartTurnQueue } from './cart-turn-queue.js';
@@ -113,6 +113,13 @@ export class OrderUnderstandingService {
   }
 
   private fail(e: SttFinalTranscriptReceived, reason: string): void {
-    this.bus.emit('voice.session_failed', { session_id: e.session_id, cart_id: e.cart_id, reason });
+    // The ordering module owns no socket; the gateway subscribes to this and relays `message` to
+    // the customer as a voice.error frame. Without a consumer, a failed turn is silently dropped.
+    this.bus.emit('voice.session_failed', {
+      session_id: e.session_id,
+      cart_id: e.cart_id,
+      reason,
+      message: 'Sorry, I could not process that. Please try again.',
+    });
   }
 }

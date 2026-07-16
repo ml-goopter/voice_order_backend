@@ -1,5 +1,5 @@
 /** Prompt-facing cart projections + conversation history for the agent (design §6/§8). */
-import type { CartId, Cents, LineId, PosConfigId } from '../../shared/types.js';
+import type { CartId, Cents, LineId, PosConfigId } from '../shared/types.js';
 
 /** A modifier on a self-describing cart line — keys/names/price only, no numeric ids (Plan A). */
 export interface CartModifierView {

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { HttpOdooClient, OdooError } from './odoo-client.js';
-import type { InsertCartRequest } from './cart-to-insert-request.js';
+import type { InsertCartRequest } from './insert-cart-request.js';
 
 const REQ: InsertCartRequest = {
   cart_id: 'cart_1',

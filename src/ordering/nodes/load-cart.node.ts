@@ -4,7 +4,8 @@ import type { Cart } from '../../cart/cart-types.js';
 import { emptyCart } from '../../cart/cart-types.js';
 import type { MenuLookup } from '../../menu/menu-service.js';
 import type { CandidateModifier } from '../../menu/menu-types.js';
-import type { CartModifierView, CartView } from '../schemas/order-graph-input.schema.js';
+import type { CartModifierView, CartView } from '../../contracts/cart-view.js';
+import { displayName } from '../../shared/display-name.js';
 
 /** Project a menu modifier to its prompt-facing view — keys/names/price, no numeric ids. */
 const toModifierView = (m: CandidateModifier): CartModifierView => ({
@@ -44,7 +45,7 @@ export async function buildCartView(menu: MenuLookup, cart: Cart): Promise<CartV
       return {
         line_id: line.line_id,
         menu_item_key: item?.menu_item_key ?? String(line.product_tmpl_id),
-        name: item?.names?.en_US ?? Object.values(item?.names ?? {})[0] ?? item?.menu_item_key ?? String(line.product_tmpl_id),
+        name: displayName(item?.names, item?.menu_item_key ?? String(line.product_tmpl_id)),
         quantity: line.quantity,
         base_price_cents: item?.base_price_cents ?? 0,
         modifiers: line.modifiers

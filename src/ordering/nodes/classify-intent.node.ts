@@ -1,7 +1,7 @@
 import type { LlmProvider } from '../../llm/llm-provider.js';
 import { buildIntentPrompt } from '../../llm/intent-prompt-builder.js';
-import { intentSchema, DEFAULT_INTENT } from '../graph/intents.js';
-import type { Intent } from '../graph/intents.js';
+import { intentSchema, DEFAULT_INTENT } from '../../contracts/intent.js';
+import type { Intent } from '../../contracts/intent.js';
 import { logger } from '../../config/logger.js';
 import { messageOf } from '../../shared/errors.js';
 

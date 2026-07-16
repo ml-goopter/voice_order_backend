@@ -12,8 +12,8 @@ import type {
   SessionId,
 } from '../shared/types.js';
 import type { Cart } from '../cart/cart-types.js';
-import type { CartOperation } from '../ordering/schemas/cart-operation.schema.js';
-import type { OrderProposal } from '../ordering/schemas/proposal.js';
+import type { CartOperation } from '../contracts/cart-operation.schema.js';
+import type { OrderProposal } from '../contracts/proposal.js';
 
 /** No `language`: STT's per-turn language detection is not used anywhere (docs/text-to-speech.md
  *  §Multilingual). The agent declares the reply's language instead — see `OrderReply.language`. */
@@ -80,10 +80,17 @@ export interface ClientConnected {
   table_id?: RestaurantTableId;
 }
 
+/**
+ * A turn failed inside a module that owns no client socket (the ordering service). The realtime
+ * gateway subscribes and relays it to the customer's socket as a `voice.error` frame. Voice's own
+ * STT/timeout failures notify the client directly (they hold the socket) and do not emit this.
+ */
 export interface VoiceSessionFailed {
   session_id: SessionId;
   cart_id: CartId;
   reason: string;
+  /** Customer-facing text the gateway relays in the `voice.error` frame. */
+  message: string;
 }
 
 export interface VoiceSessionEnded {

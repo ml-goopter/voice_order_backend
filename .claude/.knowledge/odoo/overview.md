@@ -23,8 +23,9 @@ two routes; we call only the first:
 | `POST /goopter_cart_api/v1/quote` | **Not built.** Price without creating. |
 
 ## Mechanics
-- `cart-to-insert-request.ts` — pure, unit-tested mapping (SPEC § "Mapping from the
-  external service's `Cart`"). What it **drops is contractual**, not accidental:
+- The pure `Cart`→`InsertCartRequest` mapping lives in **`cart/cart-to-insert-request.ts`** (moved
+  there so odoo doesn't import `cart`; odoo owns only the wire *types*). What it **drops is
+  contractual**, not accidental:
   | Dropped | Why |
   |---|---|
   | `name`, `names`, `modifiers[].name(s)` | Caller-supplied names would print arbitrary text on kitchen tickets; Odoo builds `full_product_name` server-side. |
@@ -65,12 +66,14 @@ test for the whole integration.
 
 ## Dependencies
 - `config/env` (`ODOO_API_URL`, `ODOO_API_KEY` — **unrelated** to `ODOO_DATABASE_URL`,
-  which is the Postgres/pgvector menu *read* path), `shared/errors` (`AppError`),
-  `cart/cart-types` (the `Cart` being mapped). Consumed by `cart/cart-repository`.
+  which is the Postgres/pgvector menu *read* path), `shared/errors` (`AppError`). Imports
+  **nothing** from `cart` (the `Cart`→request mapper lives on the cart side). Consumed by
+  `cart/cart-repository`, which calls `insertCart` with the mapped request.
 
 ## Key files
 - `odoo-client.ts` — `OdooClient` interface, `HttpOdooClient`, `OdooError`.
-- `cart-to-insert-request.ts` — `toInsertCartRequest`, `InsertCartRequest`, `RequestLine`.
+- `insert-cart-request.ts` — the wire types `InsertCartRequest`, `RequestLine` (the mapper
+  `toInsertCartRequest` lives in `cart/cart-to-insert-request.ts`).
 
 ## Operational notes (SPEC — expect these, they are not our bugs)
 - The integration user must be an **internal user AND a POS user**: `group_pos_user` alone

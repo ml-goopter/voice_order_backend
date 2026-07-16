@@ -6,6 +6,7 @@ import type { OutboundMessage } from './realtime-message-types.js';
 import { authenticate } from '../auth/session-auth.js';
 import { TIMEOUTS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
+import { messageOf } from '../shared/errors.js';
 
 export interface WebSocketServerHandle {
   /** The underlying HTTP server (also serves `/health`); exposed for tests/shutdown. */
@@ -75,7 +76,7 @@ export function startWebSocketServer(
       gateway.onRawMessage(conn, data.toString()).catch((err: unknown) => {
         logger.warn('ws.message_error', {
           session_id,
-          error: err instanceof Error ? err.message : String(err),
+          error: messageOf(err),
         });
       });
     });

@@ -4,7 +4,7 @@ import type { Cart } from './cart-types.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import { cartKey } from '../redis/cart-cache.js';
 import type { OdooClient } from '../odoo/odoo-client.js';
-import { toInsertCartRequest } from '../odoo/cart-to-insert-request.js';
+import { toInsertCartRequest } from './cart-to-insert-request.js';
 import { logger } from '../config/logger.js';
 
 export type Outcome = 'applied' | 'rejected' | 'duplicate' | 'superseded';

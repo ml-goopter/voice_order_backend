@@ -36,7 +36,8 @@ modules stay decoupled behind event contracts rather than direct references.
   `LOG_LEVEL=debug`.
 
 ## Dependencies
-- `cart/cart-types`, `ordering/schemas/*`, `shared/types` for payload shapes.
+- `cart/cart-types`, `contracts/{cart-operation.schema, proposal}`, `shared/types` for payload
+  shapes — no longer reaches into `ordering` (the shared shapes moved to `contracts/`).
 - `config/logger` for emit tracing.
 
 ## Key files

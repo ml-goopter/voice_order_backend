@@ -25,4 +25,9 @@ export class VoiceSession {
     readonly cart_id: CartId,
     readonly pos_config_id: PosConfigId,
   ) {}
+
+  /** Terminal states accept no more audio or finals and never revive (§11). */
+  get isTerminal(): boolean {
+    return this.status === 'ended' || this.status === 'failed' || this.status === 'interrupted';
+  }
 }

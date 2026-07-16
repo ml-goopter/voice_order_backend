@@ -1,4 +1,4 @@
-import type { CartId, PosConfigId, RequestId } from '../../shared/types.js';
+import type { CartId, PosConfigId, RequestId } from '../shared/types.js';
 import type { CartOperation } from './cart-operation.schema.js';
 
 /**

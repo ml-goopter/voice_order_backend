@@ -7,6 +7,38 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-16 — Cleanup + coverage refactor: `contracts/` extraction, silent-drop fix, dead-code/DRY
+- **What:** A whole-codebase cleanup pass in five parts. (1) **Dead code removed:** unused
+  `isOk`/`newCartId`/`newSessionId`/`nowMs`/`OperationAction`; deleted `observability/metrics.ts`
+  (zero call sites) and `ordering/schemas/clarification.schema.ts` (superseded by `OrderReply`).
+  (2) **Bug fix:** `voice.session_failed` was emitted by the ordering service but had **no
+  consumer**, so a failed turn was silently dropped. The realtime gateway now subscribes and
+  relays it to the customer's socket as a `voice.error` (event gained a customer-facing `message`);
+  voice's own STT/timeout failures still `conn.send` directly and no longer emit the event, so
+  there is exactly one error frame per path. (3) **DRY:** new `shared/display-name.ts` (`displayName`)
+  replacing 5 copies of the `en_US ?? first-value ?? fallback` chain; `messageOf()` reuse (4 sites);
+  `VoiceSession.isTerminal` getter. (4) **Coverage:** +36 unit tests — the three previously
+  zero-test modules `auth/session-auth`, `config/env`, `config/logger`, plus `ordering/graph/instrument`
+  and `llm/agent-prompt-builder` (coverage lost when `prompt-builder.ts` was renamed). (5) **New
+  `src/contracts/` bundle** for cross-module wire contracts (see Where).
+- **Why:** Reduce complexity + improve coverage. The shared wire schemas lived inside `ordering/`,
+  which forced a **reversed dependency** (`llm` → `ordering`) and coupled `events` to a business
+  module; `cart` and `odoo` imported each other. Moving the contracts to a neutral home removes all
+  three couplings and de-nests the schemas.
+- **Where:** New `src/contracts/` holds `cart-operation.schema.ts` (+ test), `proposal.ts`,
+  `cart-view.ts` (was `ordering/schemas/order-graph-input.schema.ts`), and `intent.ts`
+  (`intentSchema`/`Intent`/`DEFAULT_INTENT`, split out of `ordering/graph/intents.ts` — `INTENT_ROUTE`
+  stays there). `zod-error.ts` → `shared/`. The `Cart`→`InsertCartRequest` mapper moved to
+  `cart/cart-to-insert-request.ts`; the wire types (`InsertCartRequest`/`RequestLine`) stay in odoo as
+  `odoo/insert-cart-request.ts`. ~20 importer paths updated across cart/llm/events/ordering/odoo.
+- **Notes:** Behavior-preserving except one intentional improvement — the applier `invalid_modifier`
+  reject message went 2-level→3-level `displayName`, so an item lacking `en_US` now shows a localized
+  name instead of its internal key (matches the adjacent cart-line name). `voice.session_ended` is
+  still emitted with no consumer (pre-existing, a clean end already reaches the client via
+  `cart.updated`/`order.reply`) — left for a follow-up. Two invariants now hold and are grep-checkable:
+  `llm` imports nothing from `ordering`, `odoo` imports nothing from `cart`, `events` imports nothing
+  from `ordering`. 400 tests pass; `npm run typecheck` clean. Plan: `docs/plans/refactor.md`.
+
 ## 2026-07-15 — Cart traceability (device/table), the confirmation lock, and the Odoo insert
 - **What:** Carts now carry a durable identity and can actually be sent to the POS. Four
   parts: (1) `Cart` gains `device_id` (the device that CREATED it) + `table_id?` (dine-in

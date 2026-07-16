@@ -50,6 +50,15 @@ export class RealtimeGateway {
       this.tts.speak(c, { session_id: e.session_id, request_id: e.request_id }, e.reply, e.language);
     });
 
+    this.bus.on('voice.session_failed', (e) => {
+      // A turn failed in the ordering module, which owns no socket. Bridge it to the customer's
+      // socket as a voice.error so the failure isn't silently dropped. (Voice's own STT/timeout
+      // failures notify the client directly and never emit this event.)
+      const c = this.registry.getBySession(e.session_id);
+      if (!c) return;
+      c.send({ type: 'voice.error', session_id: e.session_id, reason: e.reason, message: e.message });
+    });
+
     this.bus.on('cart.operation_rejected', (e) => {
       const targets = e.session_id
         ? [this.registry.getBySession(e.session_id)].filter((c): c is ClientConnection => c !== undefined)

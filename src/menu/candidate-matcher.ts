@@ -5,6 +5,7 @@ import type { CandidateItem, CandidateSet, MenuItem } from './menu-types.js';
 import { LIMITS } from '../config/constants.js';
 import { similarity } from './fuzzy-matcher.js';
 import { modifierMatchScore } from './modifier-matcher.js';
+import { displayName } from '../shared/display-name.js';
 
 /**
  * Constraints applied while ranking. The price filter is applied INSIDE `rank()`, before the
@@ -136,7 +137,7 @@ export function toCandidate(item: MenuItem): CandidateItem {
   return {
     menu_item_key: item.menu_item_key,
     product_tmpl_id: item.product_tmpl_id,
-    name: item.names['en_US'] ?? Object.values(item.names)[0] ?? item.menu_item_key,
+    name: displayName(item.names, item.menu_item_key),
     names: item.names,
     base_price_cents: item.base_price_cents,
     available_modifiers: item.modifiers,

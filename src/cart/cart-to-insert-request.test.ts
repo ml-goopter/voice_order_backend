@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { Cart } from '../cart/cart-types.js';
-import { emptyCart } from '../cart/cart-types.js';
+import type { Cart } from './cart-types.js';
+import { emptyCart } from './cart-types.js';
 import { toInsertCartRequest } from './cart-to-insert-request.js';
 
 /** A cart carrying every field the far side drops, so the mapping's omissions are observable. */

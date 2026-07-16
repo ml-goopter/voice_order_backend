@@ -1,5 +1,5 @@
 import type { LlmPrompt } from './llm-provider.js';
-import { intentSchema } from '../ordering/graph/intents.js';
+import { intentSchema } from '../contracts/intent.js';
 
 /** The intent labels, derived from `intentSchema` (the single source of truth), rendered as a
  * JSON string union — e.g. `"service" | "junk"` — so the prompt can't drift from the

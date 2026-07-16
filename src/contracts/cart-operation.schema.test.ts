@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { Result } from '../../shared/result.js';
-import { ValidationError } from '../../shared/errors.js';
+import type { Result } from '../shared/result.js';
+import { ValidationError } from '../shared/errors.js';
 import { parseCartOperation, type CartOperation } from './cart-operation.schema.js';
 
 /** Unwrap an ok Result or fail loudly. */
