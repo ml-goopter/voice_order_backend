@@ -224,6 +224,7 @@ function rateGate(): Promise<void> {
 function recordingLlm(inner: LlmProvider): LlmProvider {
   return {
     name: inner.name,
+    model: inner.model,
     async complete(prompt: LlmPrompt): Promise<string> {
       const entry: LlmExchange = { kind: 'complete', system: prompt.system, user: prompt.user };
       llmLog.push(entry);
