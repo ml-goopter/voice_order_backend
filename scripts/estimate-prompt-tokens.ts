@@ -37,7 +37,7 @@ try {
   ({ encode } = await import('gpt-tokenizer'));
 } catch {
   console.error('Missing tokenizer. Install it first (does not touch package.json):');
-  console.error('  npm i --no-save gpt-tokenizer');
+  console.error('  npm i -D  gpt-tokenizer');
   process.exit(1);
 }
 const tok = (s: string): number => encode(s).length;
@@ -51,7 +51,7 @@ const TOOLS_JSON = JSON.stringify(
 );
 
 // ---- illustrative dynamic data (shapes accurate; sizes vary with the live menu) -----------
-const emptyCart = (v: number): CartView => ({ cart_id: 'c_18f2a', pos_config_id: 'pos_3', version: v, items: [] });
+const emptyCart = (v: number): CartView => ({ cart_id: 'c_18f2a', pos_config_id: 2, version: v, items: [] });
 const springRollLine = {
   line_id: 'L1', menu_item_key: 'mi_springroll', name: 'Spring Rolls (2pc)', quantity: 2,
   base_price_cents: 650, modifiers: [],
@@ -62,8 +62,8 @@ const padThaiLine = {
   base_price_cents: 1450, modifiers: [],
   available_modifiers: [{ modifier_key: 'mod_nopeanut', name: 'No Peanuts', price_extra_cents: 0 }],
 };
-const cartAfterT1: CartView = { cart_id: 'c_18f2a', pos_config_id: 'pos_3', version: 1, items: [springRollLine] };
-const cartAfterT3: CartView = { cart_id: 'c_18f2a', pos_config_id: 'pos_3', version: 2, items: [springRollLine, padThaiLine] };
+const cartAfterT1: CartView = { cart_id: 'c_18f2a', pos_config_id: 44, version: 1, items: [springRollLine] };
+const cartAfterT3: CartView = { cart_id: 'c_18f2a', pos_config_id: 12, version: 2, items: [springRollLine, padThaiLine] };
 
 const searchResultSpringRoll = JSON.stringify([
   { menu_item_key: 'mi_springroll', name: 'Spring Rolls (2pc)', base_price_cents: 650, available_modifiers: [{ modifier_key: 'mod_sweetchili', name: 'Sweet Chili', price_extra_cents: 0 }] },
