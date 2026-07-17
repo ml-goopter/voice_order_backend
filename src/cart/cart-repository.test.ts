@@ -26,6 +26,27 @@ describe('InMemoryCartRepository', () => {
     expect(await repo.wasProcessed('req_2')).toBe(true);
     expect(await cache.get('cart_1')).toBeUndefined();
   });
+
+  it('getOrdersByDevice returns only the confirmed carts for the device', async () => {
+    const cache = new InMemoryCartCache();
+    const repo = new InMemoryCartRepository(cache);
+    const confirmed = { ...emptyCart('cart_c1', 1, { device_id: 'dev_d' }), confirmed_at: '2026-07-16T00:00:00Z' };
+    const alsoConfirmed = { ...emptyCart('cart_c2', 1, { device_id: 'dev_d' }), confirmed_at: '2026-07-16T00:01:00Z' };
+    const unconfirmed = emptyCart('cart_open', 1, { device_id: 'dev_d' });
+    await repo.commitCreated(confirmed);
+    await repo.commitCreated(alsoConfirmed);
+    await repo.commitCreated(unconfirmed);
+    await repo.commitCreated(emptyCart('cart_other', 1, { device_id: 'dev_x' }));
+
+    const orders = await repo.getOrdersByDevice('dev_d');
+
+    expect(orders.map((c) => c.cart_id).sort()).toEqual(['cart_c1', 'cart_c2']);
+  });
+
+  it('getOrdersByDevice returns an empty array for an unknown device', async () => {
+    const repo = new InMemoryCartRepository(new InMemoryCartCache());
+    expect(await repo.getOrdersByDevice('dev_none')).toEqual([]);
+  });
 });
 
 /** Fake ioredis capturing the EVAL writes, sets and EX TTLs — the surface RedisCartRepository uses. */
@@ -57,6 +78,14 @@ class FakeRedis {
       set.add(cartId!);
       this.ttl.set(k!, Number(indexSeconds));
     }
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    return [...(this.sets.get(key) ?? [])];
+  }
+
+  async mget(keys: string[]): Promise<(string | null)[]> {
+    return keys.map((k) => this.store.get(k) ?? null);
   }
 
   private write(key: string, value: string, seconds?: number): void {
@@ -136,6 +165,34 @@ describe('RedisCartRepository', () => {
     await repo.commitCreated(emptyCart('cart_2', 1, { device_id: 'dev_d' }));
 
     expect(redis.sets.get('device:dev_d')).toEqual(new Set(['cart_1', 'cart_2']));
+  });
+
+  it('getOrdersByDevice loads the device index and returns only confirmed carts', async () => {
+    const { repo } = makeRepo(3600, 60);
+    await repo.commitCreated({ ...emptyCart('cart_1', 1, { device_id: 'dev_d' }), confirmed_at: '2026-07-16T00:00:00Z' });
+    await repo.commitCreated({ ...emptyCart('cart_2', 1, { device_id: 'dev_d' }), confirmed_at: '2026-07-16T00:01:00Z' });
+    await repo.commitCreated(emptyCart('cart_open', 1, { device_id: 'dev_d' })); // never confirmed
+    await repo.commitCreated({ ...emptyCart('cart_z', 1, { device_id: 'dev_z' }), confirmed_at: '2026-07-16T00:02:00Z' });
+
+    const orders = await repo.getOrdersByDevice('dev_d');
+
+    expect(orders.map((c) => c.cart_id).sort()).toEqual(['cart_1', 'cart_2']);
+  });
+
+  it('getOrdersByDevice drops a stale index member whose cart blob is gone', async () => {
+    const { repo, redis } = makeRepo(3600, 60);
+    await repo.commitCreated({ ...emptyCart('cart_live', 1, { device_id: 'dev_s' }), confirmed_at: '2026-07-16T00:00:00Z' });
+    await repo.commitCreated({ ...emptyCart('cart_evicted', 1, { device_id: 'dev_s' }), confirmed_at: '2026-07-16T00:00:00Z' });
+    redis.store.delete('cart:cart_evicted'); // blob expired/evicted, still in the device Set
+
+    const orders = await repo.getOrdersByDevice('dev_s');
+
+    expect(orders.map((c) => c.cart_id)).toEqual(['cart_live']);
+  });
+
+  it('getOrdersByDevice returns an empty array for an unknown device', async () => {
+    const { repo } = makeRepo(3600, 60);
+    expect(await repo.getOrdersByDevice('dev_none')).toEqual([]);
   });
 
   it('indexes nowhere when the cart has no identity (applyProposal fallback)', async () => {
