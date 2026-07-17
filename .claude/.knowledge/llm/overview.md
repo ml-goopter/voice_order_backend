@@ -81,7 +81,10 @@ deterministic source of truth.
   that is cheap by token count but slow here was rate-limited, cold, or thinking, not busy (pair it
   with `completion_tokens` to tell reasoning-token burn apart from retry/latency). It is the ONE
   field always emitted: unlike the token/cache fields it is logged even when the provider omits its
-  `usage` block, so per-call latency is never lost. Cache detail location varies by provider: `usageOf` prefers OpenAI/Groq's nested
+  `usage` block, so per-call latency is never lost. When `create()` instead THROWS (retries
+  exhausted — timeout, persistent 429/5xx), the provider emits an `llm.call_failed` WARN line with
+  the same `kind`/`provider`/`model`/`elapsed_ms` plus a `reason`, then rethrows — so a timed-out
+  call shows its cost, which the success-only `llm.usage` line can't capture. Cache detail location varies by provider: `usageOf` prefers OpenAI/Groq's nested
   `prompt_tokens_details.cached_tokens` and falls back to a flat `total_cached_tokens` some compat
   endpoints use. It is OPTIONAL end-to-end: providers that report neither (Ollama, and — verified
   empirically — Gemini's OpenAI-compat `v1beta/openai/` endpoint, which returns only the three basic

@@ -191,6 +191,40 @@ describe('OpenAiCompatibleLlmProvider', () => {
     });
   });
 
+  describe('failure logging', () => {
+    it('logs llm.call_failed with elapsed_ms and reason, then rethrows, when complete() throws', async () => {
+      createMock.mockRejectedValue(new Error('429 rate limit exceeded'));
+      const warnSpy = vi.spyOn(logger, 'warn');
+      await expect(new OpenAiCompatibleLlmProvider(CFG).complete(PROMPT)).rejects.toThrow(
+        '429 rate limit exceeded',
+      );
+      expect(warnSpy).toHaveBeenCalledWith('llm.call_failed', {
+        kind: 'complete',
+        provider: 'openai',
+        model: 'test-model',
+        elapsed_ms: expect.any(Number),
+        reason: '429 rate limit exceeded',
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('logs llm.call_failed with kind "chat" and rethrows when chat() throws', async () => {
+      createMock.mockRejectedValue(new Error('deadline exceeded'));
+      const warnSpy = vi.spyOn(logger, 'warn');
+      await expect(
+        new OpenAiCompatibleLlmProvider(CFG).chat([{ role: 'user', content: 'hi' }], []),
+      ).rejects.toThrow('deadline exceeded');
+      expect(warnSpy).toHaveBeenCalledWith('llm.call_failed', {
+        kind: 'chat',
+        provider: 'openai',
+        model: 'test-model',
+        elapsed_ms: expect.any(Number),
+        reason: 'deadline exceeded',
+      });
+      warnSpy.mockRestore();
+    });
+  });
+
   describe('chat', () => {
     const TOOLS = [
       { name: 'search_menu_semantic', description: 'search', parameters: { type: 'object' } },

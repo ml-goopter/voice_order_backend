@@ -9,6 +9,7 @@ import type {
 } from './llm-provider.js';
 import { logger } from '../config/logger.js';
 import { LIMITS } from '../config/constants.js';
+import { messageOf } from '../shared/errors.js';
 import { cacheHitRate, type LlmUsage } from './usage.js';
 
 /** Connection settings for one OpenAI-compatible endpoint. Each caller (the parser, the intent
@@ -54,15 +55,21 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
 
   async complete(prompt: LlmPrompt): Promise<string> {
     const started = Date.now();
-    const res = await this.client.chat.completions.create({
-      model: this.model,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-    });
+    let res;
+    try {
+      res = await this.client.chat.completions.create({
+        model: this.model,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: prompt.system },
+          { role: 'user', content: prompt.user },
+        ],
+      });
+    } catch (error) {
+      this.logCallFailed('complete', Date.now() - started, error);
+      throw error;
+    }
 
     this.logUsage('complete', usageOf(res.usage), Date.now() - started);
     const content = res.choices[0]?.message?.content ?? '';
@@ -80,15 +87,21 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
    */
   async chat(messages: AgentMessage[], tools: ToolSpec[]): Promise<ChatResult> {
     const started = Date.now();
-    const res = await this.client.chat.completions.create({
-      model: this.model,
-      temperature: 0,
-      messages: messages.map(toOpenAiMessage),
-      tools: tools.map((t) => ({
-        type: 'function' as const,
-        function: { name: t.name, description: t.description, parameters: t.parameters },
-      })),
-    });
+    let res;
+    try {
+      res = await this.client.chat.completions.create({
+        model: this.model,
+        temperature: 0,
+        messages: messages.map(toOpenAiMessage),
+        tools: tools.map((t) => ({
+          type: 'function' as const,
+          function: { name: t.name, description: t.description, parameters: t.parameters },
+        })),
+      });
+    } catch (error) {
+      this.logCallFailed('chat', Date.now() - started, error);
+      throw error;
+    }
 
     const usage = usageOf(res.usage);
     this.logUsage('chat', usage, Date.now() - started);
@@ -128,6 +141,20 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
         : {}),
       ...(usage?.cachedTokens !== undefined ? { cached_tokens: usage.cachedTokens } : {}),
       ...(rate !== null ? { cache_hit_rate: rate } : {}),
+    });
+  }
+
+  /** Emit one `llm.call_failed` WARN line when `create()` throws after the SDK's retries are
+   *  exhausted. `elapsedMs` (whole await, retries included) is the whole point — it makes a call
+   *  that timed out or gave up after backoff show its cost, which the success-only `llm.usage` line
+   *  can't. The error still propagates; this only records the timing before rethrow. */
+  private logCallFailed(kind: 'complete' | 'chat', elapsedMs: number, error: unknown): void {
+    logger.warn('llm.call_failed', {
+      kind,
+      provider: this.name,
+      model: this.model,
+      elapsed_ms: elapsedMs,
+      reason: messageOf(error),
     });
   }
 
