@@ -152,7 +152,8 @@ function usageOf(u: OpenAI.CompletionUsage | undefined): LlmUsage | undefined {
   // under `prompt_tokens_details.cached_tokens`; some endpoints report a flat `total_cached_tokens`
   // instead (not in the SDK's typed shape — read defensively). Prefer the standard nested field,
   // fall back to the flat one; both absent → cache reporting stays absent (distinct from 0).
-  const flatCached = (u as { total_cached_tokens?: number }).total_cached_tokens;
+  const flatRaw = (u as { total_cached_tokens?: unknown }).total_cached_tokens;
+  const flatCached = typeof flatRaw === 'number' ? flatRaw : undefined;
   const cached = u.prompt_tokens_details?.cached_tokens ?? flatCached;
   return {
     promptTokens: u.prompt_tokens ?? 0,

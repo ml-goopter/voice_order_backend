@@ -7,6 +7,18 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-17 — LLM usage: review hardening (blended rate + defensive cast)
+- **What:** `TurnUsage` gains `cachePromptTokens` (prompt tokens of cache-REPORTING calls only); the
+  per-turn `cache_hit_rate` now blends `cachedTokens / cachePromptTokens` so a call with unknown
+  cache status can't dilute the rate as a fake 0%. `usageOf` guards the off-spec `total_cached_tokens`
+  with `typeof === 'number'` (a non-number no longer flows through to a NaN rate).
+- **Why:** Adversarial review (fresh context) flagged a latent hole in the absent≠0 invariant for a
+  turn mixing reporting/non-reporting calls (not reachable with one provider, but the invariant is
+  the point), and an unsafe cast. Added a multi-turn reset test (turn 2's rollup must reflect only
+  turn 2) and a mixed-reporting `addUsage` test.
+- **Where:** `llm` (`usage.ts`, `openai-compatible-provider.ts`, tests), `ordering`
+  (`order-graph.ts` `logTurnUsage`, `order-understanding-service.test.ts`).
+
 ## 2026-07-17 — LLM usage: read cache from flat `total_cached_tokens` too
 - **What:** `usageOf` now reads cached tokens from EITHER the nested
   `prompt_tokens_details.cached_tokens` (OpenAI/Groq) OR a flat `total_cached_tokens` some

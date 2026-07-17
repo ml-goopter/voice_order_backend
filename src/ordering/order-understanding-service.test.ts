@@ -581,4 +581,37 @@ describe('OrderUnderstandingService', () => {
     expect(infoSpy).not.toHaveBeenCalledWith('llm.turn_usage', expect.anything());
     infoSpy.mockRestore();
   });
+
+  it('resets token_usage each turn: turn 2 rollup reflects only turn 2 tokens (no cross-turn leak)', async () => {
+    const withUsage = (r: ChatResult, u: NonNullable<ChatResult['usage']>): ChatResult => ({ ...r, usage: u });
+    const t1 = withUsage(
+      propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [] }]),
+      { promptTokens: 1000, completionTokens: 10, totalTokens: 1010, cachedTokens: 100 },
+    );
+    const t2 = withUsage(
+      propose([{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }]),
+      { promptTokens: 500, completionTokens: 5, totalTokens: 505, cachedTokens: 400 },
+    );
+    // Same cart across both turns → same MemorySaver thread; the checkpointer persists token_usage,
+    // so a missing reset in `normalize` would make turn 2 report turn 1's tokens too.
+    const { service } = await makeService([[t1], [t2]], cartWith(6));
+    const infoSpy = vi.spyOn(logger, 'info');
+
+    await service.handleFinalTranscript(transcript('a chicken burger', { request_id: 'req_1' }));
+    await service.handleFinalTranscript(transcript('a coke', { request_id: 'req_2' }));
+
+    const rollups = infoSpy.mock.calls.filter((c) => c[0] === 'llm.turn_usage').map((c) => c[1]);
+    expect(rollups).toHaveLength(2);
+    // Turn 2 is isolated: exactly its own 500/5/505 (+400 cached, 0.8), not summed with turn 1.
+    expect(rollups[1]).toMatchObject({
+      request_id: 'req_2',
+      steps: 1,
+      prompt_tokens: 500,
+      completion_tokens: 5,
+      total_tokens: 505,
+      cached_tokens: 400,
+      cache_hit_rate: 0.8,
+    });
+    infoSpy.mockRestore();
+  });
 });

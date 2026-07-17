@@ -18,12 +18,16 @@ export interface LlmUsage {
 
 /** Usage accumulated across the agent loop's calls in a single turn. `cacheReported` is the OR of
  *  every call's cache reporting: false means NO call reported cache detail, so the turn's cache-hit
- *  rate is unknown (omitted from the log) rather than a misleading 0. */
+ *  rate is unknown (omitted from the log) rather than a misleading 0. `cachePromptTokens` sums the
+ *  prompt tokens of ONLY the calls that reported cache — it is the blended-rate denominator, so a
+ *  call with unknown cache status never dilutes the rate (the absent≠0 invariant, held per-call not
+ *  just per-turn). */
 export interface TurnUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
   cachedTokens: number;
+  cachePromptTokens: number;
   cacheReported: boolean;
   calls: number;
 }
@@ -33,20 +37,24 @@ export const ZERO_TURN_USAGE: TurnUsage = {
   completionTokens: 0,
   totalTokens: 0,
   cachedTokens: 0,
+  cachePromptTokens: 0,
   cacheReported: false,
   calls: 0,
 };
 
 /** Fold one call's usage into the turn accumulator. Pure. A call that reports no `cachedTokens`
- *  contributes 0 cached but does NOT set `cacheReported` — so a turn stays "unknown" until some
- *  call actually reports cache detail. */
+ *  contributes 0 cached, does NOT set `cacheReported`, and adds NOTHING to `cachePromptTokens` — so
+ *  a turn stays "unknown" until some call reports cache detail, and a mix of reporting/non-reporting
+ *  calls blends the rate only over the tokens whose cache status is actually known. */
 export function addUsage(prev: TurnUsage, next: LlmUsage): TurnUsage {
+  const reportsCache = next.cachedTokens !== undefined;
   return {
     promptTokens: prev.promptTokens + next.promptTokens,
     completionTokens: prev.completionTokens + next.completionTokens,
     totalTokens: prev.totalTokens + next.totalTokens,
     cachedTokens: prev.cachedTokens + (next.cachedTokens ?? 0),
-    cacheReported: prev.cacheReported || next.cachedTokens !== undefined,
+    cachePromptTokens: prev.cachePromptTokens + (reportsCache ? next.promptTokens : 0),
+    cacheReported: prev.cacheReported || reportsCache,
     calls: prev.calls + 1,
   };
 }

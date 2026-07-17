@@ -10,6 +10,7 @@ describe('addUsage', () => {
       completionTokens: 30,
       totalTokens: 330,
       cachedTokens: 220,
+      cachePromptTokens: 300,
       cacheReported: true,
       calls: 2,
     });
@@ -20,6 +21,7 @@ describe('addUsage', () => {
     const b = addUsage(a, { promptTokens: 50, completionTokens: 5, totalTokens: 55 });
     expect(b.cacheReported).toBe(false);
     expect(b.cachedTokens).toBe(0);
+    expect(b.cachePromptTokens).toBe(0);
     expect(b.calls).toBe(2);
   });
 
@@ -28,6 +30,17 @@ describe('addUsage', () => {
     const b = addUsage(a, { promptTokens: 50, completionTokens: 5, totalTokens: 55, cachedTokens: 0 });
     expect(b.cacheReported).toBe(true);
     expect(b.cachedTokens).toBe(0);
+  });
+
+  it('counts only cache-reporting calls in cachePromptTokens, so unknown-status tokens do not dilute the rate', () => {
+    // Call A reports cache (1000 prompt, 800 cached); call B reports NO cache (1000 prompt, unknown).
+    const a = addUsage(ZERO_TURN_USAGE, { promptTokens: 1000, completionTokens: 10, totalTokens: 1010, cachedTokens: 800 });
+    const b = addUsage(a, { promptTokens: 1000, completionTokens: 10, totalTokens: 1010 });
+    expect(b.promptTokens).toBe(2000); // full turn total
+    expect(b.cachePromptTokens).toBe(1000); // only A's prompt tokens (B's status unknown)
+    expect(b.cachedTokens).toBe(800);
+    // Blended rate is 800/1000 = 0.8, NOT 800/2000 = 0.4 — B's unknown tokens are excluded.
+    expect(cacheHitRate(b.cachePromptTokens, b.cachedTokens)).toBe(0.8);
   });
 });
 

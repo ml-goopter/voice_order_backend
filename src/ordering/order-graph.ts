@@ -86,7 +86,10 @@ export class OrderGraph {
    *  observable via its own per-call `llm.usage` line. */
   private logTurnUsage(p: OrderGraphParams, usage: TurnUsage): void {
     if (usage.calls === 0) return;
-    const rate = usage.cacheReported ? cacheHitRate(usage.promptTokens, usage.cachedTokens) : null;
+    // Blend over cachePromptTokens (prompt tokens of cache-reporting calls only), NOT the turn's
+    // whole promptTokens — otherwise a call with unknown cache status would dilute the rate as if
+    // it were 0% cached (the absent≠0 invariant).
+    const rate = usage.cacheReported ? cacheHitRate(usage.cachePromptTokens, usage.cachedTokens) : null;
     logger.info('llm.turn_usage', {
       request_id: p.request_id,
       cart_id: p.cart_id,
