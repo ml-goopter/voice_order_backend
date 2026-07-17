@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { logger } from '../config/logger.js';
 import { EventBus } from '../events/event-bus.js';
 import type { AppEventMap, AppEventName } from '../events/event-types.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
@@ -537,5 +538,47 @@ describe('OrderUnderstandingService', () => {
 
     expect(proposed).toHaveLength(1);
     expect(proposed[0]!.proposal.operations[0]).toMatchObject({ action: 'add_item', quantity: 2 });
+  });
+
+  it('aggregates per-call usage across the agent loop into one llm.turn_usage rollup', async () => {
+    const withUsage = (r: ChatResult, u: NonNullable<ChatResult['usage']>): ChatResult => ({ ...r, usage: u });
+    // Two agent steps: a cold first call (no cache) then a warm second (900 of 1200 prompt cached).
+    const step1 = withUsage(search('chicken burger'), {
+      promptTokens: 1000, completionTokens: 10, totalTokens: 1010, cachedTokens: 0,
+    });
+    const step2 = withUsage(
+      propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [] }]),
+      { promptTokens: 1200, completionTokens: 20, totalTokens: 1220, cachedTokens: 900 },
+    );
+    const { service } = await makeService([[step1, step2]], cartWith(6));
+    const infoSpy = vi.spyOn(logger, 'info');
+
+    await service.handleFinalTranscript(transcript('a chicken burger', { request_id: 'req_1' }));
+
+    // Summed over both calls; cache_hit_rate is blended across the whole turn (900 / 2200).
+    expect(infoSpy).toHaveBeenCalledWith('llm.turn_usage', {
+      request_id: 'req_1',
+      cart_id: 'cart_1',
+      pos_config_id: POS,
+      provider: 'scripted',
+      model: 'scripted',
+      steps: 2,
+      prompt_tokens: 2200,
+      completion_tokens: 30,
+      total_tokens: 2230,
+      cached_tokens: 900,
+      cache_hit_rate: 0.409,
+    });
+    infoSpy.mockRestore();
+  });
+
+  it('does not emit llm.turn_usage for a junk turn (the agent never ran)', async () => {
+    const { service } = await makeService([], cartWith(0), () => 'junk');
+    const infoSpy = vi.spyOn(logger, 'info');
+
+    await service.handleFinalTranscript(transcript('hello there', { request_id: 'req_1' }));
+
+    expect(infoSpy).not.toHaveBeenCalledWith('llm.turn_usage', expect.anything());
+    infoSpy.mockRestore();
   });
 });

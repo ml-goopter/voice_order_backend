@@ -1,6 +1,7 @@
 import { Annotation } from '@langchain/langgraph';
 import type { CartId, LangCode, PosConfigId, RequestId, SessionId } from '../../shared/types.js';
 import type { AgentMessage } from '../../llm/llm-provider.js';
+import { ZERO_TURN_USAGE, type TurnUsage } from '../../llm/usage.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import type { CartView, HistoryTurn } from '../../contracts/cart-view.js';
 import { DEFAULT_INTENT } from '../../contracts/intent.js';
@@ -73,6 +74,10 @@ export const OrderState = Annotation.Root({
   agent_messages: lww<AgentMessage[]>(() => []),
   // Count of `agent` LLM turns this turn; guards `LIMITS.maxAgentSteps`. Cleared by `normalize`.
   agent_steps: lww<number>(() => 0),
+  // Token usage accumulated across this turn's agent `chat` calls (read-modify-write in the `agent`
+  // node, like `agent_steps`). OrderGraph reads it after invoke to emit the `llm.turn_usage` rollup.
+  // Turn-scoped: cleared by `normalize`.
+  token_usage: lww<TurnUsage>(() => ZERO_TURN_USAGE),
   // Set when the agent loop ends without a terminal (step-limit exhaustion, or an empty reply).
   // The façade maps it to `voice.session_failed`. Cleared by `normalize`.
   failure_reason: lww<string | undefined>(() => undefined),
