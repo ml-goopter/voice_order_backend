@@ -5,6 +5,8 @@ import type { CartCache } from '../redis/cart-cache.js';
 import type { OrderGraphOutput } from './schemas/order-graph-output.schema.js';
 import type { Intent } from '../contracts/intent.js';
 import { buildOrderGraph } from './graph/build-graph.js';
+import { cacheHitRate, type TurnUsage } from '../llm/usage.js';
+import { logger } from '../config/logger.js';
 
 export interface OrderGraphParams {
   request_id: RequestId;
@@ -39,6 +41,7 @@ type InvokeReturn = {
    *  it, and the caller's fallback to the STT code actually fires. */
   reply_language?: LangCode;
   failure_reason: string | undefined;
+  token_usage: TurnUsage;
 };
 
 /**
@@ -51,10 +54,12 @@ type InvokeReturn = {
  */
 export class OrderGraph {
   private readonly graph: ReturnType<typeof buildOrderGraph>;
+  private readonly llm: LlmProvider;
 
   // `intentLlm` is the intent classifier's own provider (its own creds, design §6); it defaults
   // to the parser `llm` so a caller that doesn't wire a separate one shares a single provider.
   constructor(menu: MenuService, llm: LlmProvider, carts: CartCache, intentLlm: LlmProvider = llm) {
+    this.llm = llm;
     this.graph = buildOrderGraph({ menu, llm, intentLlm, carts });
   }
 
@@ -70,7 +75,34 @@ export class OrderGraph {
       supported_languages: p.supported_languages,
     };
     const out = (await this.graph.invoke(input, this.threadConfig(p.pos_config_id, p.cart_id))) as InvokeReturn;
+    this.logTurnUsage(p, out.token_usage);
     return this.interpret(out);
+  }
+
+  /** Emit the per-turn agent-loop usage rollup (`llm.turn_usage`), tagged with the turn's
+   *  correlation ids and the parser model. Skipped when the agent never ran (junk turns) or the
+   *  provider reported no usage. Cache fields are omitted unless some call reported cache detail —
+   *  see {@link TurnUsage}. Attributes the parser `llm`; the intent classifier's separate call is
+   *  observable via its own per-call `llm.usage` line. */
+  private logTurnUsage(p: OrderGraphParams, usage: TurnUsage): void {
+    if (usage.calls === 0) return;
+    // Blend over cachePromptTokens (prompt tokens of cache-reporting calls only), NOT the turn's
+    // whole promptTokens — otherwise a call with unknown cache status would dilute the rate as if
+    // it were 0% cached (the absent≠0 invariant).
+    const rate = usage.cacheReported ? cacheHitRate(usage.cachePromptTokens, usage.cachedTokens) : null;
+    logger.info('llm.turn_usage', {
+      request_id: p.request_id,
+      cart_id: p.cart_id,
+      pos_config_id: p.pos_config_id,
+      provider: this.llm.name,
+      model: this.llm.model,
+      steps: usage.calls,
+      prompt_tokens: usage.promptTokens,
+      completion_tokens: usage.completionTokens,
+      total_tokens: usage.totalTokens,
+      ...(usage.cacheReported ? { cached_tokens: usage.cachedTokens } : {}),
+      ...(rate !== null ? { cache_hit_rate: rate } : {}),
+    });
   }
 
   private interpret(out: InvokeReturn): GraphTurnResult {

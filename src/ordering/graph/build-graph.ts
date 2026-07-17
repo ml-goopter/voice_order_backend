@@ -6,6 +6,7 @@ import type { MenuService } from '../../menu/menu-service.js';
 import type { LlmProvider, AgentMessage } from '../../llm/llm-provider.js';
 import type { CartCache } from '../../redis/cart-cache.js';
 import { LIMITS } from '../../config/constants.js';
+import { addUsage, ZERO_TURN_USAGE } from '../../llm/usage.js';
 import { INTENT_ROUTE } from './intents.js';
 import { classifyIntent } from '../nodes/classify-intent.node.js';
 import { normalizeTranscript } from '../nodes/normalize-transcript.node.js';
@@ -62,6 +63,7 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
       reply_language: undefined,
       agent_messages: [],
       agent_steps: 0,
+      token_usage: ZERO_TURN_USAGE,
       failure_reason: undefined,
     })))
     // Then label the NORMALIZED utterance so the graph can route it. If the previous turn ended in
@@ -94,7 +96,13 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
         ...(res.text !== undefined ? { content: res.text } : {}),
         ...(res.toolCalls.length > 0 ? { tool_calls: res.toolCalls } : {}),
       };
-      const base = { agent_messages: [...messages, assistant], agent_steps: step };
+      // Fold this call's usage into the per-turn accumulator (read-modify-write, like agent_steps).
+      // Omit the channel when the provider reported none so `lww` keeps the prior total unchanged.
+      const base = {
+        agent_messages: [...messages, assistant],
+        agent_steps: step,
+        ...(res.usage ? { token_usage: addUsage(s.token_usage, res.usage) } : {}),
+      };
       // No tool call → the agent ended the turn by speaking. The reply is strict JSON
       // {reply, language}; parse it and record the declared language on its own turn-scoped channel
       // (never on the `language` input channel — that would outlive the turn). Non-JSON text

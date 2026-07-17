@@ -1,3 +1,5 @@
+import type { LlmUsage } from './usage.js';
+
 export interface LlmPrompt {
   system: string;
   user: string;
@@ -32,16 +34,22 @@ export type AgentMessage =
   | { role: 'tool'; tool_call_id: string; content: string };
 
 /** One assistant turn: prose (`text`) and/or the tool calls it wants run. `toolCalls` is always
- *  present (empty when the model only replied with prose). */
+ *  present (empty when the model only replied with prose). `usage` carries this call's token counts
+ *  when the provider reported them (absent for providers/stubs that don't), so the agent loop can
+ *  accumulate a per-turn total — see {@link LlmUsage}. */
 export interface ChatResult {
   text?: string;
   toolCalls: ToolCall[];
+  usage?: LlmUsage;
 }
 
 /** Cloud LLM abstraction (Groq / OpenAI / Gemini, design §8/§14). `complete` returns strict JSON
  *  text (parser/classifier); `chat` drives the tool-calling agent loop (see docs/agent-tools.md). */
 export interface LlmProvider {
   readonly name: string;
+  /** The model id this provider calls — exposed so per-turn usage rollups can attribute cost to a
+   *  specific model (pricing and cache behaviour are per-model). */
+  readonly model: string;
   complete(prompt: LlmPrompt): Promise<string>;
   chat(messages: AgentMessage[], tools: ToolSpec[]): Promise<ChatResult>;
 }

@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { logger } from '../config/logger.js';
 import { EventBus } from '../events/event-bus.js';
 import type { AppEventMap, AppEventName } from '../events/event-types.js';
 import { InMemoryCartCache } from '../redis/cart-cache.js';
@@ -71,6 +72,7 @@ interface TurnContext {
  */
 class ScriptedLlm implements LlmProvider {
   readonly name = 'scripted';
+  readonly model = 'scripted';
   readonly contexts: TurnContext[] = [];
   /** Tool result payloads the graph fed back, in order — what the agent actually saw. */
   readonly toolResults: string[] = [];
@@ -536,5 +538,80 @@ describe('OrderUnderstandingService', () => {
 
     expect(proposed).toHaveLength(1);
     expect(proposed[0]!.proposal.operations[0]).toMatchObject({ action: 'add_item', quantity: 2 });
+  });
+
+  it('aggregates per-call usage across the agent loop into one llm.turn_usage rollup', async () => {
+    const withUsage = (r: ChatResult, u: NonNullable<ChatResult['usage']>): ChatResult => ({ ...r, usage: u });
+    // Two agent steps: a cold first call (no cache) then a warm second (900 of 1200 prompt cached).
+    const step1 = withUsage(search('chicken burger'), {
+      promptTokens: 1000, completionTokens: 10, totalTokens: 1010, cachedTokens: 0,
+    });
+    const step2 = withUsage(
+      propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [] }]),
+      { promptTokens: 1200, completionTokens: 20, totalTokens: 1220, cachedTokens: 900 },
+    );
+    const { service } = await makeService([[step1, step2]], cartWith(6));
+    const infoSpy = vi.spyOn(logger, 'info');
+
+    await service.handleFinalTranscript(transcript('a chicken burger', { request_id: 'req_1' }));
+
+    // Summed over both calls; cache_hit_rate is blended across the whole turn (900 / 2200).
+    expect(infoSpy).toHaveBeenCalledWith('llm.turn_usage', {
+      request_id: 'req_1',
+      cart_id: 'cart_1',
+      pos_config_id: POS,
+      provider: 'scripted',
+      model: 'scripted',
+      steps: 2,
+      prompt_tokens: 2200,
+      completion_tokens: 30,
+      total_tokens: 2230,
+      cached_tokens: 900,
+      cache_hit_rate: 0.409,
+    });
+    infoSpy.mockRestore();
+  });
+
+  it('does not emit llm.turn_usage for a junk turn (the agent never ran)', async () => {
+    const { service } = await makeService([], cartWith(0), () => 'junk');
+    const infoSpy = vi.spyOn(logger, 'info');
+
+    await service.handleFinalTranscript(transcript('hello there', { request_id: 'req_1' }));
+
+    expect(infoSpy).not.toHaveBeenCalledWith('llm.turn_usage', expect.anything());
+    infoSpy.mockRestore();
+  });
+
+  it('resets token_usage each turn: turn 2 rollup reflects only turn 2 tokens (no cross-turn leak)', async () => {
+    const withUsage = (r: ChatResult, u: NonNullable<ChatResult['usage']>): ChatResult => ({ ...r, usage: u });
+    const t1 = withUsage(
+      propose([{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [] }]),
+      { promptTokens: 1000, completionTokens: 10, totalTokens: 1010, cachedTokens: 100 },
+    );
+    const t2 = withUsage(
+      propose([{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }]),
+      { promptTokens: 500, completionTokens: 5, totalTokens: 505, cachedTokens: 400 },
+    );
+    // Same cart across both turns → same MemorySaver thread; the checkpointer persists token_usage,
+    // so a missing reset in `normalize` would make turn 2 report turn 1's tokens too.
+    const { service } = await makeService([[t1], [t2]], cartWith(6));
+    const infoSpy = vi.spyOn(logger, 'info');
+
+    await service.handleFinalTranscript(transcript('a chicken burger', { request_id: 'req_1' }));
+    await service.handleFinalTranscript(transcript('a coke', { request_id: 'req_2' }));
+
+    const rollups = infoSpy.mock.calls.filter((c) => c[0] === 'llm.turn_usage').map((c) => c[1]);
+    expect(rollups).toHaveLength(2);
+    // Turn 2 is isolated: exactly its own 500/5/505 (+400 cached, 0.8), not summed with turn 1.
+    expect(rollups[1]).toMatchObject({
+      request_id: 'req_2',
+      steps: 1,
+      prompt_tokens: 500,
+      completion_tokens: 5,
+      total_tokens: 505,
+      cached_tokens: 400,
+      cache_hit_rate: 0.8,
+    });
+    infoSpy.mockRestore();
   });
 });

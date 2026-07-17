@@ -3,7 +3,7 @@ type: Concept
 title: Order Understanding (LangGraph-style)
 description: Serialized per-cart turns → agent tool-calling loop → operations_proposed / reply.
 resource: src/ordering
-timestamp: 2026-07-13
+timestamp: 2026-07-17
 ---
 
 # Order Understanding
@@ -74,7 +74,13 @@ It is a **pure proposer**; the Cart Module validates and applies.
   exclusive terminal channels are `output` (propose_cart) and `reply` (spoken). Turn-scoped
   channels reset by `normalize` each turn (the checkpointer persists everything, so anything
   left would leak): `output`, `reply`, `agent_messages` (the tool-calling scratchpad — NEVER
-  persisted across turns), `agent_steps`, `failure_reason`. Two channels carry across turns:
+  persisted across turns), `agent_steps`, `token_usage`, `failure_reason`. `token_usage`
+  accumulates each agent `chat` call's `LlmUsage` (read-modify-write in the `agent` node, like
+  `agent_steps`); after `invoke`, `OrderGraph.start` reads the final `TurnUsage` and emits an
+  `llm.turn_usage` INFO rollup tagged with `request_id`/`cart_id`/`pos_config_id` + the parser
+  model (steps, summed tokens, blended `cache_hit_rate`). Nodes stay pure — the log is a
+  side-effect in the façade; junk turns (agent never ran) emit nothing. Two channels carry across
+  turns:
   - **`cart_view`** (Plan A): `load_cart` projects the stored cart into a self-describing
     `CartView` (`buildCartView`) — each line carries `line_id`, `name`, `menu_item_key`,
     `base_price_cents`, its modifiers, and the item's `available_modifiers` (each with

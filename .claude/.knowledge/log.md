@@ -7,6 +7,49 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-17 — LLM usage: review hardening (blended rate + defensive cast)
+- **What:** `TurnUsage` gains `cachePromptTokens` (prompt tokens of cache-REPORTING calls only); the
+  per-turn `cache_hit_rate` now blends `cachedTokens / cachePromptTokens` so a call with unknown
+  cache status can't dilute the rate as a fake 0%. `usageOf` guards the off-spec `total_cached_tokens`
+  with `typeof === 'number'` (a non-number no longer flows through to a NaN rate).
+- **Why:** Adversarial review (fresh context) flagged a latent hole in the absent≠0 invariant for a
+  turn mixing reporting/non-reporting calls (not reachable with one provider, but the invariant is
+  the point), and an unsafe cast. Added a multi-turn reset test (turn 2's rollup must reflect only
+  turn 2) and a mixed-reporting `addUsage` test.
+- **Where:** `llm` (`usage.ts`, `openai-compatible-provider.ts`, tests), `ordering`
+  (`order-graph.ts` `logTurnUsage`, `order-understanding-service.test.ts`).
+
+## 2026-07-17 — LLM usage: read cache from flat `total_cached_tokens` too
+- **What:** `usageOf` now reads cached tokens from EITHER the nested
+  `prompt_tokens_details.cached_tokens` (OpenAI/Groq) OR a flat `total_cached_tokens` some
+  OpenAI-compat endpoints use (nested preferred).
+- **Why:** Probed the live Gemini OpenAI-compat endpoint (`v1beta/openai/`,
+  `gemini-3.1-flash-lite`): it returns ONLY `prompt_tokens`/`completion_tokens`/`total_tokens` —
+  no cache field of any name, even on a 2.4k-token identical warm call. The flat fallback future-
+  proofs other providers; Gemini cache visibility would need its native API.
+- **Where:** `llm` (`openai-compatible-provider.ts` `usageOf`, + tests).
+
+## 2026-07-17 — LLM usage & cache-hit observability
+- **What:** Capture the OpenAI SDK's `res.usage` (previously discarded) in both `complete` and
+  `chat`. New `src/llm/usage.ts` defines `LlmUsage` (per call), `TurnUsage` (per turn), and pure
+  `addUsage`/`cacheHitRate` helpers. The provider emits one `llm.usage` INFO line per call
+  (`kind`, `provider`, `model`, token counts, and `cache_hit_rate` derived from
+  `prompt_tokens_details.cached_tokens`), and returns `usage` on `ChatResult`. The agent node
+  folds each call's usage into a turn-scoped `token_usage` state channel (read-modify-write, reset
+  by `normalize` like `agent_steps`); `OrderGraph.start` reads the final total and emits an
+  `llm.turn_usage` rollup tagged with `request_id`/`cart_id`/`pos_config_id` + parser model.
+  Exposed `model` on the `LlmProvider` interface so the rollup can attribute cost per model.
+- **Why:** No token/cache visibility existed. The agent loop resends a growing transcript up to
+  `maxAgentSteps` times, so blended per-turn cache-hit rate is the key cost metric; per-call lines
+  cover the intent classifier too. Log fields are flat + stable so a log aggregator / metrics sink /
+  pg table can roll them up later without reshaping (raw counts only — cost priced downstream).
+- **Where:** `llm` (`usage.ts` new, `llm-provider.ts`, `openai-compatible-provider.ts`,
+  `llm-client.ts`), `ordering` (`graph/state.ts`, `graph/build-graph.ts`, `order-graph.ts`).
+- **Notes:** Cache detail is optional end-to-end — providers that don't report it (Ollama) omit
+  the cache fields, keeping "absent" distinct from a genuine 0%. Junk turns (agent never ran) emit
+  no rollup. The intent classifier's `complete` call is observable per-call only (separate model),
+  not folded into the agent turn rollup.
+
 ## 2026-07-16 — Past-orders REST route (`GET /v1/devices/:device_id/orders`)
 - **What:** New read-only route returning the device's **confirmed** carts as a JSON array.
   Adds `CartRepository.getOrdersByDevice(device_id)` (Redis: `SMEMBERS device:{id}` → `MGET`
