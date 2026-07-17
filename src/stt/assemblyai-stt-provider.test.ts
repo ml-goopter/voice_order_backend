@@ -1,7 +1,21 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { StreamingTranscriber, TurnEvent } from 'assemblyai';
-import { AssemblyAiSttProvider } from './assemblyai-stt-provider.js';
+import { AssemblyAiSttProvider, defaultTranscriberFactory } from './assemblyai-stt-provider.js';
+import { config } from '../config/env.js';
 import type { SttStreamHandlers } from './stt-types.js';
+
+// Capture the params the real factory hands to AssemblyAI's transcriber, without a network client.
+const transcriberParams = vi.fn();
+vi.mock('assemblyai', () => ({
+  AssemblyAI: class {
+    streaming = {
+      transcriber: (params: unknown) => {
+        transcriberParams(params);
+        return {} as StreamingTranscriber;
+      },
+    };
+  },
+}));
 
 /** Minimal stand-in for the AssemblyAI StreamingTranscriber (no network). */
 class FakeTranscriber {
@@ -136,5 +150,16 @@ describe('AssemblyAiSttProvider', () => {
     expect(fake.closedWith).toEqual([true]);
     stream.close();
     expect(fake.closedWith).toEqual([true, false]);
+  });
+
+  it('forwards the configured end-of-turn silence tuning to the transcriber', () => {
+    defaultTranscriberFactory();
+    expect(transcriberParams).toHaveBeenCalledWith(
+      expect.objectContaining({
+        minTurnSilence: config.sttMinTurnSilenceMs,
+        maxTurnSilence: config.sttMaxTurnSilenceMs,
+        formatTurns: true,
+      }),
+    );
   });
 });

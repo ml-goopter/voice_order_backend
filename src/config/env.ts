@@ -38,6 +38,11 @@ export interface AppConfig {
 
   readonly sttProvider: string; // 'assemblyai' | ...
   readonly sttSampleRate: number; // Hz of the client PCM16 stream (design §5)
+  // End-of-turn endpointing: how long AssemblyAI waits in silence before ending a turn.
+  // Raised above provider defaults so natural mid-order pauses ("uhh… and a coke") ride
+  // through as one turn instead of splitting into several finals (one request each).
+  readonly sttMinTurnSilenceMs: number; // silence to end a turn when confident
+  readonly sttMaxTurnSilenceMs: number; // hard ceiling: end the turn regardless of confidence
   readonly assemblyAiApiKey: string;
   readonly ttsProvider: string; // 'cartesia' | 'noop'
   readonly cartesiaApiKey: string;
@@ -92,6 +97,8 @@ export const config: AppConfig = {
 
   sttProvider: str('STT_PROVIDER', 'assemblyai'),
   sttSampleRate: int('STT_SAMPLE_RATE', 16_000),
+  sttMinTurnSilenceMs: int('STT_MIN_TURN_SILENCE_MS', 1_600),
+  sttMaxTurnSilenceMs: int('STT_MAX_TURN_SILENCE_MS', 3_600),
   assemblyAiApiKey: str('ASSEMBLYAI_API_KEY', ''),
   ttsProvider: str('TTS_PROVIDER', 'cartesia'),
   cartesiaApiKey: str('CARTESIA_API_KEY', ''),

@@ -38,6 +38,30 @@ The customer (or the app UI) signals end-of-turn explicitly. The app sends:
 
 ---
 
+## End-of-turn aggregation (provider endpointing)
+
+A turn's *boundary* is decided by the STT provider, not the backend. AssemblyAI
+endpoints on silence and fires one `onFinal` per turn. With aggressive defaults
+(~560 ms) a customer's natural mid-order pause ("two burgers… uh… and a coke")
+endpoints early and splits **one spoken order into several finals — each its own
+`stt.final_transcript.received`, i.e. a separate ordering turn and LLM round-trip**.
+
+Rather than buffer/aggregate finals in the backend, we widen the provider's
+endpointing silence so those pauses ride through as a single turn:
+
+| Knob (`config/env.ts`) | Env var | Default | Meaning |
+|---|---|---|---|
+| `sttMinTurnSilenceMs` | `STT_MIN_TURN_SILENCE_MS` | 1600 | silence to end a turn when confident (primary lever) |
+| `sttMaxTurnSilenceMs` | `STT_MAX_TURN_SILENCE_MS` | 3600 | hard ceiling: end the turn regardless of confidence |
+
+Set in `stt/assemblyai-stt-provider.ts` (`minTurnSilence` / `maxTurnSilence`). The
+tradeoff is latency: a customer who genuinely finishes waits ~`minTurnSilence`
+before the agent replies. Too low re-splits orders; too high feels laggy.
+
+This is orthogonal to the two turn-ending triggers below: endpointing decides where
+*one turn* ends; the triggers decide when the *session* stops listening. The 60 s
+partial-idle stop (Trigger 2) remains the walk-away backstop.
+
 ## Trigger 2 — partial-transcript timeout ("stopped talking")
 
 **Goal:** end the turn automatically when the customer stops speaking, so they don't
