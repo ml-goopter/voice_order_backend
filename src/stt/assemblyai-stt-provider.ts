@@ -82,11 +82,16 @@ export class AssemblyAiSttProvider implements SttProvider {
   }
 }
 
-function defaultTranscriberFactory(): StreamingTranscriber {
+export function defaultTranscriberFactory(): StreamingTranscriber {
   const client = new AssemblyAI({ apiKey: config.assemblyAiApiKey });
   return client.streaming.transcriber({
     sampleRate: config.sttSampleRate,
     encoding: ENCODING,
     formatTurns: true,
+    // Endpointing tuned so a customer's natural mid-order pauses don't end the turn early
+    // and split one spoken order into several finals (each of which would be its own
+    // ordering request). See docs/customer-stop-detection.md.
+    minTurnSilence: config.sttMinTurnSilenceMs,
+    maxTurnSilence: config.sttMaxTurnSilenceMs,
   });
 }
