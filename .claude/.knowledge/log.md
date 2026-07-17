@@ -7,6 +7,16 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-17 — LLM usage: read cache from flat `total_cached_tokens` too
+- **What:** `usageOf` now reads cached tokens from EITHER the nested
+  `prompt_tokens_details.cached_tokens` (OpenAI/Groq) OR a flat `total_cached_tokens` some
+  OpenAI-compat endpoints use (nested preferred).
+- **Why:** Probed the live Gemini OpenAI-compat endpoint (`v1beta/openai/`,
+  `gemini-3.1-flash-lite`): it returns ONLY `prompt_tokens`/`completion_tokens`/`total_tokens` —
+  no cache field of any name, even on a 2.4k-token identical warm call. The flat fallback future-
+  proofs other providers; Gemini cache visibility would need its native API.
+- **Where:** `llm` (`openai-compatible-provider.ts` `usageOf`, + tests).
+
 ## 2026-07-17 — LLM usage & cache-hit observability
 - **What:** Capture the OpenAI SDK's `res.usage` (previously discarded) in both `complete` and
   `chat`. New `src/llm/usage.ts` defines `LlmUsage` (per call), `TurnUsage` (per turn), and pure

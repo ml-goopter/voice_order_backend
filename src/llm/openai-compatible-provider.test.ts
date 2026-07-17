@@ -139,6 +139,41 @@ describe('OpenAiCompatibleLlmProvider', () => {
       infoSpy.mockRestore();
     });
 
+    it('reads cache from a flat total_cached_tokens when prompt_tokens_details is absent', async () => {
+      createMock.mockResolvedValue({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        usage: { prompt_tokens: 1000, completion_tokens: 8, total_tokens: 1008, total_cached_tokens: 600 },
+      });
+      const infoSpy = vi.spyOn(logger, 'info');
+      await new OpenAiCompatibleLlmProvider(CFG).complete(PROMPT);
+      expect(infoSpy).toHaveBeenCalledWith('llm.usage', {
+        kind: 'complete',
+        provider: 'openai',
+        model: 'test-model',
+        prompt_tokens: 1000,
+        completion_tokens: 8,
+        total_tokens: 1008,
+        cached_tokens: 600,
+        cache_hit_rate: 0.6,
+      });
+      infoSpy.mockRestore();
+    });
+
+    it('prefers nested prompt_tokens_details.cached_tokens over a flat total_cached_tokens', async () => {
+      createMock.mockResolvedValue({
+        choices: [{ message: { content: 'done' } }],
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 8,
+          total_tokens: 1008,
+          prompt_tokens_details: { cached_tokens: 250 },
+          total_cached_tokens: 600,
+        },
+      });
+      const out = await new OpenAiCompatibleLlmProvider(CFG).chat([{ role: 'user', content: 'hi' }], []);
+      expect(out.usage?.cachedTokens).toBe(250);
+    });
+
     it('does not log llm.usage when the response carries no usage block', async () => {
       createMock.mockResolvedValue({ choices: [{ message: { content: '{"ok":true}' } }] });
       const infoSpy = vi.spyOn(logger, 'info');

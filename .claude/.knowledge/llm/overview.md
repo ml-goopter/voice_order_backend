@@ -76,9 +76,12 @@ deterministic source of truth.
   `res.usage` (mapped by `usageOf` onto a transport-independent `LlmUsage`). The provider emits one
   `llm.usage` INFO line per call — `kind` (`complete`/`chat`), `provider`, `model`, `prompt_tokens`,
   `completion_tokens`, `total_tokens`, and (when the provider reports it) `cached_tokens` +
-  `cache_hit_rate`. Cache detail is OPTIONAL end-to-end: providers that don't report
-  `prompt_tokens_details.cached_tokens` (Ollama) omit the cache fields, so "absent" stays distinct
-  from a genuine 0% (never averaged as a fake zero). `chat` also returns `usage` on `ChatResult` so
+  `cache_hit_rate`. Cache detail location varies by provider: `usageOf` prefers OpenAI/Groq's nested
+  `prompt_tokens_details.cached_tokens` and falls back to a flat `total_cached_tokens` some compat
+  endpoints use. It is OPTIONAL end-to-end: providers that report neither (Ollama, and — verified
+  empirically — Gemini's OpenAI-compat `v1beta/openai/` endpoint, which returns only the three basic
+  counts) omit the cache fields, so "absent" stays distinct from a genuine 0% (never averaged as a
+  fake zero). Cache-hit visibility on Gemini would require its NATIVE API (`cachedContentTokenCount`). `chat` also returns `usage` on `ChatResult` so
   the ordering agent loop can accumulate a per-turn total (`TurnUsage` via `addUsage`) and emit the
   `llm.turn_usage` rollup — see the ordering bundle. `model` is exposed on the `LlmProvider`
   interface so that rollup can attribute cost per model. Raw token COUNTS only; cost is priced

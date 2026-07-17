@@ -148,7 +148,12 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
  *  ONLY when present so "no cache reporting" stays distinct from "0 cached". */
 function usageOf(u: OpenAI.CompletionUsage | undefined): LlmUsage | undefined {
   if (!u) return undefined;
-  const cached = u.prompt_tokens_details?.cached_tokens;
+  // Cache detail lives in different places across OpenAI-compatible providers: OpenAI/Groq nest it
+  // under `prompt_tokens_details.cached_tokens`; some endpoints report a flat `total_cached_tokens`
+  // instead (not in the SDK's typed shape — read defensively). Prefer the standard nested field,
+  // fall back to the flat one; both absent → cache reporting stays absent (distinct from 0).
+  const flatCached = (u as { total_cached_tokens?: number }).total_cached_tokens;
+  const cached = u.prompt_tokens_details?.cached_tokens ?? flatCached;
   return {
     promptTokens: u.prompt_tokens ?? 0,
     completionTokens: u.completion_tokens ?? 0,
