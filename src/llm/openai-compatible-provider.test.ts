@@ -112,6 +112,7 @@ describe('OpenAiCompatibleLlmProvider', () => {
         kind: 'complete',
         provider: 'openai',
         model: 'test-model',
+        elapsed_ms: expect.any(Number),
         prompt_tokens: 1000,
         completion_tokens: 20,
         total_tokens: 1020,
@@ -132,6 +133,7 @@ describe('OpenAiCompatibleLlmProvider', () => {
         kind: 'complete',
         provider: 'openai',
         model: 'test-model',
+        elapsed_ms: expect.any(Number),
         prompt_tokens: 30,
         completion_tokens: 5,
         total_tokens: 35,
@@ -150,6 +152,7 @@ describe('OpenAiCompatibleLlmProvider', () => {
         kind: 'complete',
         provider: 'openai',
         model: 'test-model',
+        elapsed_ms: expect.any(Number),
         prompt_tokens: 1000,
         completion_tokens: 8,
         total_tokens: 1008,
@@ -174,12 +177,51 @@ describe('OpenAiCompatibleLlmProvider', () => {
       expect(out.usage?.cachedTokens).toBe(250);
     });
 
-    it('does not log llm.usage when the response carries no usage block', async () => {
+    it('still logs llm.usage latency when the response carries no usage block, omitting token fields', async () => {
       createMock.mockResolvedValue({ choices: [{ message: { content: '{"ok":true}' } }] });
       const infoSpy = vi.spyOn(logger, 'info');
       await new OpenAiCompatibleLlmProvider(CFG).complete(PROMPT);
-      expect(infoSpy).not.toHaveBeenCalledWith('llm.usage', expect.anything());
+      expect(infoSpy).toHaveBeenCalledWith('llm.usage', {
+        kind: 'complete',
+        provider: 'openai',
+        model: 'test-model',
+        elapsed_ms: expect.any(Number),
+      });
       infoSpy.mockRestore();
+    });
+  });
+
+  describe('failure logging', () => {
+    it('logs llm.call_failed with elapsed_ms and reason, then rethrows, when complete() throws', async () => {
+      createMock.mockRejectedValue(new Error('429 rate limit exceeded'));
+      const warnSpy = vi.spyOn(logger, 'warn');
+      await expect(new OpenAiCompatibleLlmProvider(CFG).complete(PROMPT)).rejects.toThrow(
+        '429 rate limit exceeded',
+      );
+      expect(warnSpy).toHaveBeenCalledWith('llm.call_failed', {
+        kind: 'complete',
+        provider: 'openai',
+        model: 'test-model',
+        elapsed_ms: expect.any(Number),
+        reason: '429 rate limit exceeded',
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('logs llm.call_failed with kind "chat" and rethrows when chat() throws', async () => {
+      createMock.mockRejectedValue(new Error('deadline exceeded'));
+      const warnSpy = vi.spyOn(logger, 'warn');
+      await expect(
+        new OpenAiCompatibleLlmProvider(CFG).chat([{ role: 'user', content: 'hi' }], []),
+      ).rejects.toThrow('deadline exceeded');
+      expect(warnSpy).toHaveBeenCalledWith('llm.call_failed', {
+        kind: 'chat',
+        provider: 'openai',
+        model: 'test-model',
+        elapsed_ms: expect.any(Number),
+        reason: 'deadline exceeded',
+      });
+      warnSpy.mockRestore();
     });
   });
 
