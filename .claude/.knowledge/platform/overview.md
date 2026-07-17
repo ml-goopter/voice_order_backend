@@ -35,6 +35,7 @@ constructs modules and wires them to the event bus.
   |---|---|
   | `GET /health`, `GET /healthz` | 200 + `healthCheck()` |
   | `POST /v1/carts/:cart_id/confirm` | 200 **empty** (no body in or out); 404 unknown cart; 502 + Odoo's message; 500 otherwise |
+  | `GET /v1/devices/:device_id/orders` | 200 + JSON array of the device's **confirmed** carts (via `cart.ordersByDevice` → the Redis device index); `[]` for an unknown device (not 404); 400 on a malformed `%`-escape; 500 otherwise |
 
   Confirm takes **no request body** — the cart already knows its table. A re-confirm is
   200, not an error (idempotent). `pos_order_id` is persisted on the cart but deliberately
