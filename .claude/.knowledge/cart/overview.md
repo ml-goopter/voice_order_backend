@@ -72,6 +72,12 @@ against the POS's authoritative quote, and confirms carts, via the
     to 404/502. Exposed as `POST /v1/carts/:cart_id/confirm` (see the `platform` bundle).
     It emits no `cart.updated`: the frontend that called confirm clears its own cart view
     on the 200.
+  - **`ordersByDevice(device_id)`** — read-through to `repo.getOrdersByDevice`: reads the
+    Redis device index (`SMEMBERS device:{device_id}`), loads each cart blob (`MGET`), and
+    returns only the **confirmed** ones (`confirmed_at` set). No cart write, so no apply lock;
+    `[]` when the device is unknown or its index has expired (index TTL bounds it while cart
+    blobs do not), and a member whose blob is gone/unparseable is dropped. Exposed as
+    `GET /v1/devices/:device_id/orders` (see the `platform` bundle).
   - **Crash safety at confirm** — if Odoo accepts the insert but the Redis write fails, the
     cart is not marked confirmed and a retry re-sends. That is safe rather than a hole: the
     far side's line uuid `{cart_id}:{line_id}` makes the insert idempotent (SPEC

@@ -7,6 +7,21 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-16 — Past-orders REST route (`GET /v1/devices/:device_id/orders`)
+- **What:** New read-only route returning the device's **confirmed** carts as a JSON array.
+  Adds `CartRepository.getOrdersByDevice(device_id)` (Redis: `SMEMBERS device:{id}` → `MGET`
+  the cart blobs → keep only `confirmed_at`-set carts, dropping stale/unparseable members;
+  in-memory double gains a device index so it's a real test target), a thin
+  `CartController.ordersByDevice` read-through (no apply lock — no write), and the route in
+  `http-router.ts` (decode-in-try → 400 on bad `%`-escape; unknown device → `200 []`, not 404;
+  500 on failure). No new events; no auth (same stub posture as confirm).
+- **Why:** Expose the carts already indexed per device (the `device:{id}` Set written on
+  create) for a "past orders" client view, reusing the existing index — no new storage.
+- **Where:** `cart` (`cart-repository.ts`, `cart-controller.ts`), `platform`
+  (`api/http-router.ts`), plus `http-router.test.ts` / `cart-repository.test.ts`.
+- **Notes:** Results are bounded by the device-index TTL (`deviceIndexTtlSeconds`); cart blobs
+  have no TTL, so an expired index yields `[]` even though blobs persist.
+
 ## 2026-07-16 — Re-price each cart apply against the Odoo quote (authoritative totals in Redis)
 - **What:** `CartController.applyProposal` now, after a successful apply, calls the new
   `OdooClient.quote` (via `repo.quoteCart` → `POST /goopter_cart_api/v1/quote`) and

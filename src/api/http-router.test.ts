@@ -9,9 +9,12 @@ import { OdooError } from '../odoo/odoo-client.js';
 let server: Server | undefined;
 afterEach(() => server?.close());
 
-/** Serve `confirm` behind the real router on an ephemeral port and return its base URL. */
-async function serve(confirm: CartController['confirm']): Promise<string> {
-  server = createServer(createHttpRouter({ confirm } as CartController));
+/** Serve the router on an ephemeral port and return its base URL. */
+async function serve(
+  confirm: CartController['confirm'],
+  ordersByDevice: CartController['ordersByDevice'] = async () => [],
+): Promise<string> {
+  server = createServer(createHttpRouter({ confirm, ordersByDevice } as CartController));
   await new Promise<void>((resolve) => server!.listen(0, resolve));
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
@@ -115,6 +118,67 @@ describe('POST /v1/carts/:cart_id/confirm', () => {
     const base = await serve(ok);
 
     expect((await fetch(`${base}/nope`)).status).toBe(404);
+  });
+});
+
+describe('GET /v1/devices/:device_id/orders', () => {
+  const order = { cart_id: 'cart_1', confirmed_at: '2026-07-16T00:00:00.000Z' } as unknown as Awaited<
+    ReturnType<CartController['ordersByDevice']>
+  >[number];
+
+  it('returns the orders as a JSON array', async () => {
+    const base = await serve(ok, async () => [order]);
+
+    const res = await fetch(`${base}/v1/devices/dev_a/orders`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/json');
+    expect(await res.json()).toEqual([order]);
+  });
+
+  it('answers 200 with an empty array for a device with no orders', async () => {
+    const base = await serve(ok, async () => []);
+
+    const res = await fetch(`${base}/v1/devices/dev_none/orders`);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([]);
+  });
+
+  it('passes the decoded device_id to the controller', async () => {
+    const seen: string[] = [];
+    const base = await serve(ok, async (device_id) => {
+      seen.push(device_id);
+      return [];
+    });
+
+    await fetch(`${base}/v1/devices/dev%20A/orders`);
+
+    expect(seen).toEqual(['dev A']);
+  });
+
+  it('answers 400 for a malformed %-escape instead of crashing the process', async () => {
+    const base = await serve(ok);
+
+    const res = await fetch(`${base}/v1/devices/%/orders`);
+
+    expect(res.status).toBe(400);
+  });
+
+  it('answers 500 when the controller throws', async () => {
+    const base = await serve(ok, async () => {
+      throw new Error('redis down');
+    });
+
+    const res = await fetch(`${base}/v1/devices/dev_a/orders`);
+
+    expect(res.status).toBe(500);
+  });
+
+  it('does not route POST on the orders path', async () => {
+    const base = await serve(ok, async () => [order]);
+
+    expect((await fetch(`${base}/v1/devices/dev_a/orders`, { method: 'POST' })).status).toBe(404);
   });
 });
 

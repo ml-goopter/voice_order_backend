@@ -3,7 +3,7 @@ import type { CartCache } from '../redis/cart-cache.js';
 import type { MenuService } from '../menu/menu-service.js';
 import type { CartRepository } from './cart-repository.js';
 import type { OrderProposal } from '../contracts/proposal.js';
-import type { CartId, PosOrderId, SessionId } from '../shared/types.js';
+import type { CartId, DeviceId, PosOrderId, SessionId } from '../shared/types.js';
 import type { ClientConnected } from '../events/event-types.js';
 import type { CartOperation } from '../contracts/cart-operation.schema.js';
 import { KeyedAsyncLock } from '../shared/async-lock.js';
@@ -178,5 +178,13 @@ export class CartController {
       await this.carts.set({ ...cart, confirmed_at: new Date().toISOString(), pos_order_id });
       return pos_order_id;
     });
+  }
+
+  /**
+   * Read-through for the past-orders REST route: the confirmed orders this device created.
+   * The repo owns the device index; no cart write, so no apply lock. Empty if none/expired.
+   */
+  async ordersByDevice(device_id: DeviceId): Promise<Cart[]> {
+    return await this.repo.getOrdersByDevice(device_id);
   }
 }

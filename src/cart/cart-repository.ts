@@ -1,5 +1,5 @@
 import type { Redis } from 'ioredis';
-import type { DeviceId, PosOrderId, RequestId, RestaurantTableId } from '../shared/types.js';
+import type { CartId, DeviceId, PosOrderId, RequestId, RestaurantTableId } from '../shared/types.js';
 import type { Cart } from './cart-types.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import { cartKey } from '../redis/cart-cache.js';
@@ -8,6 +8,7 @@ import type { QuoteResponse } from '../odoo/quote-request.js';
 import { toInsertCartRequest } from './cart-to-insert-request.js';
 import { toQuoteRequest } from './cart-to-quote-request.js';
 import { logger } from '../config/logger.js';
+import { errorMeta } from '../shared/errors.js';
 
 export type Outcome = 'applied' | 'rejected' | 'duplicate' | 'superseded';
 
@@ -25,6 +26,8 @@ export interface CartRepository {
   commitApplied(cart: Cart, request_id: RequestId): Promise<void>;
   /** Persist a newly created cart and its device/table indexes. No request to mark. */
   commitCreated(cart: Cart): Promise<void>;
+  /** Confirmed orders this device created, via the device index. Empty if none/expired. */
+  getOrdersByDevice(device_id: DeviceId): Promise<Cart[]>;
   confirmOrder(cart: Cart): Promise<PosOrderId>;
   /** Price the cart against Odoo (read-only, creates nothing). Server-authoritative totals. */
   quoteCart(cart: Cart): Promise<QuoteResponse>;
@@ -129,6 +132,31 @@ export class RedisCartRepository implements CartRepository {
     );
   }
 
+  /**
+   * Read the device index (a Set of cart_ids) and load each cart blob, returning only the
+   * confirmed ones. The index expires after `indexTtlSeconds` while cart blobs do not, so an
+   * expired index yields an empty result; a member whose blob is gone (or unparseable) is
+   * dropped. `mget` rejects an empty key list, so short-circuit when the Set is empty.
+   */
+  async getOrdersByDevice(device_id: DeviceId): Promise<Cart[]> {
+    const cart_ids = await this.redis.smembers(deviceKey(device_id));
+    if (cart_ids.length === 0) return [];
+    const raws = await this.redis.mget(cart_ids.map(cartKey));
+    const carts: Cart[] = [];
+    for (const raw of raws) {
+      if (raw === null) continue;
+      let cart: Cart;
+      try {
+        cart = JSON.parse(raw) as Cart;
+      } catch (err) {
+        logger.error('cart.parse_failed', errorMeta(err));
+        continue;
+      }
+      if (cart.confirmed_at) carts.push(cart);
+    }
+    return carts;
+  }
+
   /** Confirm: hand the cart to Odoo, which creates the pos_order (design §9, step 11). */
   async confirmOrder(cart: Cart): Promise<PosOrderId> {
     return await this.odoo.insertCart(toInsertCartRequest(cart));
@@ -147,6 +175,8 @@ export class RedisCartRepository implements CartRepository {
  */
 export class InMemoryCartRepository implements CartRepository {
   private readonly processed = new Map<RequestId, Outcome>();
+  /** Device index, mirroring the Redis Set at `device:{device_id}`. */
+  private readonly byDevice = new Map<DeviceId, Set<CartId>>();
 
   constructor(private readonly cache: CartCache) {}
 
@@ -160,11 +190,31 @@ export class InMemoryCartRepository implements CartRepository {
 
   async commitApplied(cart: Cart, request_id: RequestId): Promise<void> {
     await this.cache.set(cart);
+    this.index(cart);
     this.processed.set(request_id, 'applied');
   }
 
   async commitCreated(cart: Cart): Promise<void> {
     await this.cache.set(cart);
+    this.index(cart);
+  }
+
+  private index(cart: Cart): void {
+    if (cart.device_id === undefined) return;
+    const set = this.byDevice.get(cart.device_id) ?? new Set<CartId>();
+    set.add(cart.cart_id);
+    this.byDevice.set(cart.device_id, set);
+  }
+
+  async getOrdersByDevice(device_id: DeviceId): Promise<Cart[]> {
+    const cart_ids = this.byDevice.get(device_id);
+    if (!cart_ids) return [];
+    const carts: Cart[] = [];
+    for (const cart_id of cart_ids) {
+      const cart = await this.cache.get(cart_id);
+      if (cart?.confirmed_at) carts.push(cart);
+    }
+    return carts;
   }
 
   /** Stub by design — tests must never reach Odoo. Override it to observe confirms. */

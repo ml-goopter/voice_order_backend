@@ -8,6 +8,9 @@ import { logger } from '../config/logger.js';
 /** POST /v1/carts/:cart_id/confirm */
 const CONFIRM_ROUTE = /^\/v1\/carts\/([^/]+)\/confirm$/;
 
+/** GET /v1/devices/:device_id/orders */
+const ORDERS_ROUTE = /^\/v1\/devices\/([^/]+)\/orders$/;
+
 /**
  * The app's whole REST surface: `/health` plus one confirm route. Hand-rolled on the
  * existing node:http server — two routes do not justify a framework in a WebSocket-first
@@ -33,6 +36,14 @@ export function createHttpRouter(cart: CartController) {
       // Decode inside confirmCart's try: a malformed %-escape must answer 400, not throw
       // synchronously out of the request listener (an uncaught error there crashes the process).
       void confirmCart(cart, match[1]!, res);
+      return;
+    }
+
+    const ordersMatch = req.method === 'GET' ? ORDERS_ROUTE.exec(pathOf(req.url)) : null;
+    if (ordersMatch) {
+      // Same unauthenticated stub posture as confirm above. Decode inside the try so a
+      // malformed %-escape answers 400 rather than crashing the request listener.
+      void deviceOrders(cart, ordersMatch[1]!, res);
       return;
     }
 
@@ -71,6 +82,30 @@ async function confirmCart(cart: CartController, raw_cart_id: string, res: Serve
       return;
     }
     logger.error('cart.confirm_failed', { cart_id, ...errorMeta(err) });
+    sendError(res, 500, messageOf(err));
+  }
+}
+
+/**
+ * The confirmed orders a device created, from the Redis device index. An unknown device is
+ * not a 404: "no orders" is a valid empty result, so it answers `200 []`. `raw_device_id`
+ * is the still-encoded path segment; decoding is the first thing inside the try so a bad
+ * %-escape becomes a 400 instead of an uncaught URIError.
+ */
+async function deviceOrders(cart: CartController, raw_device_id: string, res: ServerResponse): Promise<void> {
+  let device_id: string;
+  try {
+    device_id = decodeURIComponent(raw_device_id);
+  } catch {
+    sendError(res, 400, 'malformed device_id in path');
+    return;
+  }
+  try {
+    const orders = await cart.ordersByDevice(device_id);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(orders));
+  } catch (err) {
+    logger.error('device.orders_failed', { device_id, ...errorMeta(err) });
     sendError(res, 500, messageOf(err));
   }
 }
