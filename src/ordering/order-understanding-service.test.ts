@@ -71,6 +71,7 @@ interface TurnContext {
  */
 class ScriptedLlm implements LlmProvider {
   readonly name = 'scripted';
+  readonly model = 'scripted';
   readonly contexts: TurnContext[] = [];
   /** Tool result payloads the graph fed back, in order — what the agent actually saw. */
   readonly toolResults: string[] = [];

@@ -19,6 +19,7 @@ import { logger } from '../config/logger.js';
  */
 class StubLlmProvider implements LlmProvider {
   readonly name = 'stub';
+  readonly model = 'stub';
   private chatCalls = 0;
 
   constructor(private readonly chatScript: ChatResult[] = []) {}
