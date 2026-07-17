@@ -3,7 +3,7 @@ type: Concept
 title: LLM Provider
 description: Provider abstraction (complete + tool-calling chat) + agent/intent prompt builders.
 resource: src/llm
-timestamp: 2026-07-13
+timestamp: 2026-07-17
 ---
 
 # LLM Provider
@@ -72,18 +72,32 @@ deterministic source of truth.
   follow-up. The label union renders from `intentSchema.options`, so the prompt can't drift from
   the set the classifier validates against.
 
+- **Usage/cache observability** (`usage.ts`): both `complete` and `chat` capture the SDK's
+  `res.usage` (mapped by `usageOf` onto a transport-independent `LlmUsage`). The provider emits one
+  `llm.usage` INFO line per call — `kind` (`complete`/`chat`), `provider`, `model`, `prompt_tokens`,
+  `completion_tokens`, `total_tokens`, and (when the provider reports it) `cached_tokens` +
+  `cache_hit_rate`. Cache detail is OPTIONAL end-to-end: providers that don't report
+  `prompt_tokens_details.cached_tokens` (Ollama) omit the cache fields, so "absent" stays distinct
+  from a genuine 0% (never averaged as a fake zero). `chat` also returns `usage` on `ChatResult` so
+  the ordering agent loop can accumulate a per-turn total (`TurnUsage` via `addUsage`) and emit the
+  `llm.turn_usage` rollup — see the ordering bundle. `model` is exposed on the `LlmProvider`
+  interface so that rollup can attribute cost per model. Raw token COUNTS only; cost is priced
+  downstream from a per-model table.
+
 ## Dependencies
 - `contracts/{cart-view, cart-operation.schema, intent}` (prompt-facing types, allowed ops, intent
   label set) — the prompt builders speak these shared contracts and no longer reach into `ordering`.
   `config/env` for provider selection.
 
 ## Key files
-- `llm-provider.ts` — `LlmProvider` (`complete` + `chat`) + `LlmPrompt`; tool-calling types
-  (`ToolSpec`, `ToolCall`, `AgentMessage`, `ChatResult`).
+- `llm-provider.ts` — `LlmProvider` (`name`, `model`, `complete` + `chat`) + `LlmPrompt`;
+  tool-calling types (`ToolSpec`, `ToolCall`, `AgentMessage`, `ChatResult` with optional `usage`).
+- `usage.ts` — `LlmUsage`/`TurnUsage` types + pure `addUsage`/`cacheHitRate` (LangGraph-independent,
+  unit-tested in `usage.test.ts`).
 - `agent-prompt-builder.ts` — `buildAgentMessages`/`buildAgentSystemPrompt` (the agent loop).
 - `intent-prompt-builder.ts` — `buildIntentPrompt` (the classifier).
 - `llm-client.ts` — `createLlmProvider` switch + `StubLlmProvider` (`complete` yields a
   non-intent JSON that degrades to `service`; `chat` replays an optional scripted `ChatResult[]`
   for deterministic agent-loop tests).
 - `openai-compatible-provider.ts` — `OpenAiCompatibleLlmProvider` (Ollama/OpenAI/…),
-  `complete` + `chat`.
+  `complete` + `chat`; `usageOf` maps `res.usage` and `logUsage` emits the per-call `llm.usage` line.

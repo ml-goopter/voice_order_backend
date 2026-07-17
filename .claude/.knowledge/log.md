@@ -7,6 +7,27 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-17 — LLM usage & cache-hit observability
+- **What:** Capture the OpenAI SDK's `res.usage` (previously discarded) in both `complete` and
+  `chat`. New `src/llm/usage.ts` defines `LlmUsage` (per call), `TurnUsage` (per turn), and pure
+  `addUsage`/`cacheHitRate` helpers. The provider emits one `llm.usage` INFO line per call
+  (`kind`, `provider`, `model`, token counts, and `cache_hit_rate` derived from
+  `prompt_tokens_details.cached_tokens`), and returns `usage` on `ChatResult`. The agent node
+  folds each call's usage into a turn-scoped `token_usage` state channel (read-modify-write, reset
+  by `normalize` like `agent_steps`); `OrderGraph.start` reads the final total and emits an
+  `llm.turn_usage` rollup tagged with `request_id`/`cart_id`/`pos_config_id` + parser model.
+  Exposed `model` on the `LlmProvider` interface so the rollup can attribute cost per model.
+- **Why:** No token/cache visibility existed. The agent loop resends a growing transcript up to
+  `maxAgentSteps` times, so blended per-turn cache-hit rate is the key cost metric; per-call lines
+  cover the intent classifier too. Log fields are flat + stable so a log aggregator / metrics sink /
+  pg table can roll them up later without reshaping (raw counts only — cost priced downstream).
+- **Where:** `llm` (`usage.ts` new, `llm-provider.ts`, `openai-compatible-provider.ts`,
+  `llm-client.ts`), `ordering` (`graph/state.ts`, `graph/build-graph.ts`, `order-graph.ts`).
+- **Notes:** Cache detail is optional end-to-end — providers that don't report it (Ollama) omit
+  the cache fields, keeping "absent" distinct from a genuine 0%. Junk turns (agent never ran) emit
+  no rollup. The intent classifier's `complete` call is observable per-call only (separate model),
+  not folded into the agent turn rollup.
+
 ## 2026-07-16 — Past-orders REST route (`GET /v1/devices/:device_id/orders`)
 - **What:** New read-only route returning the device's **confirmed** carts as a JSON array.
   Adds `CartRepository.getOrdersByDevice(device_id)` (Redis: `SMEMBERS device:{id}` → `MGET`
