@@ -53,6 +53,7 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
   }
 
   async complete(prompt: LlmPrompt): Promise<string> {
+    const started = Date.now();
     const res = await this.client.chat.completions.create({
       model: this.model,
       temperature: 0,
@@ -63,7 +64,7 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
       ],
     });
 
-    this.logUsage('complete', usageOf(res.usage));
+    this.logUsage('complete', usageOf(res.usage), Date.now() - started);
     const content = res.choices[0]?.message?.content ?? '';
     if (!content) {
       logger.warn('llm.openai_compatible.empty_content', { provider: this.name, model: this.model });
@@ -78,6 +79,7 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
    * for determinism; no `response_format` — tool mode governs the output shape.
    */
   async chat(messages: AgentMessage[], tools: ToolSpec[]): Promise<ChatResult> {
+    const started = Date.now();
     const res = await this.client.chat.completions.create({
       model: this.model,
       temperature: 0,
@@ -89,7 +91,7 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
     });
 
     const usage = usageOf(res.usage);
-    this.logUsage('chat', usage);
+    this.logUsage('chat', usage, Date.now() - started);
     const message = res.choices[0]?.message;
     const toolCalls = (message?.tool_calls ?? [])
       .filter((tc) => tc.type === 'function')
@@ -104,20 +106,27 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
     };
   }
 
-  /** Emit one `llm.usage` line for a call. Cache fields are OMITTED when the provider didn't report
-   *  `cachedTokens` (so absent stays distinct from a genuine 0% — see {@link LlmUsage}). No-op when
-   *  usage is absent entirely (some compat endpoints omit it). */
-  private logUsage(kind: 'complete' | 'chat', usage: LlmUsage | undefined): void {
-    if (!usage) return;
-    const rate = usage.cachedTokens !== undefined ? cacheHitRate(usage.promptTokens, usage.cachedTokens) : null;
+  /** Emit one `llm.usage` line for a call. `elapsedMs` is the wall-clock time of the whole
+   *  `create()` await, so it INCLUDES any SDK retry/backoff (429/5xx) — a call that looks trivial by
+   *  token count but slow here was rate-limited or cold, not busy. Always logged (even when the
+   *  provider omits its `usage` block) so latency is never lost; token/cache fields are OMITTED when
+   *  absent (so absent stays distinct from a genuine 0% — see {@link LlmUsage}). */
+  private logUsage(kind: 'complete' | 'chat', usage: LlmUsage | undefined, elapsedMs: number): void {
+    const rate =
+      usage?.cachedTokens !== undefined ? cacheHitRate(usage.promptTokens, usage.cachedTokens) : null;
     logger.info('llm.usage', {
       kind,
       provider: this.name,
       model: this.model,
-      prompt_tokens: usage.promptTokens,
-      completion_tokens: usage.completionTokens,
-      total_tokens: usage.totalTokens,
-      ...(usage.cachedTokens !== undefined ? { cached_tokens: usage.cachedTokens } : {}),
+      elapsed_ms: elapsedMs,
+      ...(usage
+        ? {
+            prompt_tokens: usage.promptTokens,
+            completion_tokens: usage.completionTokens,
+            total_tokens: usage.totalTokens,
+          }
+        : {}),
+      ...(usage?.cachedTokens !== undefined ? { cached_tokens: usage.cachedTokens } : {}),
       ...(rate !== null ? { cache_hit_rate: rate } : {}),
     });
   }

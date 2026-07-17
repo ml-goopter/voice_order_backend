@@ -74,9 +74,14 @@ deterministic source of truth.
 
 - **Usage/cache observability** (`usage.ts`): both `complete` and `chat` capture the SDK's
   `res.usage` (mapped by `usageOf` onto a transport-independent `LlmUsage`). The provider emits one
-  `llm.usage` INFO line per call — `kind` (`complete`/`chat`), `provider`, `model`, `prompt_tokens`,
-  `completion_tokens`, `total_tokens`, and (when the provider reports it) `cached_tokens` +
-  `cache_hit_rate`. Cache detail location varies by provider: `usageOf` prefers OpenAI/Groq's nested
+  `llm.usage` INFO line per call — `kind` (`complete`/`chat`), `provider`, `model`, `elapsed_ms`,
+  `prompt_tokens`, `completion_tokens`, `total_tokens`, and (when the provider reports it)
+  `cached_tokens` + `cache_hit_rate`. `elapsed_ms` is the wall-clock of the whole `create()` await,
+  so it INCLUDES the SDK's transparent retry/backoff (`llmTransportMaxRetries`, 429/5xx) — a call
+  that is cheap by token count but slow here was rate-limited, cold, or thinking, not busy (pair it
+  with `completion_tokens` to tell reasoning-token burn apart from retry/latency). It is the ONE
+  field always emitted: unlike the token/cache fields it is logged even when the provider omits its
+  `usage` block, so per-call latency is never lost. Cache detail location varies by provider: `usageOf` prefers OpenAI/Groq's nested
   `prompt_tokens_details.cached_tokens` and falls back to a flat `total_cached_tokens` some compat
   endpoints use. It is OPTIONAL end-to-end: providers that report neither (Ollama, and — verified
   empirically — Gemini's OpenAI-compat `v1beta/openai/` endpoint, which returns only the three basic
