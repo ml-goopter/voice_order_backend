@@ -7,6 +7,27 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-17 — ordering: let a turn propose AND reply in one `propose_cart` (approach B)
+- **What:** `propose_cart` gains optional `reply`/`language` args. When present, the `tools` node
+  sets `reply`/`reply_language` alongside `output`, `interpret()` widens `complete` to carry them,
+  and the service emits `order.operations_proposed` first then `order.reply` (shared `speak`
+  helper). `output`/`reply` are no longer mutually exclusive. Prompt now makes `propose_cart` the
+  agent's LAST tool call (all `search_menu` first) and puts any spoken words in its `reply` when the
+  turn has anything to commit; a standalone spoken reply is only for turns with nothing to commit.
+  `parse-spoken-reply.ts` exports `normalizeLangCode`, reused by `run-tools.ts` so both reply paths
+  validate the language identically.
+- **Why:** The agent could previously end a turn EITHER with a proposal OR a spoken reply, never
+  both — so "add beef jerky then suggest some items" had to drop either the commit or the
+  suggestion. Bundling keeps commit + speech to one terminal call (no extra LLM round-trip on the
+  voice path). See `docs/plans/reply-after-propose.md`.
+- **Where:** `ordering` (`tools/tool-specs.ts`, `tools/run-tools.ts` + new `run-tools.test.ts`,
+  `order-graph.ts`, `order-understanding-service.ts` + test, `graph/state.ts`, `graph/build-graph.ts`,
+  `graph/parse-spoken-reply.ts`), `llm` (`agent-prompt-builder.ts`), docs (`LLM-graph.md`,
+  `agent-tools.md`, `CLAUDE.md`).
+- **Notes:** Behavior change — `finalize` records a bundled confirmation as `agent_reply`, so the
+  NEXT turn is force-serviced (skips the junk gate); mildly wasteful for a plain "thanks", kept as-is
+  (useful history context). Risk accepted for v1: a fire-and-forget confirmation can race a partial
+  cart rejection (mitigation "speak only after cart confirms" is out of scope).
 ## 2026-07-17 — STT: widen end-of-turn silence so one order isn't split into many finals
 - **What:** `defaultTranscriberFactory` now passes `minTurnSilence`/`maxTurnSilence` to the
   AssemblyAI streaming transcriber, driven by two new env-backed config knobs

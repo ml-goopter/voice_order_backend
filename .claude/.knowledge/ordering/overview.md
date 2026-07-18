@@ -10,7 +10,8 @@ timestamp: 2026-07-17
 
 ## Purpose
 Turns `stt.final_transcript.received` into an `OrderProposal` (operations +
-`base_version`) or an `order.reply` (a spoken clarification/recommendation), design §6.
+`base_version`) **and/or** an `order.reply` (a spoken clarification/recommendation/confirmation),
+design §6. A `propose_cart` may bundle a spoken confirmation, so one turn can emit BOTH events.
 It is a **pure proposer**; the Cart Module validates and applies.
 
 ## Mechanics
@@ -42,9 +43,12 @@ It is a **pure proposer**; the Cart Module validates and applies.
     `LlmProvider.chat`. On first entry it seeds the transcript with the system prompt +
     user context (`buildAgentMessages` in `llm/agent-prompt-builder.ts`: `customer_text`,
     `current_cart`, `conversation_history` — candidates are NOT pre-fetched). It ends the
-    turn one of two ways: by calling **`propose_cart`** (structured operations), or by
+    turn one of two ways: by calling **`propose_cart`** (structured operations — which MAY also
+    bundle a short spoken `reply`/`language` to confirm/suggest while committing, approach B), or by
     **replying** (no tool call) — a single "reply" outcome serving as both a clarifying question
-    and a recommendation. A reply is strict JSON `{reply, language}` parsed by
+    and a recommendation. When the turn has anything to commit it MUST end with `propose_cart`
+    (words go in its `reply`); a standalone reply is only for turns with nothing to commit, so
+    `propose_cart` is always the last tool call. A standalone reply is strict JSON `{reply, language}` parsed by
     `graph/parse-spoken-reply.ts`, which writes the agent-declared language onto the turn-scoped
     `reply_language` channel (cleared by `normalize`, so a declaration never outlives its turn) —
     the ONLY source of the reply's language, defaulted to `TTS_LANGUAGE` by the façade (the sole
@@ -65,13 +69,16 @@ It is a **pure proposer**; the Cart Module validates and applies.
     including an **empty/absent `operations`** list — is a repair-friendly **tool error** the
     agent retries within `maxAgentSteps`, rather than a silent empty proposal; this replaces
     the old separate schema-repair round). A successful `propose_cart` writes the `output`
-    channel and ends the loop.
+    channel and ends the loop; its optional `reply`/`language` args (validated via the shared
+    `normalizeLangCode` from `parse-spoken-reply.ts` — a blank reply or off-format code degrades
+    quietly) additionally write `reply`/`reply_language` alongside `output`.
   - **finalize** records the completed turn to `history`: always `customer_text`, plus
     `agent_reply` when the agent ended by speaking (so the next turn has the context and
     force-orders). Committed/failed turns record only the utterance.
 - **State** (`graph/state.ts`, `Annotation.Root`, last-write-wins with defaults):
-  `base_version` captured at `load_cart` (= `cart.version`). The agent's two mutually
-  exclusive terminal channels are `output` (propose_cart) and `reply` (spoken). Turn-scoped
+  `base_version` captured at `load_cart` (= `cart.version`). The agent's terminal channels are
+  `output` (propose_cart) and `reply` (spoken) — **no longer mutually exclusive**: a `propose_cart`
+  may set both (commit + bundled confirmation). Turn-scoped
   channels reset by `normalize` each turn (the checkpointer persists everything, so anything
   left would leak): `output`, `reply`, `agent_messages` (the tool-calling scratchpad — NEVER
   persisted across turns), `agent_steps`, `token_usage`, `failure_reason`. `token_usage`
@@ -96,8 +103,9 @@ It is a **pure proposer**; the Cart Module validates and applies.
   Compiled with a `MemorySaver` checkpointer keyed by `thread_id =
   ${pos_config_id}:${cart_id}` — context follows the CART, not a session.
 - **`OrderGraph` façade** exposes `start()` → `GraphTurnResult`: `complete` (`{output,
-  base_version}`) | `reply` (`{reply}`) | `junk` | `fail` (`{reason}`). `interpret()` is
-  channel-driven: junk → junk; `failure_reason` → fail; `output` → complete; `reply` → reply.
+  base_version, reply?, language?}`) | `reply` (`{reply}`) | `junk` | `fail` (`{reason}`).
+  `interpret()` is channel-driven: junk → junk; `failure_reason` → fail; `output` → complete
+  (carrying `reply`/`language` when the propose_cart bundled one); `reply` → reply.
 - **Reply is fire-and-forget** (no pause): the service emits `order.reply` and releases its
   FIFO slot; the customer's answer arrives as the **next** transcript, whose `classify`
   force-orders because the last history turn carries `agent_reply`. There is no consecutive-
@@ -106,6 +114,10 @@ It is a **pure proposer**; the Cart Module validates and applies.
 - **Service** (`order-understanding-service.ts`) enqueues the turn, runs the graph once, then
   emits `order.operations_proposed` (with the `OrderProposal`), `order.reply`, or
   `voice.session_failed` (reason `agent_step_limit` / `agent_no_terminal` / `order_parse_failed`).
+  A `complete` with a bundled reply emits BOTH — `order.operations_proposed` first (cart update
+  before the confirmation), then `order.reply` (shared `speak` helper, defaulting the language to
+  `TTS_LANGUAGE`). Both are fire-and-forget, so a confirmation can race a partial cart rejection
+  (accepted for v1 — the cart module re-validates each op independently).
 - **Contracts:** the cross-module wire shapes moved to `contracts/` — `cart-operation.schema`
   (the operation zod schema), `proposal`, `cart-view` (prompt-facing `CartView`/`CartLineView`/
   `HistoryTurn`), and `intent` (`intentSchema`/`DEFAULT_INTENT`). What stays in `schemas/` is
@@ -128,18 +140,22 @@ It is a **pure proposer**; the Cart Module validates and applies.
 - `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` on any node throw.
 - `graph/parse-spoken-reply.ts` — pure parser for the agent's spoken terminal (the outermost `{…}`
   span → `SpokenReply`), degrading per-field so a format slip never drops a reply nor reads JSON
-  aloud.
+  aloud. Exports `normalizeLangCode` (validate + lowercase an ISO code, else `undefined`), reused by
+  `tools/run-tools.ts` for the bundled `propose_cart.reply` language so both paths apply one rule.
 - `nodes/*.node.ts` — `classify-intent` (LLM junk-gate classifier, defaults to `service`),
   `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)
-- `tools/tool-specs.ts` — `search_menu` + `propose_cart` specs; `tools/run-tools.ts` —
-  the `tools` node executing them.
+- `tools/tool-specs.ts` — `search_menu` + `propose_cart` specs (`propose_cart` has optional
+  `reply`/`language`); `tools/run-tools.ts` — the `tools` node executing them (captures the bundled
+  reply); `tools/run-tools.test.ts` — the bundled-reply capture/degradation cases.
 - `schemas/*.ts` — ordering-internal only: `order-graph-output` (operations-only, zod) +
   `order-graph-input`. The shared shapes (`cart-operation.schema`, `proposal`, `cart-view`,
   `intent`) now live in `contracts/`; `zod-error` moved to `shared/`.
 - `order-understanding-service.test.ts` — happy path, edits, spoken-reply fire-and-forget
   (reply then answered next transcript), force-service after a reply, propose validation retry,
   step-limit fail, per-cart FIFO, history persistence, junk short-circuit, reply language
-  (agent-declared wins; `en` default ignores STT; a declaration never leaks into a later turn).
+  (agent-declared wins; `en` default ignores STT; a declaration never leaks into a later turn),
+  and the bundled propose+reply cases (both events fire; language defaults; beef-jerky
+  propose-is-last-call regression).
 - `graph/parse-spoken-reply.test.ts` — the reply terminal's degradation matrix.
 
 ## Not done yet

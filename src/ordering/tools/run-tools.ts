@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import type { AgentMessage, ToolCall } from '../../llm/llm-provider.js';
+import type { LangCode } from '../../shared/types.js';
 import type { MenuService } from '../../menu/menu-service.js';
 import type { OrderStateType } from '../graph/state.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import { parseOrderGraphOutput } from '../schemas/order-graph-output.schema.js';
+import { normalizeLangCode } from '../graph/parse-spoken-reply.js';
 import { formatZodError } from '../../shared/zod-error.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import { logger } from '../../config/logger.js';
@@ -28,6 +30,12 @@ const searchArgs = z.object({
 interface ToolExecResult {
   content: string;
   output?: OrderGraphOutput;
+  /** A short spoken confirmation bundled into `propose_cart` (approach B): the agent may commit
+   *  operations AND speak in one terminal call. Set only when a non-blank `reply` was supplied. */
+  reply?: string;
+  /** The language the agent declared `reply` is in; omitted when absent or malformed (the caller
+   *  then defaults to `TTS_LANGUAGE`, matching the standalone spoken-reply path). */
+  reply_language?: LangCode;
   error?: string;
   meta?: Record<string, unknown>;
 }
@@ -65,10 +73,17 @@ async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolC
           'Validation error: propose_cart needs at least one operation. If there is nothing to change, do not call propose_cart — reply to the customer in words instead.';
         return { content: error, error };
       }
+      // A `propose_cart` may bundle a spoken confirmation (approach B): commit AND speak in one
+      // terminal call. A blank/whitespace reply means "no confirmation" (not an error); a malformed
+      // `language` drops only the language (degrade to the TTS default, same as parse-spoken-reply).
+      const reply = typeof argsObj.reply === 'string' && argsObj.reply.trim() ? argsObj.reply : undefined;
+      const reply_language = reply !== undefined ? normalizeLangCode(argsObj.language) : undefined;
       return {
         content: 'Proposal accepted.',
         output: result.value,
-        meta: { operations: result.value.operations.length },
+        ...(reply !== undefined ? { reply } : {}),
+        ...(reply_language !== undefined ? { reply_language } : {}),
+        meta: { operations: result.value.operations.length, ...(reply !== undefined ? { reply: true } : {}) },
       };
     }
     default: {
@@ -90,6 +105,10 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
   const calls = last?.role === 'assistant' && last.tool_calls ? last.tool_calls : [];
 
   let output = s.output;
+  // `propose_cart` may bundle these (approach B). Only assigned when a call sets them, so a turn
+  // without a bundled reply leaves them unset and `lww` keeps the normalized (cleared) defaults.
+  let reply: string | undefined;
+  let reply_language: LangCode | undefined;
   const toolMsgs: AgentMessage[] = [];
 
   for (const call of calls) {
@@ -97,6 +116,8 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
     const res = await executeToolCall(menu, s, call);
     toolMsgs.push({ role: 'tool', tool_call_id: call.id, content: res.content });
     if (res.output !== undefined) output = res.output;
+    if (res.reply !== undefined) reply = res.reply;
+    if (res.reply_language !== undefined) reply_language = res.reply_language;
 
     const meta = {
       tool: call.name,
@@ -112,5 +133,10 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
     else logger.info('order.agent_tool', meta);
   }
 
-  return { agent_messages: [...s.agent_messages, ...toolMsgs], output };
+  return {
+    agent_messages: [...s.agent_messages, ...toolMsgs],
+    output,
+    ...(reply !== undefined ? { reply } : {}),
+    ...(reply_language !== undefined ? { reply_language } : {}),
+  };
 }

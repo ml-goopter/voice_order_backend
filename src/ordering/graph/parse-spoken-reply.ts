@@ -10,6 +10,17 @@ export interface SpokenReply {
 const LANG_RE = /^[a-z]{2,3}([-_][a-z]{2,4})?$/i;
 
 /**
+ * Validate + normalize an agent-declared language code, degrading to `undefined` on anything
+ * off-format (an empty/blank value, a name like "Chinese", a non-string) rather than forwarding
+ * garbage downstream — the caller then falls back to `TTS_LANGUAGE`. Shared by the spoken-reply
+ * path and the bundled `propose_cart.reply` path so both apply the same rule.
+ */
+export function normalizeLangCode(raw: unknown): LangCode | undefined {
+  const lang = typeof raw === 'string' ? raw.trim() : '';
+  return LANG_RE.test(lang) ? (lang.toLowerCase() as LangCode) : undefined;
+}
+
+/**
  * The agent ends a spoken turn with strict JSON {"language": "...", "reply": "..."} (see
  * agent-prompt-builder, which demands that field order so the model commits to a language before
  * writing the reply). Field order is irrelevant HERE — this JSON.parses — so a model that emits the
@@ -43,9 +54,9 @@ export function parseSpokenReply(raw: string | undefined): SpokenReply {
     // It parsed, so the raw text IS a JSON blob and is never speakable: `reply` or nothing.
     const reply = typeof obj.reply === 'string' && obj.reply.trim() ? obj.reply : null;
     if (reply === null) return { reply: null };
-    const lang = typeof obj.language === 'string' ? obj.language.trim() : '';
     // An off-format code ("Chinese") degrades to no language, not garbage forwarded to Cartesia.
-    return LANG_RE.test(lang) ? { reply, language: lang.toLowerCase() as LangCode } : { reply };
+    const language = normalizeLangCode(obj.language);
+    return language !== undefined ? { reply, language } : { reply };
   }
   return { reply: text };
 }

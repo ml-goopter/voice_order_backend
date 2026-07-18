@@ -35,8 +35,9 @@ event bus. Each requirement below is stated so it can be verified by a test or a
   quantity (never revenue) and drops net-refunded items.
 
 ### ordering
-- Turns `stt.final_transcript.received` into either an `OrderProposal` (ops +
-  `base_version`) or a spoken `order.reply` — never writes the cart.
+- Turns `stt.final_transcript.received` into an `OrderProposal` (ops + `base_version`) and/or a
+  spoken `order.reply` — a `propose_cart` may bundle a confirmation, so a turn can emit both — never
+  writes the cart.
 - Processes one turn per `cart_id` at a time, in arrival order (turn N sees turn N-1's result).
 - `junk` utterances short-circuit to END and are not recorded to history; a turn following
   an `agent_reply` is force-routed as `service`.

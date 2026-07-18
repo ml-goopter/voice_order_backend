@@ -81,8 +81,8 @@ Defined in `graph/build-graph.ts` → `buildOrderGraph({ menu, llm, intentLlm, c
   finer label would be read by no one. `service` covers ordering, changing or removing items,
   recommendations, and menu questions.
 - **`agent ⇄ tools` is the loop** (§5). The agent searches the menu, then ends the turn either by
-  calling `propose_cart` (structured operations) or by speaking (no tool call). There is no
-  pause/interrupt: a spoken reply is fire-and-forget.
+  calling `propose_cart` (structured operations, optionally bundling a spoken confirmation) or by
+  speaking (no tool call). There is no pause/interrupt: a spoken reply is fire-and-forget.
 - `finalize → END` records the completed turn to history. Every route that ran the agent passes
   through it; **`junk` skips it and goes straight to `END`**, so a non-orderable utterance
   (greeting, noise) is never recorded and can't pollute the context later fed to the agent.
@@ -146,8 +146,8 @@ requires reducers to be pure + deterministic).
 | `base_version` | lww | `0` | `load_cart` | cart version the proposal is computed against |
 | `history` | append (capped) | `[]` | `finalize` | prior turns, resent for reference resolution |
 | `output` | lww | `null` | `tools` (`propose_cart`), `normalize` (clear) | the validated operations — a terminal |
-| `reply` | lww | `null` | `agent`, `normalize` (clear) | the spoken message — the other terminal |
-| `reply_language` | lww | `undefined` | `agent`, `normalize` (clear) | ISO code the agent declared it wrote `reply` in |
+| `reply` | lww | `null` | `agent` (spoken), `tools` (bundled into `propose_cart`), `normalize` (clear) | the spoken message — a standalone terminal OR a confirmation alongside `output` |
+| `reply_language` | lww | `undefined` | `agent`, `tools`, `normalize` (clear) | ISO code the agent declared it wrote `reply` in |
 | `agent_messages` | lww | `[]` | `agent`, `tools`, `normalize` (clear) | the turn's tool-calling scratchpad |
 | `agent_steps` | lww | `0` | `agent`, `normalize` (clear) | agent LLM turns so far; guards `maxAgentSteps` |
 | `failure_reason` | lww | `undefined` | `agent`, `normalize` (clear) | set when the loop ends with no terminal |
@@ -314,7 +314,7 @@ Two tools, and the asymmetry between them is the design:
 | Tool | Kind | Effect |
 |---|---|---|
 | `search_menu_semantic` | retrieval, **loopable** | `menu.getCandidates(pos_config_id, query)` → candidate items as the tool result. The agent may call it several times (e.g. once per distinct item). |
-| `propose_cart` | **terminal action** | zod-validates `operations` via `parseOrderGraphOutput`; on success sets `output` and the turn ends. |
+| `propose_cart` | **terminal action** | zod-validates `operations` via `parseOrderGraphOutput`; on success sets `output` and the turn ends. Optional `reply`/`language` args bundle a spoken confirmation, which the node writes to `reply`/`reply_language` alongside `output`. |
 
 - **Candidates are NOT pre-fetched.** Unlike the old fixed `retrieve` node, the agent decides what
   to search for and when — the reason a multi-item order works without a retrieval heuristic.
@@ -333,11 +333,17 @@ Two tools, and the asymmetry between them is the design:
 
 ### 5.3 The two terminals
 
-The agent must end every turn exactly one way — the prompt says so, and the state enforces it
-(`output` and `reply` are mutually exclusive per turn):
+The agent ends every turn one of two ways:
 
-1. **`propose_cart`** → `output` set → `finalize` → `{status:'complete'}`.
-2. **A spoken reply** (no tool call) → `reply` set → `finalize` → `{status:'reply'}`.
+1. **`propose_cart`** → `output` set → `finalize` → `{status:'complete'}`. It **may also** carry a
+   short spoken confirmation via optional `reply`/`language` args — the `tools` node then sets
+   `reply`/`reply_language` **alongside** `output`, so one terminal call both commits and speaks
+   (approach B). `output` and `reply` are therefore **no longer mutually exclusive**.
+2. **A spoken reply** (no tool call) → `reply` set (no `output`) → `finalize` → `{status:'reply'}`.
+
+When the turn has anything to commit it MUST end with `propose_cart` (any words go in its `reply`);
+a standalone spoken reply is only for turns with nothing to commit. So `propose_cart` is always the
+agent's **last** tool call — all `search_menu` calls come first.
 
 **A reply is fire-and-forget — there is no pause, no interrupt, and no checkpointer resume.** The
 turn emits the reply and ends, releasing its per-cart FIFO slot. The customer's answer arrives as
@@ -458,8 +464,8 @@ How the graph turn can end (`OrderGraph.interpret`, checked in this order):
 |---|---|---|
 | Junk | `intent === 'junk'` — the agent never ran | `{status:'junk'}` → service logs `order.intent_junk`, ends quietly |
 | Failure | `failure_reason` set (`agent_step_limit`, `agent_no_terminal`) | `{status:'fail', reason}` → `voice.session_failed` |
-| Proposal | `output` set by a validated `propose_cart` | `{status:'complete'}` → `order.operations_proposed` |
-| Reply | `reply` set by a spoken terminal | `{status:'reply', reply, language?}` → `order.reply` |
+| Proposal | `output` set by a validated `propose_cart` | `{status:'complete', reply?, language?}` → `order.operations_proposed`, then `order.reply` if the call bundled a confirmation |
+| Reply | `reply` set by a spoken terminal (no `output`) | `{status:'reply', reply, language?}` → `order.reply` |
 | Node fault | any node throws (e.g. Redis in `load_cart`) | `order.node_failed` (tagged with node) → `invoke()` rejects → service catches → `fail` (`order_parse_failed`) |
 
 The order matters: `junk` is checked first (nothing ran), then `failure_reason` (so a step-limit
@@ -485,7 +491,11 @@ node throw **rejects** `invoke()` and is caught by the service. Both end as
    version matches the snapshot it was computed from.
 4. **The loop routers stay channel-driven.** `tools → agent` must fire whenever no terminal was
    written; that is what makes a failed `propose_cart` retriable rather than fatal.
-5. **`output` and `reply` are mutually exclusive per turn.** Never both propose and speak.
+5. **A `propose_cart` may also set `reply`.** `output` and `reply` are **not** mutually exclusive:
+   a single terminal `propose_cart` can commit operations *and* speak a short confirmation (approach
+   B — the operations go out first as `order.operations_proposed`, then the reply as `order.reply`).
+   A standalone spoken reply (no tool) still sets only `reply` and is for turns with nothing to
+   commit.
 6. **Reducers stay pure/deterministic** (LangGraph requirement) — see the extracted `mergeHistory`.
 7. **No numeric ids in the prompt-facing views.** `cart_view` exposes keys/names/`line_id` only,
    by design, so the model can't confuse a `product_tmpl_id`/`ptav_id` for a `line_id`.

@@ -86,7 +86,13 @@ upstream router — determines the turn's outcome.
 | Turn ends by… | Replaces | Façade `GraphTurnResult` → event |
 |---|---|---|
 | calling `propose_cart(operations)` | `parse` output | `complete` → `order.operations_proposed` |
+| calling `propose_cart(operations, reply, language?)` | — | `complete` → `order.operations_proposed`, then `order.reply` (bundled confirmation) |
 | replying (no tool call) with JSON `{language, reply}` | parse's `needs_clarification` branch **and** the `suggest` node | `reply` → `order.reply` |
+
+`propose_cart` accepts optional `reply`/`language` args so one terminal call can commit **and**
+speak a short confirmation (e.g. "Added two lattes — anything else?"). When the turn has anything to
+commit it must end with `propose_cart` and put any words in its `reply`; a standalone spoken reply is
+only for turns with nothing to commit, so `propose_cart` is always the agent's last tool call.
 
 (As implemented — see the revision note at the top. `ask_clarification`/`suggest_items` were
 not built; a spoken reply is the single merged terminal alongside `propose_cart`.)

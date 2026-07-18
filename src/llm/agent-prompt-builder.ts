@@ -40,11 +40,13 @@ export interface AgentContext {
 /**
  * System prompt for the tool-calling ordering agent (docs/agent-tools.md §3). The model is NOT
  * handed pre-computed candidates — it must call `search_menu` to discover real menu keys.
- * It ends the turn one of two ways: by calling `propose_cart` (a structured, validated action), or
- * by REPLYING with no tool call — strict JSON `{language, reply}` whose `reply` serves as both a
- * clarifying question and a recommendation (one merged "reply" outcome), and whose `language` tells
- * TTS which language to speak it in (parsed by graph/parse-spoken-reply.ts). The operation contract
- * is unchanged from the old parser prompt.
+ * It ends the turn one of two ways: by calling `propose_cart` (a structured, validated action) —
+ * which MAY bundle a short spoken `reply`/`language` to confirm or suggest while committing — or by
+ * REPLYING with no tool call — strict JSON `{language, reply}` whose `reply` serves as both a
+ * clarifying question and a recommendation, and whose `language` tells TTS which language to speak
+ * it in (parsed by graph/parse-spoken-reply.ts). When the turn has anything to commit it must end
+ * with `propose_cart` (words go in its `reply`); a standalone reply is only for turns with nothing
+ * to commit. The operation contract is unchanged from the old parser prompt.
  *
  * `language` is demanded FIRST for a generation-order reason, not a stylistic one: the model writes
  * the JSON left to right, so a `reply`-first shape lets it write the whole reply — drifting into
@@ -75,7 +77,12 @@ export function buildAgentSystemPrompt(): string {
     '     asks about an allergy or a dietary need, say you cannot confirm it and offer to check',
     '     with staff — do not infer it from an item name or from a "No <ingredient>" option.',
     '2. Then end the turn ONE of two ways:',
-    '   - Call `propose_cart` with the operations to apply, when you know what to change.',
+    '   - Call `propose_cart` with the operations to apply, when you have something to change. It',
+    '     MAY also include a short spoken `reply` (one friendly sentence, e.g. "Added two lattes —',
+    '     anything else?") plus its `language` (the ISO-639-1 code you are writing `reply` in,',
+    '     CHOSEN BEFORE you write `reply`, same rule as the standalone reply below). Include `reply`',
+    '     whenever you also have something to say (confirm what you added, suggest a pairing, or any',
+    '     remark that does not block); omit it when there is nothing to say.',
     '   - Otherwise, end the turn by SPEAKING: DO NOT call any tool, and output STRICT JSON',
     '     (no prose outside it, no code fences), with the fields in THIS ORDER:',
     '     {"language": <ISO-639-1 code of the language you are about to write the reply in, e.g.',
@@ -83,12 +90,27 @@ export function buildAgentSystemPrompt(): string {
     '     language>}.',
     '     Choose "language" BEFORE you write "reply", and emit it first — it is a decision you make',
     '     up front, never a label you attach to a reply you have already written.',
-    '     Use a spoken reply to ask a clarifying question when the request is ambiguous, or to',
-    '     recommend items when the customer asked what to get. The "reply" text is spoken to the',
-    '     customer and ends the turn.',
-    'Never both propose and reply in the same turn: a turn that commits calls propose_cart as a tool',
-    'and outputs no JSON reply. Always end with either a propose_cart call or a spoken reply —',
-    'never an empty message.',
+    '     Use a standalone spoken reply ONLY when there is nothing to commit: to ask a clarifying',
+    '     question you need answered before acting, or to recommend items when the customer asked',
+    '     what to get and is not also adding anything. The "reply" text is spoken and ends the turn.',
+    'ORDERING RULE (important): when the turn has ANYTHING to commit, the turn MUST end with',
+    '`propose_cart`, and any words you want to speak go in its `reply` field — never a standalone',
+    'spoken reply (that ends the turn and DROPS the commit), and never a silent proposal when the',
+    'customer also asked to be advised (that DROPS the suggestion). So `propose_cart` is always your',
+    'LAST tool call: do every `search_menu` you need FIRST, then finish with the single',
+    '`propose_cart` that carries both the operations and the spoken reply.',
+    'Decide like this:',
+    '  - Something to commit AND nothing to say → propose_cart, no reply.',
+    '  - Something to commit AND something to say (confirm / suggest / a non-blocking remark) →',
+    '    propose_cart with operations + reply.',
+    '  - Nothing to commit (need a blocking answer first, or a pure recommendation with no add) →',
+    '    standalone spoken reply, no propose_cart.',
+    'Example: "add beef jerky then suggest some items" wants a commit AND advice in one turn. Do NOT',
+    'reply with the suggestion first (that drops the beef jerky), and do NOT propose the beef jerky',
+    'silently (that drops the suggestion). Instead: search_menu for beef jerky, search_menu for',
+    'suggestion candidates, then ONE propose_cart with operations:[add beef jerky] and reply:"Added',
+    'beef jerky — you might also like <X> or <Y>."',
+    'Always end with either a propose_cart call or a spoken reply — never an empty message.',
     '',
     'KEY RULES (for propose_cart):',
     'Use menu_item_key / modifier_key ONLY from search results — never invent keys or use display names.',
