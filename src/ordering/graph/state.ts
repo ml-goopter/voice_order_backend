@@ -57,9 +57,10 @@ export const OrderState = Annotation.Root({
   cart_view: lww<CartView | null>(() => null),
   base_version: lww<number>(() => 0),
   history: appendHistory(),
-  // The agent's terminal outcomes (mutually exclusive per turn): `output` when it committed
-  // operations via `propose_cart`; `reply` when it ended the turn by speaking to the customer.
-  // Both cleared by `normalize` (the checkpointer persists everything, so anything left would leak).
+  // The agent's terminal outcomes: `output` when it committed operations via `propose_cart`;
+  // `reply` when it spoke to the customer. NO LONGER mutually exclusive — a `propose_cart` may set
+  // BOTH (approach B: commit + a bundled spoken confirmation). A standalone spoken reply sets only
+  // `reply`. Both cleared by `normalize` (the checkpointer persists everything, so a leftover leaks).
   output: lww<OrderGraphOutput | null>(() => null),
   reply: lww<string | null>(() => null),
   // The language the agent declared it wrote `reply` in — the sole source of the reply's language.
