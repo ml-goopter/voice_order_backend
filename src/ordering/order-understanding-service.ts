@@ -1,5 +1,6 @@
 import type { EventBus } from '../events/event-bus.js';
 import type { SttFinalTranscriptReceived } from '../events/event-types.js';
+import type { LangCode } from '../shared/types.js';
 import type { OrderProposal } from '../contracts/proposal.js';
 import type { GraphTurnResult } from './order-graph.js';
 import { OrderGraph } from './order-graph.js';
@@ -75,23 +76,32 @@ export class OrderUnderstandingService {
         // The agent ended by speaking to the customer (a clarifying question or a recommendation).
         // Fire-and-forget: emit the reply and end the turn. The customer's answer arrives as the
         // next transcript; the reply is already recorded to history so the next turn resolves it.
-        // The agent wrote the reply, so it is the only authority on the reply's language; STT's
-        // detected language is not consulted at all (unreliable — see docs/text-to-speech.md).
-        // `TTS_LANGUAGE` when it declared none, so TTS always has a language to speak: this is the
-        // only `speak` caller, so defaulting here is what keeps that knob reachable at all.
-        this.bus.emit('order.reply', {
-          cart_id: e.cart_id,
-          session_id: e.session_id,
-          request_id: e.request_id,
-          reply: result.reply,
-          language: result.language ?? config.ttsLanguage,
-        });
+        this.speak(e, result.reply, result.language);
         return;
       }
       case 'complete':
+        // The proposal goes out FIRST (cart update before the spoken confirmation); then, when the
+        // agent bundled a confirmation into `propose_cart` (approach B), speak it too. Both are
+        // fire-and-forget — a confirmation may race a partial cart rejection (Risk 1, out of scope).
         this.propose(e, result);
+        if (result.reply !== undefined) this.speak(e, result.reply, result.language);
         return;
     }
+  }
+
+  /** Emit a spoken reply to the customer (the ONLY `order.reply` emitter). The agent wrote the
+   *  reply, so it is the sole authority on its language; STT's detected language is not consulted at
+   *  all (unreliable — see docs/text-to-speech.md). Falls back to `TTS_LANGUAGE` when the agent
+   *  declared none, so TTS always has a language to speak — defaulting here is what keeps that knob
+   *  reachable. Shared by the standalone `reply` outcome and the bundled `complete` confirmation. */
+  private speak(e: SttFinalTranscriptReceived, reply: string, language: LangCode | undefined): void {
+    this.bus.emit('order.reply', {
+      cart_id: e.cart_id,
+      session_id: e.session_id,
+      request_id: e.request_id,
+      reply,
+      language: language ?? config.ttsLanguage,
+    });
   }
 
   private propose(e: SttFinalTranscriptReceived, result: Extract<GraphTurnResult, { status: 'complete' }>): void {

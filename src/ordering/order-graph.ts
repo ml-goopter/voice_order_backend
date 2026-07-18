@@ -19,14 +19,15 @@ export interface OrderGraphParams {
 
 /**
  * Outcome of a graph turn — determined by how the agent ended the turn (docs/agent-tools.md §3),
- * not by an upstream router. `complete` — the agent committed operations via `propose_cart`;
+ * not by an upstream router. `complete` — the agent committed operations via `propose_cart` (which
+ * may also carry a short spoken confirmation in `reply`/`language`);
  * `reply` — the agent ended by speaking to the customer (a clarifying question OR a recommendation;
  * fire-and-forget, no pause); `junk` — the classifier junk-gate short-circuited a non-orderable
  * utterance (the agent never ran); `fail` — the agent loop ended without a terminal (e.g.
  * `agent_step_limit`), which the façade surfaces as a session failure.
  */
 export type GraphTurnResult =
-  | { status: 'complete'; output: OrderGraphOutput; base_version: number }
+  | { status: 'complete'; output: OrderGraphOutput; base_version: number; reply?: string; language?: LangCode }
   | { status: 'reply'; reply: string; language?: LangCode }
   | { status: 'junk' }
   | { status: 'fail'; reason: string };
@@ -111,7 +112,20 @@ export class OrderGraph {
     // The agent loop ended without a terminal (step-limit exhaustion, or an empty reply).
     if (out.failure_reason !== undefined) return { status: 'fail', reason: out.failure_reason };
     // Otherwise the outcome is however the agent ended the turn: committed operations, or spoke.
-    if (out.output !== null) return { status: 'complete', output: out.output, base_version: out.base_version };
+    // A `propose_cart` may bundle a spoken confirmation (approach B), so a `complete` can also carry
+    // a reply. Checking `output` first stays correct: in approach B both are written by the SAME
+    // terminal `propose_cart`, so both being set means "propose + confirm"; the standalone-`reply`
+    // branch below still handles clarify/recommend (nothing committed).
+    if (out.output !== null) {
+      const lang = out.reply_language;
+      return {
+        status: 'complete',
+        output: out.output,
+        base_version: out.base_version,
+        ...(out.reply !== null ? { reply: out.reply } : {}),
+        ...(out.reply !== null && lang !== undefined ? { language: lang } : {}),
+      };
+    }
     if (out.reply !== null) {
       const lang = out.reply_language;
       return { status: 'reply', reply: out.reply, ...(lang !== undefined ? { language: lang } : {}) };

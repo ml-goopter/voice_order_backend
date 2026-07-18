@@ -46,6 +46,10 @@ const searchWith = (args: Record<string, unknown>): ChatResult => ({
   toolCalls: [call(TOOL_NAMES.search, args)],
 });
 const propose = (operations: unknown[]): ChatResult => ({ toolCalls: [call(TOOL_NAMES.propose, { operations })] });
+/** A `propose_cart` that bundles a spoken confirmation (approach B): commit AND speak in one call. */
+const proposeWithReply = (operations: unknown[], reply: string, language?: string): ChatResult => ({
+  toolCalls: [call(TOOL_NAMES.propose, { operations, reply, ...(language !== undefined ? { language } : {}) })],
+});
 /** The agent ends the turn by SPEAKING (no tool call). Plain text is the DEGRADE path (the prompt
  *  asks for JSON) — still a valid reply, just with no declared language. */
 const reply = (text: string): ChatResult => ({ text, toolCalls: [] });
@@ -184,6 +188,69 @@ describe('OrderUnderstandingService', () => {
       modifiers: [{ modifier_key: 'no_mayo' }],
     });
     expect(llm.chatCalls).toBe(2); // one search, one propose
+  });
+
+  it('emits BOTH a proposal and a spoken reply when propose_cart bundles a confirmation', async () => {
+    const ops = [{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 2, modifiers: [] }];
+    // A NON-default language ('zh', not the 'en' TTS_LANGUAGE default) so this proves the
+    // agent-declared language is threaded through, not merely defaulted.
+    const { service, bus, llm } = await makeService(
+      [[search('chicken burger'), proposeWithReply(ops, '给你加了两个 — 还要别的吗?', 'zh')]],
+      cartWith(4),
+    );
+    const proposed = collect(bus, 'order.operations_proposed');
+    const replies = collect(bus, 'order.reply');
+    const failed = collect(bus, 'voice.session_failed');
+
+    await service.handleFinalTranscript(transcript('add two chicken burgers and confirm'));
+
+    // The commit and the spoken confirmation both fire from the single terminal propose_cart.
+    expect(proposed).toHaveLength(1);
+    expect(proposed[0]!.proposal.base_version).toBe(4);
+    expect(proposed[0]!.proposal.operations).toHaveLength(1);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({
+      cart_id: 'cart_1',
+      request_id: 'req_1',
+      reply: '给你加了两个 — 还要别的吗?',
+      language: 'zh', // threaded from the propose_cart arg, not the TTS default
+    });
+    expect(failed).toHaveLength(0);
+    expect(llm.chatCalls).toBe(2); // one search, one propose (which also spoke)
+  });
+
+  it('defaults the bundled confirmation language to TTS_LANGUAGE when the agent declares none', async () => {
+    const ops = [{ action: 'add_item', menu_item_key: 'coke', quantity: 1, modifiers: [] }];
+    const { service, bus } = await makeService([[proposeWithReply(ops, 'Added a Coke.')]], cartWith(0));
+    const replies = collect(bus, 'order.reply');
+
+    await service.handleFinalTranscript(transcript('a coke please'));
+
+    expect(replies[0]).toMatchObject({ reply: 'Added a Coke.', language: 'en' });
+  });
+
+  it('beef-jerky ordering: propose_cart is the LAST call and carries both the ops and the suggestion', async () => {
+    // The motivating case: "add beef jerky then suggest some items" wants a commit AND advice in one
+    // turn. The agent gathers everything with search_menu FIRST, then finishes with the single
+    // propose_cart that carries operations + the spoken suggestion — never a standalone reply that
+    // would drop the commit, never a silent proposal that would drop the suggestion.
+    const ops = [{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [] }];
+    const script = [
+      search('beef jerky'),
+      search('suggestions'),
+      proposeWithReply(ops, 'Added it — you might also like a Coke.', 'en'),
+    ];
+    const { service, bus, llm } = await makeService([script], cartWith(0));
+    const proposed = collect(bus, 'order.operations_proposed');
+    const replies = collect(bus, 'order.reply');
+
+    await service.handleFinalTranscript(transcript('add beef jerky then suggest some items'));
+
+    // propose_cart is the last scripted call (two searches precede it), and both events fire.
+    expect(llm.chatCalls).toBe(3);
+    expect(proposed).toHaveLength(1);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.reply).toContain('you might also like');
   });
 
   it('passes edit operations that target a line_id straight through', async () => {
