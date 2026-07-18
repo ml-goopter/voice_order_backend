@@ -53,7 +53,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     name: TOOL_NAMES.propose,
     description:
-      'Finalize the turn with the cart operations to apply. Use menu_item_key/modifier_key values only from search results, and line_id values only from current_cart. Ends the turn. If instead you need to ask a question or make a recommendation, do NOT call this — just reply with a spoken message.',
+      'Finalize the turn with the cart operations to apply. Use menu_item_key/modifier_key values only from search results, and line_id values only from current_cart. Ends the turn. A short spoken confirmation MAY accompany the operations via the optional `reply` (e.g. "Added two lattes — anything else?"). If instead you need to ask a blocking question or make a pure recommendation with nothing to commit, do NOT call this — just reply with a spoken message.',
     parameters: {
       type: 'object',
       properties: {
@@ -62,6 +62,16 @@ export const TOOL_SPECS: ToolSpec[] = [
           description:
             'Cart operations: add_item (menu_item_key, quantity, optional inline modifiers), remove_item (line_id), update_quantity (line_id, quantity), add_modifier (line_id, modifier_key), remove_modifier (line_id, modifier_key).',
           items: { type: 'object' },
+        },
+        reply: {
+          type: 'string',
+          description:
+            'Optional. A short (one friendly sentence) spoken confirmation to say while applying the operations, e.g. "Added two lattes — anything else?". Omit when there is nothing to say. Must not read totals or subtotals.',
+        },
+        language: {
+          type: 'string',
+          description:
+            'ISO-639-1 code of the language `reply` is written in (e.g. "en", "zh"). Choose it BEFORE writing `reply`. Only meaningful when `reply` is present; a missing or malformed code falls back to the TTS default.',
         },
       },
       required: ['operations'],
