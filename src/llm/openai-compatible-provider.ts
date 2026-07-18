@@ -9,6 +9,7 @@ import type {
 } from './llm-provider.js';
 import { logger } from '../config/logger.js';
 import { LIMITS } from '../config/constants.js';
+import { messageOf } from '../shared/errors.js';
 import { cacheHitRate, type LlmUsage } from './usage.js';
 
 /** Connection settings for one OpenAI-compatible endpoint. Each caller (the parser, the intent
@@ -53,17 +54,24 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
   }
 
   async complete(prompt: LlmPrompt): Promise<string> {
-    const res = await this.client.chat.completions.create({
-      model: this.model,
-      temperature: 0,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: prompt.system },
-        { role: 'user', content: prompt.user },
-      ],
-    });
+    const started = Date.now();
+    let res;
+    try {
+      res = await this.client.chat.completions.create({
+        model: this.model,
+        temperature: 0,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: prompt.system },
+          { role: 'user', content: prompt.user },
+        ],
+      });
+    } catch (error) {
+      this.logCallFailed('complete', Date.now() - started, error);
+      throw error;
+    }
 
-    this.logUsage('complete', usageOf(res.usage));
+    this.logUsage('complete', usageOf(res.usage), Date.now() - started);
     const content = res.choices[0]?.message?.content ?? '';
     if (!content) {
       logger.warn('llm.openai_compatible.empty_content', { provider: this.name, model: this.model });
@@ -78,18 +86,25 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
    * for determinism; no `response_format` — tool mode governs the output shape.
    */
   async chat(messages: AgentMessage[], tools: ToolSpec[]): Promise<ChatResult> {
-    const res = await this.client.chat.completions.create({
-      model: this.model,
-      temperature: 0,
-      messages: messages.map(toOpenAiMessage),
-      tools: tools.map((t) => ({
-        type: 'function' as const,
-        function: { name: t.name, description: t.description, parameters: t.parameters },
-      })),
-    });
+    const started = Date.now();
+    let res;
+    try {
+      res = await this.client.chat.completions.create({
+        model: this.model,
+        temperature: 0,
+        messages: messages.map(toOpenAiMessage),
+        tools: tools.map((t) => ({
+          type: 'function' as const,
+          function: { name: t.name, description: t.description, parameters: t.parameters },
+        })),
+      });
+    } catch (error) {
+      this.logCallFailed('chat', Date.now() - started, error);
+      throw error;
+    }
 
     const usage = usageOf(res.usage);
-    this.logUsage('chat', usage);
+    this.logUsage('chat', usage, Date.now() - started);
     const message = res.choices[0]?.message;
     const toolCalls = (message?.tool_calls ?? [])
       .filter((tc) => tc.type === 'function')
@@ -104,21 +119,42 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
     };
   }
 
-  /** Emit one `llm.usage` line for a call. Cache fields are OMITTED when the provider didn't report
-   *  `cachedTokens` (so absent stays distinct from a genuine 0% — see {@link LlmUsage}). No-op when
-   *  usage is absent entirely (some compat endpoints omit it). */
-  private logUsage(kind: 'complete' | 'chat', usage: LlmUsage | undefined): void {
-    if (!usage) return;
-    const rate = usage.cachedTokens !== undefined ? cacheHitRate(usage.promptTokens, usage.cachedTokens) : null;
+  /** Emit one `llm.usage` line for a call. `elapsedMs` is the wall-clock time of the whole
+   *  `create()` await, so it INCLUDES any SDK retry/backoff (429/5xx) — a call that looks trivial by
+   *  token count but slow here was rate-limited or cold, not busy. Always logged (even when the
+   *  provider omits its `usage` block) so latency is never lost; token/cache fields are OMITTED when
+   *  absent (so absent stays distinct from a genuine 0% — see {@link LlmUsage}). */
+  private logUsage(kind: 'complete' | 'chat', usage: LlmUsage | undefined, elapsedMs: number): void {
+    const rate =
+      usage?.cachedTokens !== undefined ? cacheHitRate(usage.promptTokens, usage.cachedTokens) : null;
     logger.info('llm.usage', {
       kind,
       provider: this.name,
       model: this.model,
-      prompt_tokens: usage.promptTokens,
-      completion_tokens: usage.completionTokens,
-      total_tokens: usage.totalTokens,
-      ...(usage.cachedTokens !== undefined ? { cached_tokens: usage.cachedTokens } : {}),
+      elapsed_ms: elapsedMs,
+      ...(usage
+        ? {
+            prompt_tokens: usage.promptTokens,
+            completion_tokens: usage.completionTokens,
+            total_tokens: usage.totalTokens,
+          }
+        : {}),
+      ...(usage?.cachedTokens !== undefined ? { cached_tokens: usage.cachedTokens } : {}),
       ...(rate !== null ? { cache_hit_rate: rate } : {}),
+    });
+  }
+
+  /** Emit one `llm.call_failed` WARN line when `create()` throws after the SDK's retries are
+   *  exhausted. `elapsedMs` (whole await, retries included) is the whole point — it makes a call
+   *  that timed out or gave up after backoff show its cost, which the success-only `llm.usage` line
+   *  can't. The error still propagates; this only records the timing before rethrow. */
+  private logCallFailed(kind: 'complete' | 'chat', elapsedMs: number, error: unknown): void {
+    logger.warn('llm.call_failed', {
+      kind,
+      provider: this.name,
+      model: this.model,
+      elapsed_ms: elapsedMs,
+      reason: messageOf(error),
     });
   }
 

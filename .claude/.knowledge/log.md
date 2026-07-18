@@ -28,6 +28,21 @@ timestamp: 2026-07-07
   NEXT turn is force-serviced (skips the junk gate); mildly wasteful for a plain "thanks", kept as-is
   (useful history context). Risk accepted for v1: a fire-and-forget confirmation can race a partial
   cart rejection (mitigation "speak only after cart confirms" is out of scope).
+## 2026-07-17 — STT: widen end-of-turn silence so one order isn't split into many finals
+- **What:** `defaultTranscriberFactory` now passes `minTurnSilence`/`maxTurnSilence` to the
+  AssemblyAI streaming transcriber, driven by two new env-backed config knobs
+  `STT_MIN_TURN_SILENCE_MS` (default 1600) and `STT_MAX_TURN_SILENCE_MS` (default 3600).
+  Factory exported + a test asserts the tuning is forwarded.
+- **Why:** AA's aggressive default endpointing (~560 ms) split a customer's natural mid-order
+  pauses into several finals, each becoming its own `stt.final_transcript.received` → separate
+  ordering turn + LLM round-trip (compounding the ~6–9 s Gemini TTFB from the latency
+  investigation). Chose provider-side endpointing over a backend final-aggregation/debounce
+  layer — simpler, fewer moving parts, nothing downstream changes.
+- **Where:** `voice`/`stt` (`config/env.ts`, `stt/assemblyai-stt-provider.ts` + test),
+  `docs/customer-stop-detection.md`.
+- **Notes:** Tradeoff is reply latency (~`minTurnSilence` after the customer truly finishes).
+  Retune via env, no code change. The 60 s `partialIdleMs` walk-away stop is unchanged and
+  orthogonal (ends the session, not a turn).
 
 ## 2026-07-17 — LLM usage: review hardening (blended rate + defensive cast)
 - **What:** `TurnUsage` gains `cachePromptTokens` (prompt tokens of cache-REPORTING calls only); the

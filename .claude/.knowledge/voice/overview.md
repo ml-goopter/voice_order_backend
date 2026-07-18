@@ -59,6 +59,18 @@ that may eventually touch the cart (§11 invariant).
   the real client; `NoopSttProvider` is the fallback for unknown providers or a
   keyless boot. Adding a provider = one new file + one `case`. Audio contract:
   PCM16 mono @ `STT_SAMPLE_RATE` (default 16000).
+- **End-of-turn aggregation** — the turn boundary is the provider's job, not the
+  backend's. `AssemblyAiSttProvider` fires one `onFinal` per endpointed turn; its
+  silence thresholds are widened above AA defaults so a customer's natural mid-order
+  pauses don't split one spoken order into several finals (each of which would be a
+  separate `stt.final_transcript.received` → separate ordering turn + LLM round-trip).
+  Tunables: `STT_MIN_TURN_SILENCE_MS` (`config.sttMinTurnSilenceMs`, default 1600 —
+  silence to end a turn when confident, the primary lever) and `STT_MAX_TURN_SILENCE_MS`
+  (`config.sttMaxTurnSilenceMs`, default 3600 — hard ceiling), passed as
+  `minTurnSilence`/`maxTurnSilence` in `defaultTranscriberFactory`. The tradeoff is
+  reply latency (~`minTurnSilence` after the customer truly finishes). Distinct from the
+  partial-idle stop, which ends the *session*, not a turn. See
+  `docs/customer-stop-detection.md`.
 
 ## Dependencies
 - `stt` provider abstraction.
