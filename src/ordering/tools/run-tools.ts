@@ -9,6 +9,8 @@ import { parseAgentReply } from '../graph/parse-agent-reply.js';
 import { formatZodError } from '../../shared/zod-error.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import { logger } from '../../config/logger.js';
+import type { MentionedItem } from '../../contracts/mentioned-item.js';
+import { toMentionedItem } from '../mentioned-items.js';
 
 /**
  * Every field optional: an argument-less call is a valid "what's popular?" browse. Unknown keys
@@ -36,6 +38,9 @@ interface ToolExecResult {
   /** The language the agent declared `reply` is in; omitted when absent or malformed (the caller
    *  then defaults to `TTS_LANGUAGE`, matching the standalone spoken-reply path). */
   reply_language?: LangCode;
+  /** Set only by a `search_menu` call: this call's items, projected and keyed by
+   *  `menu_item_key`, for `runTools` to fold into the turn's accumulated `search_results`. */
+  search_results?: Record<string, MentionedItem>;
   error?: string;
   meta?: Record<string, unknown>;
 }
@@ -50,11 +55,14 @@ async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolC
         return { content: error, error };
       }
       const set = await menu.searchMenu(s.pos_config_id, parsed.data);
+      const search_results: Record<string, MentionedItem> = {};
+      for (const item of set.items) search_results[item.menu_item_key] = toMentionedItem(item);
       // Spreading the parsed args logs only the filters the model actually sent (absent optionals
       // are not keys), so a bare browse stays a bare line. `results` is the other half of the
       // story: a filter combination that matched nothing is what sends the agent round the loop.
       return {
         content: JSON.stringify(set.items),
+        search_results,
         meta: { ...parsed.data, results: set.items.length },
       };
     }
@@ -110,6 +118,11 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
   // without a bundled reply leaves them unset and `lww` keeps the normalized (cleared) defaults.
   let reply: string | undefined;
   let reply_language: LangCode | undefined;
+  // Accumulated across every `search_menu` call in this batch, seeded from the turn's existing
+  // `search_results` so a later agent step keeps what an earlier step already found. Left
+  // `undefined` when this batch has no search call, so the returned patch omits the key entirely
+  // and `lww` leaves the channel (this turn's accumulation so far, or the normalized default) alone.
+  let search_results: Record<string, MentionedItem> | undefined;
   const toolMsgs: AgentMessage[] = [];
 
   for (const call of calls) {
@@ -119,6 +132,10 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
     if (res.output !== undefined) output = res.output;
     if (res.reply !== undefined) reply = res.reply;
     if (res.reply_language !== undefined) reply_language = res.reply_language;
+    // Later calls win on a key collision — the fresher read.
+    if (res.search_results !== undefined) {
+      search_results = { ...(search_results ?? s.search_results), ...res.search_results };
+    }
 
     const meta = {
       tool: call.name,
@@ -139,5 +156,6 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
     output,
     ...(reply !== undefined ? { reply } : {}),
     ...(reply_language !== undefined ? { reply_language } : {}),
+    ...(search_results !== undefined ? { search_results } : {}),
   };
 }

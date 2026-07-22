@@ -64,6 +64,7 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
       reply_language: undefined,
       agent_messages: [],
       agent_steps: 0,
+      search_results: {},
       token_usage: ZERO_TURN_USAGE,
       failure_reason: undefined,
     })))

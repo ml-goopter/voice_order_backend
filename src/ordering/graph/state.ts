@@ -6,6 +6,7 @@ import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import type { CartView, HistoryTurn } from '../../contracts/cart-view.js';
 import { DEFAULT_INTENT } from '../../contracts/intent.js';
 import type { Intent } from '../../contracts/intent.js';
+import type { MentionedItem } from '../../contracts/mentioned-item.js';
 import { LIMITS } from '../../config/constants.js';
 
 /** last-write-wins channel with a default, so it can be read before it is written. */
@@ -75,6 +76,12 @@ export const OrderState = Annotation.Root({
   agent_messages: lww<AgentMessage[]>(() => []),
   // Count of `agent` LLM turns this turn; guards `LIMITS.maxAgentSteps`. Cleared by `normalize`.
   agent_steps: lww<number>(() => 0),
+  // Every item this turn's `search_menu` calls returned, keyed by `menu_item_key`, last write
+  // wins on a collision (the fresher read). Stores the projection (`MentionedItem`), not the full
+  // `CandidateItem` — the checkpointer persists this every turn, and the modifier list a mentioned
+  // item never needs would bloat it for nothing. Turn-scoped: cleared by `normalize`, so a key from
+  // an earlier turn's search can never be treated as "the agent looked this up just now".
+  search_results: lww<Record<string, MentionedItem>>(() => ({})),
   // Token usage accumulated across this turn's agent `chat` calls (read-modify-write in the `agent`
   // node, like `agent_steps`). OrderGraph reads it after invoke to emit the `llm.turn_usage` rollup.
   // Turn-scoped: cleared by `normalize`.

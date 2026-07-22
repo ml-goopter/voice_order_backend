@@ -4,6 +4,7 @@ import { TOOL_NAMES } from './tool-specs.js';
 import type { OrderStateType } from '../graph/state.js';
 import type { AgentMessage, ToolCall } from '../../llm/llm-provider.js';
 import type { MenuService } from '../../menu/menu-service.js';
+import type { CandidateItem } from '../../menu/menu-types.js';
 
 // runTools only reaches MenuService on a `search_menu` call; every case here drives `propose_cart`,
 // so a bare stub that would throw if touched is enough (and proves search is not on this path).
@@ -21,8 +22,43 @@ function stateWith(args: unknown): OrderStateType {
     output: null,
     reply: null,
     reply_language: undefined,
+    search_results: {},
     agent_messages: [assistant],
   } as unknown as OrderStateType;
+}
+
+let searchCallId = 0;
+const searchCall = (args: unknown): ToolCall => ({ id: `s${searchCallId++}`, name: TOOL_NAMES.search, arguments: args });
+
+/** A minimal in-progress turn state whose last message is a batch of `search_menu` calls. */
+function stateWithSearches(calls: ToolCall[]): OrderStateType {
+  const assistant: AgentMessage = { role: 'assistant', tool_calls: calls };
+  return {
+    request_id: 'req_1',
+    cart_id: 'cart_1',
+    pos_config_id: 1,
+    output: null,
+    reply: null,
+    reply_language: undefined,
+    search_results: {},
+    agent_messages: [assistant],
+  } as unknown as OrderStateType;
+}
+
+const candidate = (key: string, name: string): CandidateItem => ({
+  menu_item_key: key,
+  product_tmpl_id: 1,
+  name,
+  base_price_cents: 500,
+  available_modifiers: [],
+});
+
+/** A `MenuService` stub whose `searchMenu` returns one scripted item set per call, in order. */
+function menuReturning(...sets: CandidateItem[][]): MenuService {
+  let i = 0;
+  return {
+    searchMenu: async () => ({ items: sets[i++] ?? [] }),
+  } as unknown as MenuService;
 }
 
 const OPS = [{ action: 'add_item', menu_item_key: 'latte', quantity: 2, modifiers: [] }];
@@ -69,5 +105,31 @@ describe('runTools — bundled propose_cart reply (approach B)', () => {
     const toolMsg = patch.agent_messages?.at(-1);
     expect(toolMsg?.role).toBe('tool');
     expect((toolMsg as { content: string }).content).toContain('at least one operation');
+  });
+});
+
+describe('runTools — search_results accumulation', () => {
+  it('accumulates two search_menu calls in one batch into the map', async () => {
+    const stub = menuReturning([candidate('burger', 'Burger')], [candidate('coke', 'Coke')]);
+    const state = stateWithSearches([searchCall({ query: 'burger' }), searchCall({ query: 'coke' })]);
+
+    const patch = await runTools(stub, state);
+
+    expect(Object.keys(patch.search_results ?? {}).sort()).toEqual(['burger', 'coke']);
+    expect(patch.search_results?.burger).toEqual({
+      menu_item_key: 'burger',
+      product_tmpl_id: 1,
+      name: 'Burger',
+      base_price_cents: 500,
+    });
+  });
+
+  it('keeps the later call\'s item on a menu_item_key collision', async () => {
+    const stub = menuReturning([candidate('x', 'First')], [candidate('x', 'Second')]);
+    const state = stateWithSearches([searchCall({ query: 'a' }), searchCall({ query: 'b' })]);
+
+    const patch = await runTools(stub, state);
+
+    expect(patch.search_results?.x?.name).toBe('Second');
   });
 });
