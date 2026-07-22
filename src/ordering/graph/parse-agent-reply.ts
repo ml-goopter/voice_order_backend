@@ -1,10 +1,15 @@
 import type { LangCode } from '../../shared/types.js';
 
 /** What the agent said this turn. IDENTICAL in both terminals: the standalone spoken reply and the
- *  fields bundled into `propose_cart`. `reply` is null when the agent said nothing usable. */
+ *  fields bundled into `propose_cart`. `reply` is null when the agent said nothing usable —
+ *  `mentioned_items` is then always empty, since items without a reply have nothing to accompany. */
 export interface AgentReply {
   reply: string | null;
   language?: LangCode;
+  /** Raw `menu_item_key`s the agent declared its `reply` named, in declared order. Verified
+   *  against this turn's search results elsewhere (`resolveMentionedItems`) — this is just the
+   *  shape-level parse. */
+  mentioned_items: string[];
 }
 
 /** ISO-639-1/2 primary subtag, optional region (`en`, `zh`, `yue`, `pt-BR`). */
@@ -20,6 +25,13 @@ function normalizeLangCode(raw: unknown): LangCode | undefined {
   return LANG_RE.test(lang) ? (lang.toLowerCase() as LangCode) : undefined;
 }
 
+/** Degrade a declared `mentioned_items` value to `string[]`: non-array → `[]`; non-string or
+ *  blank entries dropped rather than rejecting the whole list over one bad entry. */
+function parseMentionedItemKeys(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+}
+
 /**
  * Parse the reply fields off a plain object — `propose_cart` arguments, or the parsed spoken JSON
  * (see `parseSpokenReply`). The single place the per-field degrade rules live, so the two callers
@@ -29,10 +41,11 @@ function normalizeLangCode(raw: unknown): LangCode | undefined {
  */
 export function parseAgentReply(obj: Record<string, unknown>): AgentReply {
   const reply = typeof obj.reply === 'string' && obj.reply.trim() ? obj.reply : null;
-  if (reply === null) return { reply: null };
+  if (reply === null) return { reply: null, mentioned_items: [] };
   // An off-format code ("Chinese") degrades to no language, not garbage forwarded to Cartesia.
   const language = normalizeLangCode(obj.language);
-  return { reply, ...(language !== undefined ? { language } : {}) };
+  const mentioned_items = parseMentionedItemKeys(obj.mentioned_items);
+  return { reply, ...(language !== undefined ? { language } : {}), mentioned_items };
 }
 
 /**
@@ -47,7 +60,7 @@ export function parseAgentReply(obj: Record<string, unknown>): AgentReply {
  */
 export function parseSpokenReply(raw: string | undefined): AgentReply {
   let text = raw?.trim();
-  if (!text) return { reply: null };
+  if (!text) return { reply: null, mentioned_items: [] };
 
   // Tolerate a ```json ... ``` fence even though the prompt forbids it.
   const fence = text.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
@@ -64,10 +77,12 @@ export function parseSpokenReply(raw: string | undefined): AgentReply {
     try {
       obj = JSON.parse(text.slice(open, close + 1));
     } catch {
-      return { reply: text }; // Not JSON after all (e.g. truncated) — speak it rather than drop it.
+      // Not JSON after all (e.g. truncated) — speak it rather than drop it. No JSON parsed means
+      // no declared items either.
+      return { reply: text, mentioned_items: [] };
     }
     // It parsed, so the raw text IS a JSON blob and is never speakable: `reply` or nothing.
     return parseAgentReply(obj);
   }
-  return { reply: text };
+  return { reply: text, mentioned_items: [] };
 }

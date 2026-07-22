@@ -82,6 +82,11 @@ export const OrderState = Annotation.Root({
   // item never needs would bloat it for nothing. Turn-scoped: cleared by `normalize`, so a key from
   // an earlier turn's search can never be treated as "the agent looked this up just now".
   search_results: lww<Record<string, MentionedItem>>(() => ({})),
+  // The verified items for this turn's reply: the agent's declared `menu_item_key`s resolved
+  // against `search_results` (see `resolveMentionedItems`). Written by whichever terminal ended
+  // the turn with a reply; empty when the agent named nothing or nothing it named resolved.
+  // Turn-scoped: cleared by `normalize`, same reasoning as `search_results`.
+  mentioned_items: lww<MentionedItem[]>(() => []),
   // Token usage accumulated across this turn's agent `chat` calls (read-modify-write in the `agent`
   // node, like `agent_steps`). OrderGraph reads it after invoke to emit the `llm.turn_usage` rollup.
   // Turn-scoped: cleared by `normalize`.

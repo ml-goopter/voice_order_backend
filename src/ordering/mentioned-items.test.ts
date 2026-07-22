@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { toMentionedItem } from './mentioned-items.js';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { toMentionedItem, resolveMentionedItems } from './mentioned-items.js';
 import type { CandidateItem } from '../menu/menu-types.js';
+import type { MentionedItem } from '../contracts/mentioned-item.js';
+import { logger } from '../config/logger.js';
+import { LIMITS } from '../config/constants.js';
 
 const candidate = (over: Partial<CandidateItem> = {}): CandidateItem => ({
   menu_item_key: 'chicken_burger',
@@ -37,5 +40,56 @@ describe('toMentionedItem', () => {
       base_price_cents: 1000,
       popularity: 'top',
     });
+  });
+});
+
+const item = (menu_item_key: string): MentionedItem => ({
+  menu_item_key,
+  product_tmpl_id: 1,
+  name: menu_item_key,
+  base_price_cents: 100,
+});
+
+const ctx = { request_id: 'req_1', cart_id: 'cart_1' };
+
+describe('resolveMentionedItems', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('returns nothing for empty input', () => {
+    expect(resolveMentionedItems([], {}, ctx)).toEqual([]);
+  });
+
+  it('dedupes while preserving first-mention order', () => {
+    const known = { burger: item('burger'), coke: item('coke') };
+
+    const result = resolveMentionedItems(['coke', 'burger', 'coke'], known, ctx);
+
+    expect(result).toEqual([item('coke'), item('burger')]);
+  });
+
+  it('drops a key absent from the known map and warns once per dropped key', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const known = { burger: item('burger') };
+
+    const result = resolveMentionedItems(['burger', 'ghost'], known, ctx);
+
+    expect(result).toEqual([item('burger')]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('order.mentioned_item_unresolved', {
+      key: 'ghost',
+      request_id: 'req_1',
+      cart_id: 'cart_1',
+    });
+  });
+
+  it('caps the result at LIMITS.maxMentionedItems', () => {
+    const keys = Array.from({ length: LIMITS.maxMentionedItems + 5 }, (_, i) => `item_${i}`);
+    const known: Record<string, MentionedItem> = {};
+    for (const key of keys) known[key] = item(key);
+
+    const result = resolveMentionedItems(keys, known, ctx);
+
+    expect(result).toHaveLength(LIMITS.maxMentionedItems);
+    expect(result).toEqual(keys.slice(0, LIMITS.maxMentionedItems).map(item));
   });
 });

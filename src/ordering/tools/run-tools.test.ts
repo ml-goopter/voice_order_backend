@@ -162,3 +162,51 @@ describe('runTools — search_results accumulation', () => {
     expect('search_results' in patch).toBe(false);
   });
 });
+
+describe('runTools — mentioned_items resolution (propose_cart bundled reply)', () => {
+  it('resolves [known, unknown, known] to exactly one item, deduped', async () => {
+    const known = { burger: toMentionedItem(candidate('burger', 'Burger')) };
+
+    const patch = await runTools(
+      menu,
+      stateWith({ operations: OPS, reply: 'Here you go.', mentioned_items: ['burger', 'ghost', 'burger'] }, known),
+    );
+
+    expect(patch.output?.operations).toHaveLength(1);
+    expect(patch.mentioned_items).toEqual([known.burger]);
+  });
+
+  it('resolves nothing when propose_cart names keys but bundles no reply', async () => {
+    const known = { burger: toMentionedItem(candidate('burger', 'Burger')) };
+
+    const patch = await runTools(menu, stateWith({ operations: OPS, mentioned_items: ['burger'] }, known));
+
+    expect(patch.output?.operations).toHaveLength(1);
+    expect(patch.mentioned_items).toBeUndefined();
+  });
+
+  it('still commits its operations when the reply names a key that was never searched', async () => {
+    const patch = await runTools(
+      menu,
+      stateWith({ operations: OPS, reply: 'You might like the ghost item.', mentioned_items: ['ghost'] }),
+    );
+
+    expect(patch.output?.operations).toHaveLength(1);
+    expect(patch.mentioned_items).toEqual([]);
+  });
+
+  // A search and the terminal propose_cart can land in the SAME batch; resolution must see that
+  // batch's own search, not just what entered the turn (the turn's persisted search_results).
+  it("resolves against this batch's own search, not just what entered the turn", async () => {
+    const stub = menuReturning([candidate('burger', 'Burger')]);
+    const calls = [
+      searchCall({ query: 'burger' }),
+      call({ operations: OPS, reply: 'Added a burger.', mentioned_items: ['burger'] }),
+    ];
+
+    const patch = await runTools(stub, stateWithSearches(calls));
+
+    expect(patch.output?.operations).toHaveLength(1);
+    expect(patch.mentioned_items).toEqual([toMentionedItem(candidate('burger', 'Burger'))]);
+  });
+});

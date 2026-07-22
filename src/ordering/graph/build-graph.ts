@@ -15,6 +15,7 @@ import { buildAgentMessages } from '../../llm/agent-prompt-builder.js';
 import { TOOL_SPECS } from '../tools/tool-specs.js';
 import { runTools } from '../tools/run-tools.js';
 import { parseSpokenReply } from './parse-agent-reply.js';
+import { resolveMentionedItems } from '../mentioned-items.js';
 
 export interface GraphDeps {
   menu: MenuService;
@@ -65,6 +66,7 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
       agent_messages: [],
       agent_steps: 0,
       search_results: {},
+      mentioned_items: [],
       token_usage: ZERO_TURN_USAGE,
       failure_reason: undefined,
     })))
@@ -111,9 +113,20 @@ export function buildOrderGraph({ menu, llm, intentLlm, carts }: GraphDeps) {
       // degrades to being spoken as-is with no language; a blob with no usable reply is the same
       // degenerate terminal as empty text was.
       if (res.toolCalls.length === 0) {
-        const { reply, language } = parseSpokenReply(res.text);
-        if (reply === null) return { ...base, failure_reason: 'agent_no_terminal' };
-        return { ...base, reply, ...(language !== undefined ? { reply_language: language } : {}) };
+        const parsed = parseSpokenReply(res.text);
+        if (parsed.reply === null) return { ...base, failure_reason: 'agent_no_terminal' };
+        // Verify the declared keys against what THIS turn's searches actually returned — an
+        // unresolved key is dropped (warned), never looked up as a fallback.
+        const mentioned_items = resolveMentionedItems(parsed.mentioned_items, s.search_results, {
+          request_id: s.request_id,
+          cart_id: s.cart_id,
+        });
+        return {
+          ...base,
+          reply: parsed.reply,
+          ...(parsed.language !== undefined ? { reply_language: parsed.language } : {}),
+          mentioned_items,
+        };
       }
       return base;
     }))
