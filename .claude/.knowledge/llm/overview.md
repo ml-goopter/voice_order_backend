@@ -38,9 +38,13 @@ deterministic source of truth.
   `content` (a null content beside `tool_calls` is rejected by some compat endpoints).
 - `agent-prompt-builder.ts` builds the agent's seed transcript: a system message fixing the
   tool workflow (search first, then EITHER `propose_cart` OR a spoken reply emitted as strict
-  JSON `{language, reply}`, where `language` is the ISO-639-1 code of the language the agent
-  wrote the reply in — parsed by `ordering/graph/parse-agent-reply.ts` and forwarded to TTS)
-  and the operation contract (keys from search results, edits target `line_id`, only `add_item`
+  JSON `{language, reply, mentioned_items?}`, where `language` is the ISO-639-1 code of the language
+  the agent wrote the reply in — parsed by `ordering/graph/parse-agent-reply.ts` and forwarded to
+  TTS). A **MENTIONED ITEMS** section covers both terminals in one rule: list the `menu_item_key`s
+  the reply names, keys only (a name typed there is ignored — the client renders from the menu),
+  only from THIS turn's searches, omitted when nothing was named. It goes LAST in the spoken JSON
+  for the mirror of the `language`-first reason: it reports what was already written.
+  The system message also fixes the operation contract (keys from search results, edits target `line_id`, only `add_item`
   omits it), plus a user message with the utterance, `current_cart`, and `conversation_history`.
   A dedicated **LANGUAGE** section makes `customer_text` the sole authority on which language to
   reply in and requires matching the LATEST utterance (so a mid-conversation switch is honoured;

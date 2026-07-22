@@ -1,6 +1,6 @@
 # Mentioned items on `order.reply` (plan)
 
-Status: **proposed**. Scope: `src/ordering/`, `src/llm/agent-prompt-builder.ts`, `src/contracts/`,
+Status: **implemented**. Scope: `src/ordering/`, `src/llm/agent-prompt-builder.ts`, `src/contracts/`,
 `src/events/event-types.ts`, `src/realtime/`, `src/config/constants.ts`.
 
 ## 1. Problem
@@ -134,8 +134,10 @@ export function resolveMentionedItems(
 
 One place for the verification rules, shared by both terminals: dedupe preserving first mention;
 an unknown key is dropped with one `logger.warn('order.mentioned_item_unresolved', { key,
-request_id, cart_id })`; the result is capped at `LIMITS.maxMentionedItems` (new constant, `= 8`,
-matching `maxCandidatesToLlm`). Shape-level junk is already gone — `parseAgentReply` hands it a
+request_id, cart_id })`; the result is capped at `LIMITS.maxMentionedItems` (new constant, `= 8`)
+— a payload/card-count guard, NOT a function of `maxCandidatesToLlm`: a turn accumulates every
+search it ran, so the agent may legitimately have seen more items than one search returns.
+Shape-level junk is already gone — `parseAgentReply` hands it a
 `string[]`.
 
 ### 4.4 Turn state (`src/ordering/graph/state.ts`)
@@ -216,8 +218,8 @@ assertions untouched. A `git diff --stat` shows no test expectation edited.
 - `src/contracts/mentioned-item.ts` (new): `MentionedItem` + `PopularityTier` moved here.
 - `src/menu/menu-types.ts`: re-export `PopularityTier` from contracts (keeps every existing import
   working; `contracts` must not import from `menu`).
-- `src/config/constants.ts`: `LIMITS.maxMentionedItems = 8`, with the one-line why (matches
-  `maxCandidatesToLlm` — you cannot mention more items than a search returns).
+- `src/config/constants.ts`: `LIMITS.maxMentionedItems = 8`, with the one-line why (a payload /
+  card-count guard on what one reply ships to the client).
 
 **Verify:** `npm run typecheck` clean with zero import churn outside these three files.
 

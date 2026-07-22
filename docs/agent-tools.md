@@ -86,13 +86,18 @@ upstream router — determines the turn's outcome.
 | Turn ends by… | Replaces | Façade `GraphTurnResult` → event |
 |---|---|---|
 | calling `propose_cart(operations)` | `parse` output | `complete` → `order.operations_proposed` |
-| calling `propose_cart(operations, reply, language?)` | — | `complete` → `order.operations_proposed`, then `order.reply` (bundled confirmation) |
-| replying (no tool call) with JSON `{language, reply}` | parse's `needs_clarification` branch **and** the `suggest` node | `reply` → `order.reply` |
+| calling `propose_cart(operations, reply, language?, mentioned_items?)` | — | `complete` → `order.operations_proposed`, then `order.reply` (bundled confirmation) |
+| replying (no tool call) with JSON `{language, reply, mentioned_items?}` | parse's `needs_clarification` branch **and** the `suggest` node | `reply` → `order.reply` |
 
 `propose_cart` accepts optional `reply`/`language` args so one terminal call can commit **and**
 speak a short confirmation (e.g. "Added two lattes — anything else?"). When the turn has anything to
 commit it must end with `propose_cart` and put any words in its `reply`; a standalone spoken reply is
 only for turns with nothing to commit, so `propose_cart` is always the agent's last tool call.
+
+Both terminals also take an optional **`mentioned_items`** — the `menu_item_key`s the reply just
+named — under the same name, parsed by the same function (`graph/parse-agent-reply.ts`), so the two
+cannot drift. The agent declares keys only; the server echoes name/price from the search result it
+was shown, so the model can never mis-state a price it just read. See §11.
 
 (As implemented — see the revision note at the top. `ask_clarification`/`suggest_items` were
 not built; a spoken reply is the single merged terminal alongside `propose_cart`.)
@@ -138,6 +143,9 @@ slip is never a dropped reply:
 | plain text (no JSON) | text spoken as-is, in `TTS_LANGUAGE` |
 | malformed/truncated JSON | raw text spoken (better than dropping a reply) |
 | valid JSON, no usable `reply` | `agent_no_terminal` — a blob is never read aloud |
+| `{…,"mentioned_items":["k1","k2"]}` | keys resolved against this turn's searches; the verified items ride on `order.reply` |
+| `{…,"mentioned_items":"k1"}` or `[1,""]` | items degrade to none; the reply is spoken unchanged |
+| `mentioned_items` naming a never-searched key | that key is dropped with an `order.mentioned_item_unresolved` warn; the rest survive |
 
 The parser reads the **outermost `{…}` span** rather than requiring the message to be exactly the
 object, so prose wrapped around it (`Sure! {…}`) is dropped instead of being read aloud verbatim.
@@ -243,6 +251,11 @@ menu data leaks across turns.
   **never** written into cross-turn `history`.
 - **`candidates`** — stays per-turn (last-write-wins / accumulate within the turn),
   capped at `LIMITS.maxCandidatesToLlm`.
+- **`search_results`** — turn-scoped map (`menu_item_key` → `MentionedItem`) accumulating what
+  every `search_menu` call in the turn returned, across agent steps. It is what a declared
+  `mentioned_items` key is verified against, and it is **cleared by `normalize`** — a key is only
+  ever checked against searches the agent ran *this* turn (§11).
+- **`mentioned_items`** — turn-scoped, the verified `MentionedItem[]` for this turn's reply.
 - **Cross-turn `history`** — unchanged. `finalize` records per turn:
   - `customer_text` — always.
   - `clarification_question` — if the terminal was `ask_clarification`.
@@ -320,3 +333,39 @@ No `ORDERING_AGENT` flag: `build-graph` unconditionally builds the agent graph (
 Per repo convention, the implementing change must update
 `.claude/.knowledge/ordering/overview.md` and `llm/overview.md` (new node/tool set,
 `agent_messages` channel, provider `chat`) and append a `log.md` entry.
+
+---
+
+## 11. Mentioned items on `order.reply` (implemented)
+
+A reply that names menu items now carries them as structured data, so the client can render what
+was just spoken instead of only playing it. Plan: `docs/plans/mentioned-items.md`.
+
+**The agent declares keys; the server echoes the data.** Both terminals take an optional
+`mentioned_items: string[]` of `menu_item_key`s, in the order the reply names them — never names,
+never prices. Each key is resolved to a `MentionedItem` (`contracts/mentioned-item.ts`:
+`menu_item_key`, `product_tmpl_id`, `name`, `base_price_cents`, optional `popularity`) echoed from
+the search result the agent was shown. `available_modifiers` is deliberately not carried: a spoken
+suggestion is not a configurator.
+
+**"Exists" means "the agent actually retrieved it this turn."** `resolveMentionedItems`
+(`ordering/mentioned-items.ts`) checks each key against the turn's accumulated `search_results` and
+**never falls back to a menu lookup**. A key the agent invented, or recalled from an earlier turn
+without re-searching (which the prompt's CONTEXT RULES forbid), is exactly the hallucination the
+check exists to catch — a lookup would launder it into a verified item. An unresolved key is
+dropped with an `order.mentioned_item_unresolved` warn; it is never a tool error, so a
+`propose_cart` naming a bad key still commits its operations. The turn degrades to speech with no
+cards, which is the pre-feature behavior.
+
+**One shape, one parser.** `parseAgentReply(obj)` holds the `reply`/`language`/`mentioned_items`
+degrade rules for both terminals; `parseSpokenReply(text)` adds only the text unwrapping the
+standalone terminal needs. Items are forced empty when there is no usable `reply` — they exist to
+accompany speech.
+
+**Transport.** `mentioned_items` is optional on the `OrderReply` event and on the outbound
+`order.reply` WS frame, so an existing client is unaffected. TTS never sees it. Capped at
+`LIMITS.maxMentionedItems` (8) as a payload/card-count guard — note a turn accumulates every search
+it ran, so the agent may legitimately have seen far more items than one search returns.
+
+**Not recorded to history.** `HistoryTurn` is unchanged: cross-turn history stays compact, and the
+"re-search before you reuse a key" rule stays true.
