@@ -24,6 +24,7 @@ describe('toMentionedItem', () => {
     expect(result).toEqual({
       menu_item_key: 'chicken_burger',
       product_tmpl_id: 10,
+      name: 'Chicken Burger',
       names: { en_US: 'Chicken Burger' },
       base_price_cents: 1000,
     });
@@ -36,12 +37,13 @@ describe('toMentionedItem', () => {
     expect(toMentionedItem(candidate({ names })).names).toEqual(names);
   });
 
-  // `names` is `{}` for an item the menu carries no translation for. The client must always have
-  // something to render, so fall back to the candidate's resolved display name.
-  it('falls back to the display name when the menu carries no translations', () => {
-    expect(toMentionedItem(candidate({ names: {}, name: 'Chicken Burger' })).names).toEqual({
-      en_US: 'Chicken Burger',
-    });
+  // `names` is `{}` for an item the menu carries no translation for. `name` is the fallback, so the
+  // map is left off entirely rather than shipped empty.
+  it('omits names when the menu carries no translations, leaving name as the fallback', () => {
+    const result = toMentionedItem(candidate({ names: {}, name: 'Chicken Burger' }));
+
+    expect('names' in result).toBe(false);
+    expect(result.name).toBe('Chicken Burger');
   });
 
   it('carries popularity when the candidate has one', () => {
@@ -50,6 +52,7 @@ describe('toMentionedItem', () => {
     expect(result).toEqual({
       menu_item_key: 'chicken_burger',
       product_tmpl_id: 10,
+      name: 'Chicken Burger',
       names: { en_US: 'Chicken Burger' },
       base_price_cents: 1000,
       popularity: 'top',
@@ -60,7 +63,7 @@ describe('toMentionedItem', () => {
 const item = (menu_item_key: string): MentionedItem => ({
   menu_item_key,
   product_tmpl_id: 1,
-  names: { en_US: menu_item_key },
+  name: menu_item_key,
   base_price_cents: 100,
 });
 

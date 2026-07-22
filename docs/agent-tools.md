@@ -345,14 +345,17 @@ was just spoken instead of only playing it. Plan: `docs/plans/mentioned-items.md
 **The agent declares keys; the server echoes the data.** Both terminals take an optional
 `mentioned_items: string[]` of `menu_item_key`s, in the order the reply names them — never names,
 never prices. Each key is resolved to a `MentionedItem` (`contracts/mentioned-item.ts`:
-`menu_item_key`, `product_tmpl_id`, `names`, `base_price_cents`, optional `popularity`) echoed from
+`menu_item_key`, `product_tmpl_id`, `name`, optional `names`, `base_price_cents`, optional
+`popularity`) echoed from
 the search result the agent was shown. `available_modifiers` is deliberately not carried: a spoken
 suggestion is not a configurator.
 
-`names` is the item's FULL translation map (`{ en_US: "Chicken Burger", zh_CN: "鸡肉汉堡" }`), not a
-single display string — the client renders in its own locale, so picking one for it would be the
-backend guessing. It is never empty: an item the menu carries no translation for still gets a single
-entry built from its resolved display name. Note the keys are Odoo res.lang codes while
+Names come in **both** shapes on purpose. `name` is the single en_US-first display string and is
+always present — a client that wants no locale logic reads only that, and it is the fallback for an
+item the menu holds no translations for. `names` is the FULL translation map
+(`{ en_US: "Chicken Burger", zh_CN: "鸡肉汉堡" }`) so a client CAN render its own locale rather than
+the one the backend picked; it is omitted entirely when the menu carries none, since an empty map is
+just a second way of saying "use `name`". The map's keys are Odoo res.lang codes while
 `OrderReply.language` is ISO-639-1, so matching the reply's language to a name is a PREFIX match
 (`zh` → `zh_CN`), not equality — and the reply's language is the language the agent SPOKE in, which
 need not be one the menu is translated into.

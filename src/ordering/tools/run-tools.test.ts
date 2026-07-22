@@ -127,7 +127,7 @@ describe('runTools — search_results accumulation', () => {
     expect(patch.search_results?.burger).toEqual({
       menu_item_key: 'burger',
       product_tmpl_id: 1,
-      names: { en_US: 'Burger' },
+      name: 'Burger',
       base_price_cents: 500,
     });
   });
@@ -138,7 +138,7 @@ describe('runTools — search_results accumulation', () => {
 
     const patch = await runTools(stub, state);
 
-    expect(patch.search_results?.x?.names).toEqual({ en_US: 'Second' });
+    expect(patch.search_results?.x?.name).toBe('Second');
   });
 
   // The multi-item flow: one search per item across several agent steps. A step that drops what

@@ -56,7 +56,8 @@ New neutral contract, `src/contracts/mentioned-item.ts`:
 export interface MentionedItem {
   menu_item_key: string;
   product_tmpl_id: ProductTmplId;      // the client's handle for images / item detail from Odoo
-  names: Record<LangCode, string>;     // every translation the menu holds; never empty
+  name: string;                        // en_US-first display name; always present, the fallback
+  names?: Record<LangCode, string>;    // every translation the menu holds; omitted when it has none
   base_price_cents: Cents;             // per unit, before modifiers
   popularity?: PopularityTier;         // only present on popularity-sorted searches
 }

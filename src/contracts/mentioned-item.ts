@@ -18,12 +18,14 @@ export type PopularityTier = 'top' | 'popular';
 export interface MentionedItem {
   menu_item_key: string;
   product_tmpl_id: ProductTmplId; // the client's handle for images / item detail from Odoo
-  /** Every translation the menu carries, by Odoo res.lang code (`{ en_US: "Chicken Burger" }`) —
-   *  the client picks the locale it renders in, rather than being handed one the backend chose.
-   *  NEVER empty: an item with no translation data still gets a single entry, so there is always
-   *  something to display. Note the keys are res.lang codes, not the ISO-639-1 code on
-   *  `OrderReply.language` — matching one to the other is a prefix match, not equality. */
-  names: Record<LangCode, string>;
+  /** Single display name (en_US-first). ALWAYS present — the guaranteed fallback, so a client that
+   *  wants no locale logic, or an item the menu has no translations for, still renders something. */
+  name: string;
+  /** Every translation the menu carries, by Odoo res.lang code (`{ en_US: "Chicken Burger" }`), so
+   *  the client can render its own locale rather than the one the backend picked. Omitted when the
+   *  menu holds none — fall back to `name`. The keys are res.lang codes, NOT the ISO-639-1 code on
+   *  `OrderReply.language`: matching one to the other is a prefix match, not equality. */
+  names?: Record<LangCode, string>;
   base_price_cents: Cents; // per unit, before modifiers
   popularity?: PopularityTier; // only present on popularity-sorted searches
 }
