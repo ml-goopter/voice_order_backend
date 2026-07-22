@@ -2,6 +2,7 @@ import type { EventBus } from '../events/event-bus.js';
 import type { SttFinalTranscriptReceived } from '../events/event-types.js';
 import type { LangCode } from '../shared/types.js';
 import type { OrderProposal } from '../contracts/proposal.js';
+import type { MentionedItem } from '../contracts/mentioned-item.js';
 import type { GraphTurnResult } from './order-graph.js';
 import { OrderGraph } from './order-graph.js';
 import { CartTurnQueue } from './cart-turn-queue.js';
@@ -76,7 +77,7 @@ export class OrderUnderstandingService {
         // The agent ended by speaking to the customer (a clarifying question or a recommendation).
         // Fire-and-forget: emit the reply and end the turn. The customer's answer arrives as the
         // next transcript; the reply is already recorded to history so the next turn resolves it.
-        this.speak(e, result.reply, result.language);
+        this.speak(e, result.reply, result.language, result.mentioned_items);
         return;
       }
       case 'complete':
@@ -84,7 +85,7 @@ export class OrderUnderstandingService {
         // agent bundled a confirmation into `propose_cart` (approach B), speak it too. Both are
         // fire-and-forget — a confirmation may race a partial cart rejection (Risk 1, out of scope).
         this.propose(e, result);
-        if (result.reply !== undefined) this.speak(e, result.reply, result.language);
+        if (result.reply !== undefined) this.speak(e, result.reply, result.language, result.mentioned_items);
         return;
     }
   }
@@ -93,14 +94,21 @@ export class OrderUnderstandingService {
    *  reply, so it is the sole authority on its language; STT's detected language is not consulted at
    *  all (unreliable — see docs/text-to-speech.md). Falls back to `TTS_LANGUAGE` when the agent
    *  declared none, so TTS always has a language to speak — defaulting here is what keeps that knob
-   *  reachable. Shared by the standalone `reply` outcome and the bundled `complete` confirmation. */
-  private speak(e: SttFinalTranscriptReceived, reply: string, language: LangCode | undefined): void {
+   *  reachable. Shared by the standalone `reply` outcome and the bundled `complete` confirmation, so
+   *  both paths get identical `mentioned_items` treatment: omitted when empty (exactOptionalPropertyTypes). */
+  private speak(
+    e: SttFinalTranscriptReceived,
+    reply: string,
+    language: LangCode | undefined,
+    mentioned_items: MentionedItem[] | undefined,
+  ): void {
     this.bus.emit('order.reply', {
       cart_id: e.cart_id,
       session_id: e.session_id,
       request_id: e.request_id,
       reply,
       language: language ?? config.ttsLanguage,
+      ...(mentioned_items !== undefined && mentioned_items.length > 0 ? { mentioned_items } : {}),
     });
   }
 

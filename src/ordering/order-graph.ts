@@ -4,6 +4,7 @@ import type { LlmProvider } from '../llm/llm-provider.js';
 import type { CartCache } from '../redis/cart-cache.js';
 import type { OrderGraphOutput } from './schemas/order-graph-output.schema.js';
 import type { Intent } from '../contracts/intent.js';
+import type { MentionedItem } from '../contracts/mentioned-item.js';
 import { buildOrderGraph } from './graph/build-graph.js';
 import { cacheHitRate, type TurnUsage } from '../llm/usage.js';
 import { logger } from '../config/logger.js';
@@ -27,8 +28,15 @@ export interface OrderGraphParams {
  * `agent_step_limit`), which the façade surfaces as a session failure.
  */
 export type GraphTurnResult =
-  | { status: 'complete'; output: OrderGraphOutput; base_version: number; reply?: string; language?: LangCode }
-  | { status: 'reply'; reply: string; language?: LangCode }
+  | {
+      status: 'complete';
+      output: OrderGraphOutput;
+      base_version: number;
+      reply?: string;
+      language?: LangCode;
+      mentioned_items?: MentionedItem[];
+    }
+  | { status: 'reply'; reply: string; language?: LangCode; mentioned_items?: MentionedItem[] }
   | { status: 'junk' }
   | { status: 'fail'; reason: string };
 
@@ -41,6 +49,10 @@ type InvokeReturn = {
    *  channel, not the STT `language` input — so "absent" really means the agent stayed silent on
    *  it, and the caller's fallback to the STT code actually fires. */
   reply_language?: LangCode;
+  /** The verified items for this turn's reply (empty when it named nothing verifiable). Always
+   *  present on the graph's output state — turned into an optional, non-empty-only field when
+   *  mapped to a `GraphTurnResult`. */
+  mentioned_items: MentionedItem[];
   failure_reason: string | undefined;
   token_usage: TurnUsage;
 };
@@ -124,11 +136,17 @@ export class OrderGraph {
         base_version: out.base_version,
         ...(out.reply !== null ? { reply: out.reply } : {}),
         ...(out.reply !== null && lang !== undefined ? { language: lang } : {}),
+        ...(out.reply !== null && out.mentioned_items.length > 0 ? { mentioned_items: out.mentioned_items } : {}),
       };
     }
     if (out.reply !== null) {
       const lang = out.reply_language;
-      return { status: 'reply', reply: out.reply, ...(lang !== undefined ? { language: lang } : {}) };
+      return {
+        status: 'reply',
+        reply: out.reply,
+        ...(lang !== undefined ? { language: lang } : {}),
+        ...(out.mentioned_items.length > 0 ? { mentioned_items: out.mentioned_items } : {}),
+      };
     }
     // Defensive: the agent finished with neither a terminal nor a recorded failure reason.
     return { status: 'fail', reason: 'agent_no_terminal' };

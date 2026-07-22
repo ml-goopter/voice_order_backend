@@ -113,6 +113,45 @@ describe('RealtimeGateway — order.reply', () => {
     expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, '¿Una Coca-Cola?', 'es');
   });
 
+  it('relays mentioned_items on the outbound frame when present, without changing what TTS sees', () => {
+    const { bus, gw, tts } = makeGateway();
+    const a = conn('s1', 'cart_1');
+    gw.onConnect(a);
+    const mentioned_items = [{ menu_item_key: 'coke', product_tmpl_id: 12, name: 'Coke', base_price_cents: 300 }];
+    bus.emit('order.reply', {
+      cart_id: 'cart_1',
+      session_id: 's1',
+      request_id: 'r1',
+      reply: 'How about a Coke?',
+      language: 'en',
+      mentioned_items,
+    });
+    expect(a.send).toHaveBeenCalledWith({
+      type: 'order.reply',
+      cart_id: 'cart_1',
+      request_id: 'r1',
+      reply: 'How about a Coke?',
+      mentioned_items,
+    });
+    // TTS keeps seeing only the reply text and language, never the items.
+    expect(tts.speak).toHaveBeenCalledWith(a, { session_id: 's1', request_id: 'r1' }, 'How about a Coke?', 'en');
+  });
+
+  it('omits mentioned_items on the outbound frame when absent', () => {
+    const { bus, gw } = makeGateway();
+    const a = conn('s1', 'cart_1');
+    gw.onConnect(a);
+    bus.emit('order.reply', {
+      cart_id: 'cart_1',
+      session_id: 's1',
+      request_id: 'r1',
+      reply: 'How about a Coke?',
+      language: 'en',
+    });
+    const sent = a.send.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect('mentioned_items' in sent).toBe(false);
+  });
+
   it('is a no-op (no send, no TTS) when the session has no socket', () => {
     const { bus, tts } = makeGateway();
     expect(() =>
