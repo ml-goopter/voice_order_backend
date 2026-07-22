@@ -73,9 +73,20 @@ A browser cannot send `X-Odoo-Database`, so a bare `<img>` needs the db resolved
 2. **nginx injects the header.** On a **dedicated** hostname per restaurant, add
    `proxy_set_header X-Odoo-Database jadegarden1;`. Never put this on the catch-all
    `server_name _` block — it pins all 7 databases to one and breaks the others.
-3. **Proxy through our backend.** The only option needing no Odoo/nginx change: fetch server-side
-   (where the header can be set) and stream the bytes. Also lets us return a real 404 for a
-   missing image instead of the placeholder.
+3. **Proxy through our backend.** ✅ **This is what we do** — the only option needing no Odoo/nginx
+   change. The backend serves `GET /web/image/...` on its own origin and forwards the request to
+   Odoo with the header attached (`src/odoo/odoo-image-client.ts`, routed in
+   `src/api/http-router.ts`). It is *transparent*: the client sends the same path it would send
+   Odoo, and the query string plus `Content-Type` / `ETag` / `Cache-Control` pass through both
+   ways, so `?unique=` behaves exactly as documented above.
+
+   ```html
+   <img src="{BACKEND}/web/image/product.template/42/image_512?unique=<token>">
+   ```
+
+   It does **not** return a real 404 for a missing image — the placeholder passes through like
+   any other body. Doing that needs an `ir_attachment` lookup; see
+   `docs/plans/menu-item-images.md` §6.
 
 For local browsing without any of the above, visit `/web/login?db=jadegarden1` once to pin the db
 to the session cookie; image URLs then work in that browser.

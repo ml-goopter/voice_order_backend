@@ -7,6 +7,24 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-22 — odoo/api: proxy Odoo item images so a browser can render them
+- **What:** new `odoo/odoo-image-client.ts` (`HttpOdooImageClient`) and a `GET /web/image/...`
+  route on the HTTP router. A **transparent** proxy: the client sends the exact path it would send
+  Odoo, we forward path + query and relay `content-type`/`etag`/`cache-control`, adding only the
+  `X-Odoo-Database` header. `createHttpRouter` now takes an `OdooImageClient` second argument.
+- **Why:** an `<img src>` cannot send `X-Odoo-Database`, and without it this multi-database host
+  (7 dbs, no `dbfilter`) refuses `/web/image` — so the frontend could not render menu photos at all.
+- **Where:** `src/odoo/odoo-image-client{,.test}.ts`, `src/api/http-router{,.test}.ts`,
+  `src/app.ts`, `src/realtime/websocket-server.test.ts` (router arity), plan in
+  `docs/plans/menu-item-images.md`.
+- **Notes:** no new env vars (reuses `ODOO_API_URL`/`ODOO_API_DATABASE`) and no bearer token —
+  `/web/image` is a public route. **An item with no image answers 200 with Odoo's generic
+  placeholder, never 404** (only 27/380 POS items have one); detecting absence needs an
+  `ir_attachment` lookup, deliberately deferred. Nothing yet supplies a `unique=` token, so images
+  are served `no-cache` until one is. Verified end-to-end against `jadegarden1`: bytes identical to
+  a direct fetch, 304 on `If-None-Match`, `?unique=` flips to `immutable`, blank
+  `ODOO_API_DATABASE` → 502 not a broken image.
+
 ## 2026-07-22 — docs: how Odoo stores and serves product images
 - **What:** documented item images in `docs/menu_restaurant_schema.md` — they are `ir_attachment`
   rows (`res_model='product.template'`, `res_field='image_1920'` + resized), with **metadata in the

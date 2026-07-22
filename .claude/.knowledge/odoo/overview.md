@@ -1,9 +1,9 @@
 ---
 type: Concept
-title: Odoo Cart API Client
-description: Inserts confirmed carts into the POS over goopter_cart_api's JSON-RPC route.
+title: Odoo HTTP Clients
+description: Inserts confirmed carts over goopter_cart_api's JSON-RPC route, and proxies item images.
 resource: src/odoo
-timestamp: 2026-07-16
+timestamp: 2026-07-22
 ---
 
 # Odoo Cart API Client
@@ -76,6 +76,32 @@ implementation"). So the client branches on **`body.error`, never on `res.ok`/`r
 confirmed that Odoo never accepted. `odoo-client.test.ts` pins this; it is the regression
 test for the whole integration.
 
+## The image proxy — a second, unrelated client
+`odoo-image-client.ts` (`HttpOdooImageClient`) shares the host and `OdooError` with the above and
+**nothing else**: plain `GET`, not JSON-RPC, against Odoo's public `/web/image` route. It exists
+because an `<img src>` cannot send `X-Odoo-Database`, and without it a multi-database host answers
+"No database is selected" (see § Database selection).
+
+- **Transparent by design.** The caller hands it the exact path it would send Odoo —
+  `/web/image/product.template/42/image_512?unique=…` — and path, query, `content-type`, `etag`
+  and `cache-control` all pass through untouched. Caching is therefore Odoo's answer, not ours:
+  without a `unique=` token Odoo says `no-cache, private`; with one, `immutable`. Nothing in this
+  service computes such a token yet.
+- **No bearer token.** `/web/image` is a public-auth route; the API key neither is required nor
+  unlocks anything. That is also why only `image_128`/`image_512` are usable — the larger fields
+  return a generic placeholder without a session.
+- **Scoped to `/web/image/` at both ends.** `createHttpRouter` matches the *normalized* path (so
+  `..` cannot walk out of the prefix) and the client re-checks the prefix before fetching: our
+  database header must never ride along to `/web/session` or an RPC route.
+- **A missing image is a 200, not a 404.** Odoo serves a generic placeholder for the ~93% of POS
+  items with no photo, indistinguishable over HTTP. Nothing may read a 200 here as "this item has
+  an image"; telling them apart needs an `ir_attachment` lookup (deferred —
+  `docs/plans/menu-item-images.md` §6).
+- Errors mirror the JSON-RPC client: transport failure, non-2xx, a non-`image/` content-type (what
+  the "No database is selected" HTML looks like), or a body over 5 MB all throw `OdooError`, which
+  the router answers as **502** — so a misconfigured `ODOO_API_DATABASE` is diagnosable instead of
+  rendering as a broken image.
+
 ## Dependencies
 - `config/env` (`ODOO_API_URL`, `ODOO_API_KEY` — **unrelated** to `ODOO_DATABASE_URL`,
   which is the Postgres/pgvector menu *read* path), `shared/errors` (`AppError`). Imports
@@ -84,6 +110,8 @@ test for the whole integration.
 
 ## Key files
 - `odoo-client.ts` — `OdooClient` interface (`insertCart`, `quote`), `HttpOdooClient`, `OdooError`.
+- `odoo-image-client.ts` — `OdooImageClient` interface (`fetchImage`), `HttpOdooImageClient`,
+  `IMAGE_PATH_PREFIX`. Consumed by `api/http-router`, not by `cart`.
 - `insert-cart-request.ts` — the wire types `InsertCartRequest`, `RequestLine` (mapper
   `toInsertCartRequest` lives in `cart/cart-to-insert-request.ts`).
 - `quote-request.ts` — the wire types `QuoteRequest` (reuses `RequestLine`), `QuoteResponse`,
