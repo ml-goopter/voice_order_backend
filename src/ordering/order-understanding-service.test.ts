@@ -703,7 +703,7 @@ describe('OrderUnderstandingService', () => {
 
       expect(replies).toHaveLength(1);
       expect(replies[0]?.mentioned_items).toEqual([
-        { menu_item_key: 'coke', product_tmpl_id: 12, name: 'Coke', base_price_cents: 300 },
+        { menu_item_key: 'coke', product_tmpl_id: 12, names: { en_US: 'Coke' }, base_price_cents: 300 },
       ]);
     });
 
@@ -719,7 +719,7 @@ describe('OrderUnderstandingService', () => {
 
       expect(replies).toHaveLength(1);
       expect(replies[0]?.mentioned_items).toEqual([
-        { menu_item_key: 'chicken_burger', product_tmpl_id: 10, name: 'Chicken Burger', base_price_cents: 1000 },
+        { menu_item_key: 'chicken_burger', product_tmpl_id: 10, names: { en_US: 'Chicken Burger' }, base_price_cents: 1000 },
       ]);
     });
 

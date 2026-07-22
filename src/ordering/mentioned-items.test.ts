@@ -18,16 +18,30 @@ const candidate = (over: Partial<CandidateItem> = {}): CandidateItem => ({
 });
 
 describe('toMentionedItem', () => {
-  it('keeps only the five contract fields, omitting popularity when the candidate has none', () => {
+  it('keeps only the contract fields, omitting popularity when the candidate has none', () => {
     const result = toMentionedItem(candidate());
 
     expect(result).toEqual({
       menu_item_key: 'chicken_burger',
       product_tmpl_id: 10,
-      name: 'Chicken Burger',
+      names: { en_US: 'Chicken Burger' },
       base_price_cents: 1000,
     });
     expect('popularity' in result).toBe(false);
+  });
+
+  it('carries every translation the menu holds, not just the display one', () => {
+    const names = { en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' };
+
+    expect(toMentionedItem(candidate({ names })).names).toEqual(names);
+  });
+
+  // `names` is `{}` for an item the menu carries no translation for. The client must always have
+  // something to render, so fall back to the candidate's resolved display name.
+  it('falls back to the display name when the menu carries no translations', () => {
+    expect(toMentionedItem(candidate({ names: {}, name: 'Chicken Burger' })).names).toEqual({
+      en_US: 'Chicken Burger',
+    });
   });
 
   it('carries popularity when the candidate has one', () => {
@@ -36,7 +50,7 @@ describe('toMentionedItem', () => {
     expect(result).toEqual({
       menu_item_key: 'chicken_burger',
       product_tmpl_id: 10,
-      name: 'Chicken Burger',
+      names: { en_US: 'Chicken Burger' },
       base_price_cents: 1000,
       popularity: 'top',
     });
@@ -46,7 +60,7 @@ describe('toMentionedItem', () => {
 const item = (menu_item_key: string): MentionedItem => ({
   menu_item_key,
   product_tmpl_id: 1,
-  name: menu_item_key,
+  names: { en_US: menu_item_key },
   base_price_cents: 100,
 });
 

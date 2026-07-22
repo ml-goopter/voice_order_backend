@@ -1,4 +1,4 @@
-import type { Cents, ProductTmplId } from '../shared/types.js';
+import type { Cents, LangCode, ProductTmplId } from '../shared/types.js';
 
 /**
  * How well an item sells, as a coarse band rather than a rank or a count. Deliberately
@@ -18,7 +18,12 @@ export type PopularityTier = 'top' | 'popular';
 export interface MentionedItem {
   menu_item_key: string;
   product_tmpl_id: ProductTmplId; // the client's handle for images / item detail from Odoo
-  name: string; // display name as searched (en_US-first)
+  /** Every translation the menu carries, by Odoo res.lang code (`{ en_US: "Chicken Burger" }`) —
+   *  the client picks the locale it renders in, rather than being handed one the backend chose.
+   *  NEVER empty: an item with no translation data still gets a single entry, so there is always
+   *  something to display. Note the keys are res.lang codes, not the ISO-639-1 code on
+   *  `OrderReply.language` — matching one to the other is a prefix match, not equality. */
+  names: Record<LangCode, string>;
   base_price_cents: Cents; // per unit, before modifiers
   popularity?: PopularityTier; // only present on popularity-sorted searches
 }

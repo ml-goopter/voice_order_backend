@@ -117,7 +117,7 @@ describe('RealtimeGateway — order.reply', () => {
     const { bus, gw, tts } = makeGateway();
     const a = conn('s1', 'cart_1');
     gw.onConnect(a);
-    const mentioned_items = [{ menu_item_key: 'coke', product_tmpl_id: 12, name: 'Coke', base_price_cents: 300 }];
+    const mentioned_items = [{ menu_item_key: 'coke', product_tmpl_id: 12, names: { en_US: 'Coke' }, base_price_cents: 300 }];
     bus.emit('order.reply', {
       cart_id: 'cart_1',
       session_id: 's1',

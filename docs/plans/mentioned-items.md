@@ -55,10 +55,10 @@ New neutral contract, `src/contracts/mentioned-item.ts`:
 /** A menu item the agent named in its spoken reply, echoed from the search result it was shown. */
 export interface MentionedItem {
   menu_item_key: string;
-  product_tmpl_id: ProductTmplId;   // the client's handle for images / item detail from Odoo
-  name: string;                     // display name as searched (en_US-first)
-  base_price_cents: Cents;          // per unit, before modifiers
-  popularity?: PopularityTier;      // only present on popularity-sorted searches
+  product_tmpl_id: ProductTmplId;      // the client's handle for images / item detail from Odoo
+  names: Record<LangCode, string>;     // every translation the menu holds; never empty
+  base_price_cents: Cents;             // per unit, before modifiers
+  popularity?: PopularityTier;         // only present on popularity-sorted searches
 }
 ```
 

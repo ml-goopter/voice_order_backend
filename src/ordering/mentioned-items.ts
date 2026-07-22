@@ -4,14 +4,16 @@ import type { CartId, RequestId } from '../shared/types.js';
 import { LIMITS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 
-/** Project a `search_menu` candidate down to the wire shape: echoed keys/price/name, dropping
- *  matcher internals (`names`, `score`, `matched_text`) and `available_modifiers` (a spoken
- *  suggestion is not a configurator). */
+/** Project a `search_menu` candidate down to the wire shape: echoed keys, price and the full
+ *  translation map, dropping matcher internals (`name`, `score`, `matched_text`) and
+ *  `available_modifiers` (a spoken suggestion is not a configurator). */
 export function toMentionedItem(c: CandidateItem): MentionedItem {
   return {
     menu_item_key: c.menu_item_key,
     product_tmpl_id: c.product_tmpl_id,
-    name: c.name,
+    // The menu's own map when it has one; otherwise a single entry built from the candidate's
+    // resolved display name, so the client is never handed an empty map with nothing to render.
+    names: c.names !== undefined && Object.keys(c.names).length > 0 ? c.names : { en_US: c.name },
     base_price_cents: c.base_price_cents,
     ...(c.popularity !== undefined ? { popularity: c.popularity } : {}),
   };
