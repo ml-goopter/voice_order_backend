@@ -47,12 +47,14 @@ upstream failure found mid-stream cannot become a 502 once headers are sent.
 GET /web/image/<model>/<id>/<field>[?unique=…]
 ```
 
+`GET` and `HEAD` only; `HEAD` answers identically minus the body.
+
 | Status | When |
 |---|---|
-| 200 | bytes, with `content-type` / `etag` / `cache-control` forwarded from Odoo |
-| 304 | request carried `if-none-match` and Odoo answered 304 |
-| 404 | path outside `/web/image/`, or a non-GET method (**not** "no image") |
-| 502 | Odoo unreachable, non-2xx, non-image body, or oversize |
+| 200 | bytes, with `content-type` / `etag` / `cache-control` forwarded from Odoo, plus `nosniff` and `default-src 'none'` |
+| 304 | request carried `if-none-match` and Odoo answered 304; carries the validator |
+| 404 | path outside `/web/image/` (including one that normalizes out, or carries an encoded separator), an unparseable target, or a method other than GET/HEAD (**not** "no image") |
+| 502 | Odoo unreachable, non-2xx, non-image body, an svg, or over 5 MB |
 | 500 | anything else |
 
 Unauthenticated, like the rest of the REST surface. No CORS header — `<img src>` needs none.
@@ -123,6 +125,12 @@ the `if-none-match` header, then relays the response. `OdooError` → 502 logged
    `?unique=deadbeef` flips `cache-control` from `no-cache, private` to
    `max-age=31536000, private, immutable`; `/web/session/authenticate` → 404; a blank
    `ODOO_API_DATABASE` raises `OdooError` (Odoo 404s), which the route answers as 502.
+
+6. **Adversarial review.** ✅ Ten findings fixed in a follow-up commit — normalized-path guard,
+   `nosniff`/CSP, svg refusal, read-time size cap, `new URL` crash guard, 304 validator, `HEAD`,
+   client-abort, case-insensitive `content-type`, strict `content-length`. Two reported findings
+   did not reproduce (unknown `product_tmpl_id` → 200 placeholder, not 502; `%2f` does not escape
+   on this nginx+Odoo stack) and were closed as defence-in-depth. See `log.md`.
 
 5. **Docs.** ✅ Route in the `src/api` table in `.claude/.knowledge/platform/overview.md`; an image
    section in `.claude/.knowledge/odoo/overview.md`; option 3 of

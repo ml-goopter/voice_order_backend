@@ -6,7 +6,7 @@ resource: src/odoo
 timestamp: 2026-07-22
 ---
 
-# Odoo Cart API Client
+# Odoo HTTP Clients
 
 ## Purpose
 The one place this service **writes** to Odoo. When a cart is confirmed, the Cart Module's
@@ -90,9 +90,23 @@ because an `<img src>` cannot send `X-Odoo-Database`, and without it a multi-dat
 - **No bearer token.** `/web/image` is a public-auth route; the API key neither is required nor
   unlocks anything. That is also why only `image_128`/`image_512` are usable — the larger fields
   return a generic placeholder without a session.
-- **Scoped to `/web/image/` at both ends.** `createHttpRouter` matches the *normalized* path (so
-  `..` cannot walk out of the prefix) and the client re-checks the prefix before fetching: our
-  database header must never ride along to `/web/session` or an RPC route.
+- **Scoped to `/web/image/` at both ends — on the NORMALIZED path.** `createHttpRouter` matches the
+  normalized path and the client re-resolves it against the base URL before fetching. Checking the
+  raw string is not enough and was the review's first finding: `fetch` resolves `..` itself, so
+  `/web/image/../../web/session/authenticate` passes a `startsWith` and then requests an RPC route
+  **with our database header attached**. Percent-encoded separators (`%2f`, `%5c`, `%2e`) are
+  refused outright rather than left for the far side to unquote, as is any target that resolves
+  off-host.
+- **We add the headers Odoo would have.** `X-Content-Type-Options: nosniff` and
+  `Content-Security-Policy: default-src 'none'` are set on every 200 (relaying only the cache
+  headers would strip Odoo's), and `image/svg+xml` is refused — an SVG is script-capable and we
+  serve it from our own origin.
+- **The size cap binds while reading**, not after: `arrayBuffer()` would allocate the whole body
+  and only then discover it is oversize, leaving `content-length` — which may be absent or a lie —
+  as the only real bound.
+- **HTTP details that are easy to get wrong, and were:** a 304 must carry its validator (else the
+  browser never refreshes freshness and revalidates forever); `HEAD` must answer as `GET`; the
+  upstream fetch is aborted when the client hangs up; `content-type` compares case-insensitively.
 - **A missing image is a 200, not a 404.** Odoo serves a generic placeholder for the ~93% of POS
   items with no photo, indistinguishable over HTTP. Nothing may read a 200 here as "this item has
   an image"; telling them apart needs an `ir_attachment` lookup (deferred —

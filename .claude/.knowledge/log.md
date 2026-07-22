@@ -7,6 +7,27 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-22 — odoo: harden the image proxy (adversarial review follow-up)
+- **What:** ten fixes to the route added the same day. The client's prefix guard now runs on the
+  **normalized** path (it ran on the raw string while `fetch` normalizes, so
+  `/web/image/../../web/session/authenticate` passed it and requested an RPC route **with our
+  database header**) and additionally rejects off-host targets and percent-encoded separators.
+  `X-Content-Type-Options`/`Content-Security-Policy` are now sent and `image/svg+xml` refused; the
+  size cap binds **while reading** instead of after `arrayBuffer()` allocated everything; `new
+  URL(req.url)` is guarded (`GET //` is a legal request-line but an invalid URL — the TypeError
+  escaped the request listener); a 304 carries its validator; `HEAD` answers as `GET`; the upstream
+  fetch aborts on client hang-up; `content-type` compares case-insensitively and `content-length`
+  parses strictly.
+- **Why:** an adversarial review of the previous commits, per CLAUDE.md's workflow. Each finding
+  was reproduced before being fixed, and two reported ones were **not** reproducible (an unknown
+  `product_tmpl_id` returns Odoo's placeholder at 200, not a 502; the `%2f` form does not escape on
+  this nginx+Odoo stack) — those were closed as defence-in-depth, not live holes.
+- **Where:** `src/odoo/odoo-image-client{,.test}.ts`, `src/api/http-router{,.test}.ts`.
+- **Notes:** the traversal test being replaced was vacuous — undici rewrites the URL before it
+  leaves the client, so it never exercised the router. Malformed and encoded targets are now sent
+  over a **raw socket**; `fetch` cannot express them. `pathOf` returning `''` on an unparseable
+  target fixes the same latent crash for the confirm/orders routes.
+
 ## 2026-07-22 — odoo/api: proxy Odoo item images so a browser can render them
 - **What:** new `odoo/odoo-image-client.ts` (`HttpOdooImageClient`) and a `GET /web/image/...`
   route on the HTTP router. A **transparent** proxy: the client sends the exact path it would send
