@@ -7,6 +7,22 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-22 — docs: how Odoo stores and serves product images
+- **What:** documented item images in `docs/menu_restaurant_schema.md` — they are `ir_attachment`
+  rows (`res_model='product.template'`, `res_field='image_1920'` + resized), with **metadata in the
+  DB and bytes on the filestore** (`db_datas` NULL; `store_fname` is sha1-addressed and deduped).
+  Serving is `GET /web/image/product.template/<id>/<field>` returning raw bytes (never
+  base64/JSON), plus the rules for anonymous `<img src>` access: only `image_128`/`image_512` are
+  public (the rest return a placeholder), the db must be resolved server-side, and
+  `?unique=<token>` is required for caching. Added an `ir_attachment` column listing.
+- **Why:** the frontend wants to render menu-item images; nothing in our backend touches images
+  today, so the access path and its constraints had to be established and written down.
+- **Where:** `docs/menu_restaurant_schema.md` (docs only — no code changed).
+- **Notes:** a bare `<img>` cannot reach Odoo as configured (7 databases, no `dbfilter`). Enabling
+  it needs one of: `dbfilter = ^%d$` in `odoo.conf`, an nginx `X-Odoo-Database` header on a
+  dedicated hostname, or a backend proxy. Image coverage is 27/380 POS items. Verified against
+  `jadegarden1` on 2026-07-22.
+
 ## 2026-07-17 — ordering: let a turn propose AND reply in one `propose_cart` (approach B)
 - **What:** `propose_cart` gains optional `reply`/`language` args. When present, the `tools` node
   sets `reply`/`reply_language` alongside `output`, `interpret()` widens `complete` to carry them,
