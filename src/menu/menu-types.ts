@@ -1,4 +1,9 @@
 import type { Cents, LangCode, ProductTmplId, PtavId } from '../shared/types.js';
+import type { PopularityTier } from '../contracts/mentioned-item.js';
+
+/** Moved to contracts so this shape does not drag a menu-module import across the boundary;
+ *  re-exported here so every existing importer keeps working unchanged. */
+export type { PopularityTier };
 
 /** A modifier option offered to the LLM alongside a candidate item (design §7/§8). */
 export interface CandidateModifier {
@@ -14,14 +19,6 @@ export interface CandidateModifier {
    */
   price_extra_cents: Cents;
 }
-
-/**
- * How well an item sells, as a coarse band rather than a rank or a count. Deliberately
- * imprecise: popularity rests on ~1 month of trade, so "#3, 47 sold" would be false
- * precision (and an odd thing for a restaurant to say aloud). Absent = unremarkable.
- * See docs/plans/agent-search-extension.md §5.4.
- */
-export type PopularityTier = 'top' | 'popular';
 
 /** A menu item the Candidate Matcher surfaced for a transcript chunk (design §7). */
 export interface CandidateItem {
