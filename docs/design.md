@@ -493,7 +493,7 @@ carts if losing them would be unacceptable.
 key:  cart:{cart_id}          # cart_id is globally unique; not namespaced by pos_config_id
 value: cart_id, pos_config_id, version,
        items: [ { line_id, product_tmpl_id, product_id?, name, quantity,
-                  modifiers: [ { ptav_id, name } ] } ],
+                  price_cents, modifiers: [ { ptav_id, name } ] } ],
        subtotal_cents, tax_cents, total_cents, last_updated
 ```
 
@@ -955,6 +955,8 @@ interface CartLine {
   name: string;              // display name captured at add time (en_US fallback)
   quantity: number;
   modifiers: CartModifier[];
+  price_cents: Cents;        // this line's EX-TAX subtotal: (base + Σ surcharge) × quantity.
+                             // POS-quote authoritative, local estimate as fallback. Tax is cart-level only.
 }
 
 interface Cart {
