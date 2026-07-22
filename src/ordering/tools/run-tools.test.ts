@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { runTools } from './run-tools.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import type { OrderStateType } from '../graph/state.js';
@@ -7,6 +7,7 @@ import type { MenuService } from '../../menu/menu-service.js';
 import type { CandidateItem } from '../../menu/menu-types.js';
 import type { MentionedItem } from '../../contracts/mentioned-item.js';
 import { toMentionedItem } from '../mentioned-items.js';
+import { logger } from '../../config/logger.js';
 
 // runTools only reaches MenuService on a `search_menu` call, so the propose-only cases below can
 // use a bare stub that would throw if touched (which proves search is not on that path). The
@@ -208,5 +209,18 @@ describe('runTools — mentioned_items resolution (propose_cart bundled reply)',
 
     expect(patch.output?.operations).toHaveLength(1);
     expect(patch.mentioned_items).toEqual([toMentionedItem(candidate('burger', 'Burger'))]);
+  });
+
+  it('logs the resolved count and the turn ids on the tool line', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+    const known = { burger: toMentionedItem(candidate('burger', 'Burger')) };
+
+    await runTools(menu, stateWith({ operations: OPS, reply: 'Here you go.', mentioned_items: ['burger', 'ghost'] }, known));
+
+    expect(info).toHaveBeenCalledWith(
+      'order.agent_tool',
+      expect.objectContaining({ mentioned_items: 1, request_id: 'req_1', cart_id: 'cart_1' }),
+    );
+    info.mockRestore();
   });
 });

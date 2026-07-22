@@ -24,24 +24,37 @@ export function toMentionedItem(c: CandidateItem): MentionedItem {
  * re-searched, per the prompt's CONTEXT RULES) is exactly the hallucination this catches rather
  * than launders. Dropping is silent to the caller (a warn, not a tool error) — a reply that
  * mentions nothing verifiable just degrades to speech with no cards, which is safe.
+ *
+ * Every declared key is classified even past the cap, and the whole turn's losses are reported in
+ * ONE `order.mentioned_items_dropped` line: the list is model-controlled, so a per-key log would let
+ * a model that dumps its scratchpad spam the log, and stopping early would make "it named 20 items"
+ * indistinguishable from "it named 8".
  */
 export function resolveMentionedItems(
   keys: string[],
   known: Record<string, MentionedItem>,
   ctx: { request_id: RequestId; cart_id: CartId },
 ): MentionedItem[] {
-  const seen = new Set<string>();
   const resolved: MentionedItem[] = [];
-  for (const key of keys) {
-    if (seen.has(key)) continue;
-    seen.add(key);
+  const unresolved: string[] = [];
+  for (const key of new Set(keys)) {
     const item = known[key];
-    if (item === undefined) {
-      logger.warn('order.mentioned_item_unresolved', { key, request_id: ctx.request_id, cart_id: ctx.cart_id });
-      continue;
-    }
-    resolved.push(item);
-    if (resolved.length >= LIMITS.maxMentionedItems) break;
+    if (item === undefined) unresolved.push(key);
+    else if (resolved.length < LIMITS.maxMentionedItems) resolved.push(item);
+  }
+  // `declared` counts DEDUPED keys, so a repeated key is not reported as a loss.
+  const declared = new Set(keys).size;
+  if (declared > resolved.length) {
+    logger.warn('order.mentioned_items_dropped', {
+      declared,
+      resolved: resolved.length,
+      unresolved_count: unresolved.length,
+      // A sample, not the list: enough to recognise a hallucination pattern without echoing a
+      // model-sized array into the log.
+      unresolved: unresolved.slice(0, LIMITS.maxMentionedItems),
+      request_id: ctx.request_id,
+      cart_id: ctx.cart_id,
+    });
   }
   return resolved;
 }

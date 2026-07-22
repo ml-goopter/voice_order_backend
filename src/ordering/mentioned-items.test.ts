@@ -67,7 +67,7 @@ describe('resolveMentionedItems', () => {
     expect(result).toEqual([item('coke'), item('burger')]);
   });
 
-  it('drops a key absent from the known map and warns once per dropped key', () => {
+  it('drops a key absent from the known map, reporting the turn\'s losses in one line', () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const known = { burger: item('burger') };
 
@@ -75,14 +75,40 @@ describe('resolveMentionedItems', () => {
 
     expect(result).toEqual([item('burger')]);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith('order.mentioned_item_unresolved', {
-      key: 'ghost',
+    expect(warn).toHaveBeenCalledWith('order.mentioned_items_dropped', {
+      declared: 2,
+      resolved: 1,
+      unresolved_count: 1,
+      unresolved: ['ghost'],
       request_id: 'req_1',
       cart_id: 'cart_1',
     });
   });
 
+  it('says nothing when every declared key resolved', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    resolveMentionedItems(['burger', 'burger'], { burger: item('burger') }, ctx);
+
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  // The list is model-controlled: a model that dumps its scratchpad must cost one log line, not one
+  // per key, and the count must still distinguish "it named 40" from "it named 8".
+  it('logs once for a flood of unknown keys, keeping the full declared count', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const keys = Array.from({ length: 40 }, (_, i) => `ghost_${i}`);
+
+    expect(resolveMentionedItems(keys, {}, ctx)).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[1]).toMatchObject({ declared: 40, resolved: 0, unresolved_count: 40 });
+    expect((warn.mock.calls[0]?.[1] as { unresolved: string[] }).unresolved).toHaveLength(
+      LIMITS.maxMentionedItems,
+    );
+  });
+
   it('caps the result at LIMITS.maxMentionedItems', () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
     const keys = Array.from({ length: LIMITS.maxMentionedItems + 5 }, (_, i) => `item_${i}`);
     const known: Record<string, MentionedItem> = {};
     for (const key of keys) known[key] = item(key);
@@ -91,5 +117,11 @@ describe('resolveMentionedItems', () => {
 
     expect(result).toHaveLength(LIMITS.maxMentionedItems);
     expect(result).toEqual(keys.slice(0, LIMITS.maxMentionedItems).map(item));
+    // Truncation is a loss too — it must not look like a clean turn.
+    expect(warn.mock.calls[0]?.[1]).toMatchObject({
+      declared: LIMITS.maxMentionedItems + 5,
+      resolved: LIMITS.maxMentionedItems,
+      unresolved_count: 0,
+    });
   });
 });

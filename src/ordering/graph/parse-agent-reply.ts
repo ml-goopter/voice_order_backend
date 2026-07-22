@@ -26,10 +26,11 @@ function normalizeLangCode(raw: unknown): LangCode | undefined {
 }
 
 /** Degrade a declared `mentioned_items` value to `string[]`: non-array → `[]`; non-string or
- *  blank entries dropped rather than rejecting the whole list over one bad entry. */
+ *  blank entries dropped rather than rejecting the whole list over one bad entry. Keys are trimmed:
+ *  a stray space would otherwise miss the exact-match lookup and be reported as a hallucination. */
 function parseMentionedItemKeys(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw.filter((v): v is string => typeof v === 'string' && v.trim() !== '');
+  return raw.filter((v): v is string => typeof v === 'string' && v.trim() !== '').map((v) => v.trim());
 }
 
 /**

@@ -77,7 +77,7 @@ export const TOOL_SPECS: ToolSpec[] = [
           type: 'array',
           items: { type: 'string' },
           description:
-            'Optional. The menu_item_key of every menu item `reply` names, in the order named — keys only, never names or prices, and only keys from THIS turn\'s search_menu results. Omit when `reply` names no items.',
+            'Optional. The menu_item_key of every menu item `reply` names, in the order named — keys only, never names or prices, and only keys from THIS turn\'s search_menu results. Only meaningful when `reply` is present: with no `reply` there is nothing for the items to accompany and they are discarded. Omit when `reply` names no items.',
         },
       },
       required: ['operations'],

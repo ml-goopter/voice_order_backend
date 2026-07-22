@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { buildOrderGraph } from './build-graph.js';
+import { logger } from '../../config/logger.js';
 import type { OrderStateType } from './state.js';
 import { MenuService } from '../../menu/menu-service.js';
 import { InMemoryMenuStore } from '../../menu/in-memory-menu-store.js';
@@ -64,11 +65,14 @@ function invoke(graph: ReturnType<typeof buildOrderGraph>, cart_id: string, requ
   ) as Promise<OrderStateType>;
 }
 
-describe('build-graph — search_results turn-scoping', () => {
-  it('normalize clears search_results for a fresh turn (no cross-turn leak)', async () => {
-    const search: ChatResult = { toolCalls: [toolCall(TOOL_NAMES.search, { query: 'chicken burger' })] };
-    const spoken = (text: string): ChatResult => ({ text: JSON.stringify({ reply: text, language: 'en' }), toolCalls: [] });
+const search: ChatResult = { toolCalls: [toolCall(TOOL_NAMES.search, { query: 'chicken burger' })] };
+const spoken = (text: string, mentioned_items?: string[]): ChatResult => ({
+  text: JSON.stringify({ language: 'en', reply: text, ...(mentioned_items ? { mentioned_items } : {}) }),
+  toolCalls: [],
+});
 
+describe('build-graph — turn-scoping of the mentioned-items channels', () => {
+  it('normalize clears search_results for a fresh turn (no cross-turn leak)', async () => {
     const graph = buildTestGraph([[search, spoken('Here is a chicken burger.')], [spoken('Anything else?')]]);
 
     const turn1 = await invoke(graph, 'cart_1', 'req_1', 'do you have burgers');
@@ -76,5 +80,46 @@ describe('build-graph — search_results turn-scoping', () => {
 
     const turn2 = await invoke(graph, 'cart_1', 'req_2', 'no thanks');
     expect(turn2.search_results).toEqual({});
+  });
+
+  it('normalize clears mentioned_items for a fresh turn', async () => {
+    const graph = buildTestGraph([
+      [search, spoken('Try the chicken burger.', ['chicken_burger'])],
+      [spoken('Anything else?')],
+    ]);
+
+    const turn1 = await invoke(graph, 'cart_1', 'req_1', 'what do you suggest');
+    expect(turn1.mentioned_items).toHaveLength(1);
+
+    const turn2 = await invoke(graph, 'cart_1', 'req_2', 'no thanks');
+    expect(turn2.mentioned_items).toEqual([]);
+  });
+
+  // The verification boundary is the turn: a key the customer heard last turn must not resolve
+  // this turn, because this turn never searched for it.
+  it('does not resolve a key that only a PREVIOUS turn searched', async () => {
+    const graph = buildTestGraph([
+      [search, spoken('Try the chicken burger.', ['chicken_burger'])],
+      [spoken('Still the chicken burger.', ['chicken_burger'])],
+    ]);
+
+    await invoke(graph, 'cart_1', 'req_1', 'what do you suggest');
+    const turn2 = await invoke(graph, 'cart_1', 'req_2', 'remind me');
+
+    expect(turn2.reply).toBe('Still the chicken burger.');
+    expect(turn2.mentioned_items).toEqual([]);
+  });
+
+  it('threads the turn\'s ids into the dropped-items warn', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const graph = buildTestGraph([[spoken('Try the ghost burger.', ['ghost'])]]);
+
+    await invoke(graph, 'cart_9', 'req_9', 'what do you suggest');
+
+    expect(warn).toHaveBeenCalledWith(
+      'order.mentioned_items_dropped',
+      expect.objectContaining({ request_id: 'req_9', cart_id: 'cart_9' }),
+    );
+    warn.mockRestore();
   });
 });
