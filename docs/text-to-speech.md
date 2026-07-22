@@ -77,7 +77,7 @@ deployment's configured default still decides what an undeclared reply is spoken
 **STT's detected language is not consulted at all** — not even as a fallback. It was the original
 source but proved unreliable: AssemblyAI's default streaming model returns `en` for every turn, and
 the multilingual/pro tier needs entitlement that isn't reliably in effect. The agent writes the
-reply, so it is the only thing that knows the language. `ordering/graph/parse-spoken-reply.ts`
+reply, so it is the only thing that knows the language. `ordering/graph/parse-agent-reply.ts`
 shape-checks the declared code and drops anything that isn't a language code (an agent that says
 `"Chinese"` yields no language → `TTS_LANGUAGE`, rather than forwarding garbage to Cartesia).
 

@@ -1,5 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { parseSpokenReply } from './parse-spoken-reply.js';
+import { parseAgentReply, parseSpokenReply } from './parse-agent-reply.js';
+
+// The shared field rules, tested on the object directly — the shape `propose_cart` arguments take.
+// `parseSpokenReply` below re-tests them through the text path; both callers must agree, which is
+// the whole reason the rules live in one function.
+describe('parseAgentReply', () => {
+  it('keeps a usable reply and its declared language', () => {
+    expect(parseAgentReply({ language: 'zh', reply: '好的' })).toEqual({ reply: '好的', language: 'zh' });
+  });
+
+  it('drops an off-format language without costing the reply', () => {
+    expect(parseAgentReply({ reply: 'Added two lattes', language: 'Chinese' })).toEqual({
+      reply: 'Added two lattes',
+    });
+    expect(parseAgentReply({ reply: 'Added two lattes' })).toEqual({ reply: 'Added two lattes' });
+  });
+
+  it('reports no reply for a blank or non-string one, and then declares no language either', () => {
+    expect(parseAgentReply({ reply: '   ', language: 'en' })).toEqual({ reply: null });
+    expect(parseAgentReply({ reply: 42, language: 'en' })).toEqual({ reply: null });
+    expect(parseAgentReply({ language: 'en' })).toEqual({ reply: null });
+    expect(parseAgentReply({})).toEqual({ reply: null });
+  });
+});
 
 describe('parseSpokenReply', () => {
   it('parses the strict JSON the agent is prompted to emit (language first)', () => {

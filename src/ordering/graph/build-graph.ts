@@ -14,7 +14,7 @@ import { loadCart, buildCartView } from '../nodes/load-cart.node.js';
 import { buildAgentMessages } from '../../llm/agent-prompt-builder.js';
 import { TOOL_SPECS } from '../tools/tool-specs.js';
 import { runTools } from '../tools/run-tools.js';
-import { parseSpokenReply } from './parse-spoken-reply.js';
+import { parseSpokenReply } from './parse-agent-reply.js';
 
 export interface GraphDeps {
   menu: MenuService;

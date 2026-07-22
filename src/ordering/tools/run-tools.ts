@@ -5,7 +5,7 @@ import type { MenuService } from '../../menu/menu-service.js';
 import type { OrderStateType } from '../graph/state.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import { parseOrderGraphOutput } from '../schemas/order-graph-output.schema.js';
-import { normalizeLangCode } from '../graph/parse-spoken-reply.js';
+import { parseAgentReply } from '../graph/parse-agent-reply.js';
 import { formatZodError } from '../../shared/zod-error.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import { logger } from '../../config/logger.js';
@@ -74,15 +74,16 @@ async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolC
         return { content: error, error };
       }
       // A `propose_cart` may bundle a spoken confirmation (approach B): commit AND speak in one
-      // terminal call. A blank/whitespace reply means "no confirmation" (not an error); a malformed
-      // `language` drops only the language (degrade to the TTS default, same as parse-spoken-reply).
-      const reply = typeof argsObj.reply === 'string' && argsObj.reply.trim() ? argsObj.reply : undefined;
-      const reply_language = reply !== undefined ? normalizeLangCode(argsObj.language) : undefined;
+      // terminal call. Its reply fields are parsed by the same function as the standalone spoken
+      // terminal, so the two can't drift on what counts as a usable reply; an absent one is not an
+      // error. `null` there means "nothing to say", which is `undefined` in this result shape.
+      const agentReply = parseAgentReply(argsObj);
+      const reply = agentReply.reply !== null ? agentReply.reply : undefined;
       return {
         content: 'Proposal accepted.',
         output: result.value,
         ...(reply !== undefined ? { reply } : {}),
-        ...(reply_language !== undefined ? { reply_language } : {}),
+        ...(agentReply.language !== undefined ? { reply_language: agentReply.language } : {}),
         meta: { operations: result.value.operations.length, ...(reply !== undefined ? { reply: true } : {}) },
       };
     }

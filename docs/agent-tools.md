@@ -125,7 +125,7 @@ evidence), requires the reply to match the LATEST utterance so a mid-conversatio
 honoured, and allows falling back to the last identifiable utterance's language only when the
 current one is too short to read (`"OK"`, `"two"`, a bare item name).
 
-`ordering/graph/parse-spoken-reply.ts` parses the terminal and degrades **per-field**, so a format
+`ordering/graph/parse-agent-reply.ts` parses the terminal and degrades **per-field**, so a format
 slip is never a dropped reply:
 
 | Agent emitted | Outcome |

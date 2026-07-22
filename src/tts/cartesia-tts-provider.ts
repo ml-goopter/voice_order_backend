@@ -8,7 +8,7 @@ export type SpeakFn = (text: string, language: string, signal: AbortSignal) => P
 /**
  * Language code (`en_US`, `zh-CN`) → Cartesia ISO-639-1 language (`en`, `zh`): take the primary
  * subtag and lowercase it. Total, because every caller supplies a real code: a reply's language is
- * either agent-declared (shape-checked by `parse-spoken-reply`) or `TTS_LANGUAGE`, which `str()`
+ * either agent-declared (shape-checked by `parse-agent-reply`) or `TTS_LANGUAGE`, which `str()`
  * guarantees is non-blank.
  */
 export function toCartesiaLanguage(code: LangCode): string {

@@ -44,7 +44,7 @@ export interface AgentContext {
  * which MAY bundle a short spoken `reply`/`language` to confirm or suggest while committing — or by
  * REPLYING with no tool call — strict JSON `{language, reply}` whose `reply` serves as both a
  * clarifying question and a recommendation, and whose `language` tells TTS which language to speak
- * it in (parsed by graph/parse-spoken-reply.ts). When the turn has anything to commit it must end
+ * it in (parsed by graph/parse-agent-reply.ts). When the turn has anything to commit it must end
  * with `propose_cart` (words go in its `reply`); a standalone reply is only for turns with nothing
  * to commit. The operation contract is unchanged from the old parser prompt.
  *

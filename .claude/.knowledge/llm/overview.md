@@ -39,7 +39,7 @@ deterministic source of truth.
 - `agent-prompt-builder.ts` builds the agent's seed transcript: a system message fixing the
   tool workflow (search first, then EITHER `propose_cart` OR a spoken reply emitted as strict
   JSON `{language, reply}`, where `language` is the ISO-639-1 code of the language the agent
-  wrote the reply in — parsed by `ordering/graph/parse-spoken-reply.ts` and forwarded to TTS)
+  wrote the reply in — parsed by `ordering/graph/parse-agent-reply.ts` and forwarded to TTS)
   and the operation contract (keys from search results, edits target `line_id`, only `add_item`
   omits it), plus a user message with the utterance, `current_cart`, and `conversation_history`.
   A dedicated **LANGUAGE** section makes `customer_text` the sole authority on which language to
@@ -51,7 +51,7 @@ deterministic source of truth.
   `conversation_history`'s language — and only then label what it had written, so `language`
   described the drift instead of preventing it (observed: a zh → zh → en session answered in zh).
   Emitting the code first forces the choice before any reply token exists. The ordering is a
-  generation-time device enforced ONLY by the prompt: `parse-spoken-reply.ts` JSON.parses and
+  generation-time device enforced ONLY by the prompt: `parse-agent-reply.ts` JSON.parses and
   accepts either order, so a model that slips back to reply-first still keeps its language.
   Candidates are NOT pre-fetched — the agent retrieves them via `search_menu`. The prompt's
   WORKFLOW section also teaches that tool's filters/sort (popularity for "what do you

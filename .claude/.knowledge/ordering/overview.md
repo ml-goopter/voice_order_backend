@@ -49,7 +49,7 @@ It is a **pure proposer**; the Cart Module validates and applies.
     and a recommendation. When the turn has anything to commit it MUST end with `propose_cart`
     (words go in its `reply`); a standalone reply is only for turns with nothing to commit, so
     `propose_cart` is always the last tool call. A standalone reply is strict JSON `{reply, language}` parsed by
-    `graph/parse-spoken-reply.ts`, which writes the agent-declared language onto the turn-scoped
+    `graph/parse-agent-reply.ts`, which writes the agent-declared language onto the turn-scoped
     `reply_language` channel (cleared by `normalize`, so a declaration never outlives its turn) —
     the ONLY source of the reply's language, defaulted to `TTS_LANGUAGE` by the façade (the sole
     `speak` caller, so that is where the knob is applied). The graph takes no
@@ -69,9 +69,10 @@ It is a **pure proposer**; the Cart Module validates and applies.
     including an **empty/absent `operations`** list — is a repair-friendly **tool error** the
     agent retries within `maxAgentSteps`, rather than a silent empty proposal; this replaces
     the old separate schema-repair round). A successful `propose_cart` writes the `output`
-    channel and ends the loop; its optional `reply`/`language` args (validated via the shared
-    `normalizeLangCode` from `parse-spoken-reply.ts` — a blank reply or off-format code degrades
-    quietly) additionally write `reply`/`reply_language` alongside `output`.
+    channel and ends the loop; its optional `reply`/`language` args (parsed by the shared
+    `parseAgentReply` from `parse-agent-reply.ts` — the same function the standalone spoken
+    terminal uses, so a blank reply or off-format code degrades identically on both paths)
+    additionally write `reply`/`reply_language` alongside `output`.
   - **finalize** records the completed turn to `history`: always `customer_text`, plus
     `agent_reply` when the agent ended by speaking (so the next turn has the context and
     force-orders). Committed/failed turns record only the utterance.
@@ -138,10 +139,12 @@ It is a **pure proposer**; the Cart Module validates and applies.
 - `graph/intents.ts` — `INTENT_ROUTE` binary junk-gate (service → load_cart, junk → END). The
   `intentSchema` label set it routes on lives in `contracts/intent.ts`.
 - `graph/instrument.ts` — `node(name, fn)` wrapper; logs `order.node_failed` on any node throw.
-- `graph/parse-spoken-reply.ts` — pure parser for the agent's spoken terminal (the outermost `{…}`
-  span → `SpokenReply`), degrading per-field so a format slip never drops a reply nor reads JSON
-  aloud. Exports `normalizeLangCode` (validate + lowercase an ISO code, else `undefined`), reused by
-  `tools/run-tools.ts` for the bundled `propose_cart.reply` language so both paths apply one rule.
+- `graph/parse-agent-reply.ts` — the agent's reply, parsed in ONE place for BOTH terminals.
+  `parseAgentReply(obj) → AgentReply` holds the per-field degrade rules (blank/non-string reply →
+  `null`; off-format ISO code → no language, never garbage forwarded to TTS) and is called by
+  `tools/run-tools.ts` on the bundled `propose_cart` args. `parseSpokenReply(text)` adds only the
+  text unwrapping the standalone terminal needs (fence, outermost `{…}` span, non-JSON spoken
+  as-is) and delegates. A format slip never drops a reply nor reads JSON aloud.
 - `nodes/*.node.ts` — `classify-intent` (LLM junk-gate classifier, defaults to `service`),
   `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)
 - `tools/tool-specs.ts` — `search_menu` + `propose_cart` specs (`propose_cart` has optional
@@ -156,7 +159,7 @@ It is a **pure proposer**; the Cart Module validates and applies.
   (agent-declared wins; `en` default ignores STT; a declaration never leaks into a later turn),
   and the bundled propose+reply cases (both events fire; language defaults; beef-jerky
   propose-is-last-call regression).
-- `graph/parse-spoken-reply.test.ts` — the reply terminal's degradation matrix.
+- `graph/parse-agent-reply.test.ts` — the reply terminal's degradation matrix.
 
 ## Not done yet
 - Business validation of operations against candidates (unknown key → clarify) is deferred to

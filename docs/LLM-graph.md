@@ -5,7 +5,7 @@ proposed cart operations or a spoken reply. Covers the graph topology, every sta
 the agent ⇄ tools loop, the checkpointer thread model, and error handling.
 
 Scope: `src/ordering/graph/` (`build-graph.ts`, `state.ts`, `intents.ts`, `instrument.ts`,
-`parse-spoken-reply.ts`), `src/ordering/order-graph.ts` (the façade), `src/ordering/tools/`
+`parse-agent-reply.ts`), `src/ordering/order-graph.ts` (the façade), `src/ordering/tools/`
 (the agent's tools), and the `src/ordering/nodes/*` invoked by the graph. The service loop that
 *drives* the graph (`order-understanding-service.ts`) is covered only where it touches graph
 behavior — see `ordering/overview.md` for the surrounding module. The design rationale for the
@@ -351,7 +351,7 @@ the **next transcript**, where `classify`'s pending-reply override force-routes 
 the agent resolves it against `conversation_history`. This is why the old `MAX_CLARIFICATION_ROUNDS`
 cap and clarification stall timeout are gone: a multi-turn conversation is just turns.
 
-### 5.4 The spoken-reply contract (`graph/parse-spoken-reply.ts`)
+### 5.4 The spoken-reply contract (`graph/parse-agent-reply.ts`)
 
 The reply is strict JSON `{"language": "...", "reply": "..."}`. **`language` is demanded FIRST for
 a generation-order reason, not a stylistic one:** the model writes left to right, so a
@@ -513,7 +513,7 @@ node throw **rejects** `invoke()` and is caught by the service. Both end as
 | `graph/intents.ts` | `intentSchema` (`service`/`junk`) + `INTENT_ROUTE` — the intent set and its routing table. |
 | `graph/state.ts` | `OrderState` annotations, `lww`/`appendHistory` reducers, `mergeHistory`. |
 | `graph/instrument.ts` | `node(name, fn)` — per-node error logging, bubble-up passthrough. |
-| `graph/parse-spoken-reply.ts` | `parseSpokenReply` — the `{language, reply}` terminal, degrading per-field. |
+| `graph/parse-agent-reply.ts` | `parseAgentReply` — the `{language, reply}` field rules for BOTH terminals, degrading per-field; `parseSpokenReply` adds the spoken terminal's text unwrapping. |
 | `tools/tool-specs.ts` | `TOOL_NAMES` + `TOOL_SPECS` — the tools advertised to the agent. |
 | `tools/run-tools.ts` | The `tools` node: executes calls, appends results, sets `output` on a valid `propose_cart`. |
 | `nodes/classify-intent.node.ts` | LLM junk-gate classifier; degrades to `service` on any failure. |

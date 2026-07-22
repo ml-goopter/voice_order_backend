@@ -1,7 +1,8 @@
 import type { LangCode } from '../../shared/types.js';
 
-/** Parsed spoken-reply terminal. `reply` is null when the agent said nothing usable. */
-export interface SpokenReply {
+/** What the agent said this turn. IDENTICAL in both terminals: the standalone spoken reply and the
+ *  fields bundled into `propose_cart`. `reply` is null when the agent said nothing usable. */
+export interface AgentReply {
   reply: string | null;
   language?: LangCode;
 }
@@ -12,12 +13,26 @@ const LANG_RE = /^[a-z]{2,3}([-_][a-z]{2,4})?$/i;
 /**
  * Validate + normalize an agent-declared language code, degrading to `undefined` on anything
  * off-format (an empty/blank value, a name like "Chinese", a non-string) rather than forwarding
- * garbage downstream — the caller then falls back to `TTS_LANGUAGE`. Shared by the spoken-reply
- * path and the bundled `propose_cart.reply` path so both apply the same rule.
+ * garbage downstream — the caller then falls back to `TTS_LANGUAGE`.
  */
-export function normalizeLangCode(raw: unknown): LangCode | undefined {
+function normalizeLangCode(raw: unknown): LangCode | undefined {
   const lang = typeof raw === 'string' ? raw.trim() : '';
   return LANG_RE.test(lang) ? (lang.toLowerCase() as LangCode) : undefined;
+}
+
+/**
+ * Parse the reply fields off a plain object — `propose_cart` arguments, or the parsed spoken JSON
+ * (see `parseSpokenReply`). The single place the per-field degrade rules live, so the two callers
+ * can never drift apart on what counts as a usable reply: a JSON blob with no usable "reply" is a
+ * degenerate terminal (never read aloud); an off-format "language" costs only the language, and
+ * TTS falls back to TTS_LANGUAGE.
+ */
+export function parseAgentReply(obj: Record<string, unknown>): AgentReply {
+  const reply = typeof obj.reply === 'string' && obj.reply.trim() ? obj.reply : null;
+  if (reply === null) return { reply: null };
+  // An off-format code ("Chinese") degrades to no language, not garbage forwarded to Cartesia.
+  const language = normalizeLangCode(obj.language);
+  return { reply, ...(language !== undefined ? { language } : {}) };
 }
 
 /**
@@ -26,11 +41,11 @@ export function normalizeLangCode(raw: unknown): LangCode | undefined {
  * writing the reply). Field order is irrelevant HERE — this JSON.parses — so a model that emits the
  * old {reply, language} order still parses fine.
  *
- * Parse it, DEGRADING PER-FIELD: text that isn't JSON is spoken as-is (never drop a reply); a JSON
- * blob with no usable "reply" is a degenerate terminal (never read JSON aloud); an off-format
- * "language" costs only the language, and TTS falls back to TTS_LANGUAGE.
+ * Unwraps the assistant text (fence, prose around the outermost {…}) — text that isn't JSON is
+ * spoken as-is, never dropped — then delegates the parsed object to `parseAgentReply`, which shares
+ * the same field rules with the bundled `propose_cart.reply` path.
  */
-export function parseSpokenReply(raw: string | undefined): SpokenReply {
+export function parseSpokenReply(raw: string | undefined): AgentReply {
   let text = raw?.trim();
   if (!text) return { reply: null };
 
@@ -45,18 +60,14 @@ export function parseSpokenReply(raw: string | undefined): SpokenReply {
   const open = text.indexOf('{');
   const close = text.lastIndexOf('}');
   if (open !== -1 && close > open) {
-    let obj: { reply?: unknown; language?: unknown };
+    let obj: Record<string, unknown>;
     try {
       obj = JSON.parse(text.slice(open, close + 1));
     } catch {
       return { reply: text }; // Not JSON after all (e.g. truncated) — speak it rather than drop it.
     }
     // It parsed, so the raw text IS a JSON blob and is never speakable: `reply` or nothing.
-    const reply = typeof obj.reply === 'string' && obj.reply.trim() ? obj.reply : null;
-    if (reply === null) return { reply: null };
-    // An off-format code ("Chinese") degrades to no language, not garbage forwarded to Cartesia.
-    const language = normalizeLangCode(obj.language);
-    return language !== undefined ? { reply, language } : { reply };
+    return parseAgentReply(obj);
   }
   return { reply: text };
 }
