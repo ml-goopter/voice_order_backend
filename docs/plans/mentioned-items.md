@@ -133,8 +133,8 @@ export function resolveMentionedItems(
 ```
 
 One place for the verification rules, shared by both terminals: dedupe preserving first mention;
-an unknown key is dropped with one `logger.warn('order.mentioned_item_unresolved', { key,
-request_id, cart_id })`; the result is capped at `LIMITS.maxMentionedItems` (new constant, `= 8`)
+an unknown key is dropped, and the turn's losses (unresolved + truncated) are reported in one
+`logger.warn('order.mentioned_items_dropped', …)`; the result is capped at `LIMITS.maxMentionedItems` (new constant, `= 8`)
 — a payload/card-count guard, NOT a function of `maxCandidatesToLlm`: a turn accumulates every
 search it ran, so the agent may legitimately have seen more items than one search returns.
 Shape-level junk is already gone — `parseAgentReply` hands it a
@@ -240,7 +240,7 @@ on collision); `normalize` empties the map, asserted by driving turn 2 after a t
 The core. Both terminals, one rule set.
 
 - `src/ordering/mentioned-items.ts`: `resolveMentionedItems(keys, known, ctx)` — dedupe preserving
-  first mention, drop unknown with `logger.warn('order.mentioned_item_unresolved', …)`, cap at
+  first mention, drop unknown, report the turn's losses in one `order.mentioned_items_dropped` warn, cap at
   `LIMITS.maxMentionedItems`.
 - `src/ordering/graph/parse-agent-reply.ts`: `AgentReply.mentioned_items` — non-array → `[]`,
   non-string/blank entries dropped, forced `[]` when `reply` is `null`.

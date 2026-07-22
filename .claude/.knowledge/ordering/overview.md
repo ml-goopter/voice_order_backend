@@ -3,7 +3,7 @@ type: Concept
 title: Order Understanding (LangGraph-style)
 description: Serialized per-cart turns → agent tool-calling loop → operations_proposed / reply.
 resource: src/ordering
-timestamp: 2026-07-17
+timestamp: 2026-07-22
 ---
 
 # Order Understanding
@@ -49,7 +49,7 @@ searches. It is a **pure proposer**; the Cart Module validates and applies.
     **replying** (no tool call) — a single "reply" outcome serving as both a clarifying question
     and a recommendation. When the turn has anything to commit it MUST end with `propose_cart`
     (words go in its `reply`); a standalone reply is only for turns with nothing to commit, so
-    `propose_cart` is always the last tool call. A standalone reply is strict JSON `{reply, language}` parsed by
+    `propose_cart` is always the last tool call. A standalone reply is strict JSON `{language, reply, mentioned_items?}` parsed by
     `graph/parse-agent-reply.ts`, which writes the agent-declared language onto the turn-scoped
     `reply_language` channel (cleared by `normalize`, so a declaration never outlives its turn) —
     the ONLY source of the reply's language, defaulted to `TTS_LANGUAGE` by the façade (the sole
@@ -155,7 +155,7 @@ searches. It is a **pure proposer**; the Cart Module validates and applies.
   retrieved it this turn": keys are checked against the turn's `search_results` and there is
   deliberately NO menu-lookup fallback — a key the agent never searched for is the hallucination the
   check exists to catch, not something to launder into a verified item. An unresolved key is dropped
-  with an `order.mentioned_item_unresolved` warn, never a tool error, so a `propose_cart` naming a
+  (never a tool error), so a `propose_cart` naming a
   bad key still commits. Deduped, first-mention order, capped at `LIMITS.maxMentionedItems`.
 - `nodes/*.node.ts` — `classify-intent` (LLM junk-gate classifier, defaults to `service`),
   `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)

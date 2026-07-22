@@ -3,7 +3,7 @@ type: Concept
 title: Cross-module contracts
 description: Shared DTOs/schemas (cart operations, proposal, prompt cart view, intent) with no business-module deps.
 resource: src/contracts
-timestamp: 2026-07-16
+timestamp: 2026-07-22
 ---
 
 # Cross-module contracts

@@ -3,7 +3,7 @@ type: Concept
 title: Realtime Gateway
 description: Owns the WebSocket lifecycle; routes inbound messages and pushes backend events.
 resource: src/realtime
-timestamp: 2026-07-15
+timestamp: 2026-07-22
 ---
 
 # Realtime Gateway

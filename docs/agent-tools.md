@@ -16,8 +16,9 @@ is removed entirely — the agent graph is the only path; there is no feature fl
 
 > **Revision (implemented):** clarify and suggest are **not tools**. The agent has two tools
 > (`search_menu_semantic`, `propose_cart`) and ends a turn either by proposing or by replying
-> (no tool call) with strict JSON `{language, reply}` — one merged **`reply`** outcome that serves as both a
-> clarifying question and a recommendation (spoken-only, no structured items). This replaces
+> (no tool call) with strict JSON `{language, reply, mentioned_items?}` — one merged **`reply`**
+> outcome that serves as both a clarifying question and a recommendation. (It was spoken-only until
+> `mentioned_items` landed; the reply now also carries the items it named — §11.) This replaces
 > the `ask_clarification`/`suggest_items` tools and collapses `order.clarification_needed` +
 > `order.suggestion_ready` into a single `order.reply` event. The consecutive-clarification cap
 > was dropped (a merged reply shouldn't cap multi-turn conversation; `maxAgentSteps` bounds
@@ -145,7 +146,7 @@ slip is never a dropped reply:
 | valid JSON, no usable `reply` | `agent_no_terminal` — a blob is never read aloud |
 | `{…,"mentioned_items":["k1","k2"]}` | keys resolved against this turn's searches; the verified items ride on `order.reply` |
 | `{…,"mentioned_items":"k1"}` or `[1,""]` | items degrade to none; the reply is spoken unchanged |
-| `mentioned_items` naming a never-searched key | that key is dropped with an `order.mentioned_item_unresolved` warn; the rest survive |
+| `mentioned_items` naming a never-searched key | that key is dropped; the rest survive, and the turn's losses are reported in one `order.mentioned_items_dropped` warn |
 
 The parser reads the **outermost `{…}` span** rather than requiring the message to be exactly the
 object, so prose wrapped around it (`Sure! {…}`) is dropped instead of being read aloud verbatim.
@@ -353,7 +354,7 @@ suggestion is not a configurator.
 **never falls back to a menu lookup**. A key the agent invented, or recalled from an earlier turn
 without re-searching (which the prompt's CONTEXT RULES forbid), is exactly the hallucination the
 check exists to catch — a lookup would launder it into a verified item. An unresolved key is
-dropped with an `order.mentioned_item_unresolved` warn; it is never a tool error, so a
+dropped; it is never a tool error, so a
 `propose_cart` naming a bad key still commits its operations. The turn degrades to speech with no
 cards, which is the pre-feature behavior.
 
@@ -366,6 +367,12 @@ accompany speech.
 `order.reply` WS frame, so an existing client is unaffected. TTS never sees it. Capped at
 `LIMITS.maxMentionedItems` (8) as a payload/card-count guard — note a turn accumulates every search
 it ran, so the agent may legitimately have seen far more items than one search returns.
+
+**The list is what was SAID, not what is on offer.** The prompt asks for every item the reply names
+— including one the same turn is adding — and the shape carries no add/suggest discriminator. A
+client must therefore treat the cards as informational (what you are hearing), not as an offer list:
+rendering an add-to-cart button per card would invite re-adding the item the turn just added. The
+authoritative state of the order remains `cart.updated`.
 
 **Not recorded to history.** `HistoryTurn` is unchanged: cross-turn history stays compact, and the
 "re-search before you reuse a key" rule stays true.

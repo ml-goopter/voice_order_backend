@@ -3,7 +3,7 @@ type: Concept
 title: LLM Provider
 description: Provider abstraction (complete + tool-calling chat) + agent/intent prompt builders.
 resource: src/llm
-timestamp: 2026-07-17
+timestamp: 2026-07-22
 ---
 
 # LLM Provider

@@ -57,7 +57,8 @@ event bus. Each requirement below is stated so it can be verified by a test or a
   `order.clarification_needed`/`cart.operation_rejected` to the originating session (else the
   whole cart).
 - Answers `connection.resume` with a `connection.resumed` cart snapshot.
-- On `order.reply`, sends reply text plus streamed `tts.*` audio frames to the session socket.
+- On `order.reply`, sends reply text (plus its `mentioned_items`, when present) and streamed
+  `tts.*` audio frames to the session socket; TTS receives only the text and its language.
 
 
 ## Skills
