@@ -5,15 +5,19 @@ import type { OrderStateType } from '../graph/state.js';
 import type { AgentMessage, ToolCall } from '../../llm/llm-provider.js';
 import type { MenuService } from '../../menu/menu-service.js';
 import type { CandidateItem } from '../../menu/menu-types.js';
+import type { MentionedItem } from '../../contracts/mentioned-item.js';
+import { toMentionedItem } from '../mentioned-items.js';
 
-// runTools only reaches MenuService on a `search_menu` call; every case here drives `propose_cart`,
-// so a bare stub that would throw if touched is enough (and proves search is not on this path).
+// runTools only reaches MenuService on a `search_menu` call, so the propose-only cases below can
+// use a bare stub that would throw if touched (which proves search is not on that path). The
+// search cases build their own stub with `menuReturning`.
 const menu = {} as MenuService;
 
 const call = (args: unknown): ToolCall => ({ id: 'c0', name: TOOL_NAMES.propose, arguments: args });
 
-/** A minimal in-progress turn state whose last message is the agent's `propose_cart` call. */
-function stateWith(args: unknown): OrderStateType {
+/** A minimal in-progress turn state whose last message is the agent's `propose_cart` call.
+ *  `priorSearches` stands in for what earlier agent steps in the same turn already found. */
+function stateWith(args: unknown, priorSearches: Record<string, MentionedItem> = {}): OrderStateType {
   const assistant: AgentMessage = { role: 'assistant', tool_calls: [call(args)] };
   return {
     request_id: 'req_1',
@@ -22,7 +26,7 @@ function stateWith(args: unknown): OrderStateType {
     output: null,
     reply: null,
     reply_language: undefined,
-    search_results: {},
+    search_results: priorSearches,
     agent_messages: [assistant],
   } as unknown as OrderStateType;
 }
@@ -31,7 +35,10 @@ let searchCallId = 0;
 const searchCall = (args: unknown): ToolCall => ({ id: `s${searchCallId++}`, name: TOOL_NAMES.search, arguments: args });
 
 /** A minimal in-progress turn state whose last message is a batch of `search_menu` calls. */
-function stateWithSearches(calls: ToolCall[]): OrderStateType {
+function stateWithSearches(
+  calls: ToolCall[],
+  priorSearches: Record<string, MentionedItem> = {},
+): OrderStateType {
   const assistant: AgentMessage = { role: 'assistant', tool_calls: calls };
   return {
     request_id: 'req_1',
@@ -40,7 +47,7 @@ function stateWithSearches(calls: ToolCall[]): OrderStateType {
     output: null,
     reply: null,
     reply_language: undefined,
-    search_results: {},
+    search_results: priorSearches,
     agent_messages: [assistant],
   } as unknown as OrderStateType;
 }
@@ -131,5 +138,27 @@ describe('runTools — search_results accumulation', () => {
     const patch = await runTools(stub, state);
 
     expect(patch.search_results?.x?.name).toBe('Second');
+  });
+
+  // The multi-item flow: one search per item across several agent steps. A step that drops what
+  // earlier steps found would leave later verification with nothing to check the agent's keys against.
+  it('keeps what earlier steps in the same turn found', async () => {
+    const prior = { burger: toMentionedItem(candidate('burger', 'Burger')) };
+    const stub = menuReturning([candidate('coke', 'Coke')]);
+
+    const patch = await runTools(stub, stateWithSearches([searchCall({ query: 'coke' })], prior));
+
+    expect(Object.keys(patch.search_results ?? {}).sort()).toEqual(['burger', 'coke']);
+  });
+
+  // A propose_cart-only batch is the normal second step of a turn. Writing an empty map there would
+  // wipe the searches the turn is about to be verified against, so the key must be absent entirely
+  // and leave the channel alone.
+  it('leaves the channel untouched when the batch ran no search', async () => {
+    const prior = { burger: toMentionedItem(candidate('burger', 'Burger')) };
+
+    const patch = await runTools(menu, stateWith({ operations: [{ action: 'add_item', menu_item_key: 'burger', quantity: 1 }] }, prior));
+
+    expect('search_results' in patch).toBe(false);
   });
 });

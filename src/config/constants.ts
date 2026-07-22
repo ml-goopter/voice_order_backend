@@ -18,8 +18,9 @@ export const LIMITS = {
   inMemoryEmbeddingCap: 2_000,
   /** §7 — candidate set size returned to the LLM per turn. */
   maxCandidatesToLlm: 8,
-  /** Cap on mentioned items per reply — matches `maxCandidatesToLlm`: the agent cannot mention
-   *  more items than a search returned. */
+  /** Cap on the items a spoken reply carries to the client. A payload/card-count guard, NOT a
+   *  function of `maxCandidatesToLlm`: a turn accumulates every search it ran, so the agent may
+   *  legitimately have seen far more items than one search returns. */
   maxMentionedItems: 8,
   /** Plan A — turns of prior (utterance + agent reply) resent to the model as context. */
   maxHistoryTurns: 6,

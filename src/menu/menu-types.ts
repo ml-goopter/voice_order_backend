@@ -1,8 +1,8 @@
 import type { Cents, LangCode, ProductTmplId, PtavId } from '../shared/types.js';
 import type { PopularityTier } from '../contracts/mentioned-item.js';
 
-/** Moved to contracts so this shape does not drag a menu-module import across the boundary;
- *  re-exported here so every existing importer keeps working unchanged. */
+/** Canonical definition lives in `contracts/` because a contract type uses it and `contracts` must
+ *  not import from `menu`; re-exported here so menu importers keep one import site. */
 export type { PopularityTier };
 
 /** A modifier option offered to the LLM alongside a candidate item (design §7/§8). */
