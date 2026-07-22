@@ -33,6 +33,24 @@ describe('buildAgentSystemPrompt', () => {
     expect(prompt).not.toContain(String(Number.MAX_SAFE_INTEGER)); // 9007199254740991
     expect(prompt).toContain('MUST match this JSON Schema'); // the schema block is still present
   });
+
+  it('states the MENTIONED ITEMS rule: keys only, this turn\'s searches only, omit when nothing named', () => {
+    const prompt = buildAgentSystemPrompt();
+    expect(prompt).toContain('MENTIONED ITEMS');
+    expect(prompt).toContain('Keys ONLY — never names, never prices.');
+    expect(prompt).toContain("Only keys from THIS turn's search_menu results are usable");
+    expect(prompt).toContain('Omit "mentioned_items" entirely when your reply names no items.');
+  });
+
+  it('shows the standalone spoken JSON example with language, reply, mentioned_items in that order', () => {
+    const prompt = buildAgentSystemPrompt();
+    const languageIdx = prompt.indexOf('"language":');
+    const replyIdx = prompt.indexOf('"reply":');
+    const mentionedIdx = prompt.indexOf('"mentioned_items":');
+    expect(languageIdx).toBeGreaterThan(-1);
+    expect(replyIdx).toBeGreaterThan(languageIdx);
+    expect(mentionedIdx).toBeGreaterThan(replyIdx);
+  });
 });
 
 describe('buildAgentUserMessage', () => {

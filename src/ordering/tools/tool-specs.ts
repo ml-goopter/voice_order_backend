@@ -73,6 +73,12 @@ export const TOOL_SPECS: ToolSpec[] = [
           description:
             'ISO-639-1 code of the language `reply` is written in (e.g. "en", "zh"). Choose it BEFORE writing `reply`. Only meaningful when `reply` is present; a missing or malformed code falls back to the TTS default.',
         },
+        mentioned_items: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Optional. The menu_item_key of every menu item `reply` names, in the order named — keys only, never names or prices, and only keys from THIS turn\'s search_menu results. Omit when `reply` names no items.',
+        },
       },
       required: ['operations'],
     },
