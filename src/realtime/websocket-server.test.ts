@@ -13,6 +13,7 @@ import { TtsService } from '../tts/tts-service.js';
 import { createTtsProvider } from '../tts/tts-client.js';
 import type { SttProvider } from '../stt/stt-provider.js';
 import type { SttStream, SttStreamHandlers } from '../stt/stt-types.js';
+import type { OdooImageClient } from '../odoo/odoo-image-client.js';
 
 /** No-op STT so the Voice handler can be constructed; these tests only exercise transport. */
 class NoopSttProvider implements SttProvider {
@@ -42,12 +43,12 @@ function buildRejectingGateway(): RejectingGateway {
 }
 
 /**
- * These tests exercise transport only, so the controller is never reached: /health short-circuits
- * before it and the confirm route is covered in api/http-router.test.ts. It exists here so the
- * server keeps serving /health on the same port.
+ * These tests exercise transport only, so neither the controller nor the image client is ever
+ * reached: /health short-circuits before them and their routes are covered in
+ * api/http-router.test.ts. It exists here so the server keeps serving /health on the same port.
  */
 function buildRouter() {
-  return createHttpRouter({} as CartController);
+  return createHttpRouter({} as CartController, {} as OdooImageClient);
 }
 
 /** Resolve once the server is listening, returning its assigned ephemeral port. */

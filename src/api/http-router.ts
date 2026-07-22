@@ -3,6 +3,7 @@ import type { CartController } from '../cart/cart-controller.js';
 import { healthCheck } from './health.routes.js';
 import { NotFoundError, errorMeta, messageOf } from '../shared/errors.js';
 import { OdooError } from '../odoo/odoo-client.js';
+import { IMAGE_PATH_PREFIX, type OdooImageClient } from '../odoo/odoo-image-client.js';
 import { logger } from '../config/logger.js';
 
 /** POST /v1/carts/:cart_id/confirm */
@@ -10,6 +11,7 @@ const CONFIRM_ROUTE = /^\/v1\/carts\/([^/]+)\/confirm$/;
 
 /** GET /v1/devices/:device_id/orders */
 const ORDERS_ROUTE = /^\/v1\/devices\/([^/]+)\/orders$/;
+
 
 /**
  * The app's whole REST surface: `/health` plus one confirm route. Hand-rolled on the
@@ -20,7 +22,7 @@ const ORDERS_ROUTE = /^\/v1\/devices\/([^/]+)\/orders$/;
  * implementation"), this router returns honest status codes. That asymmetry is deliberate:
  * do not propagate their JSON-RPC convention outward.
  */
-export function createHttpRouter(cart: CartController) {
+export function createHttpRouter(cart: CartController, images: OdooImageClient) {
   return (req: IncomingMessage, res: ServerResponse): void => {
     if (req.method === 'GET' && (req.url === '/health' || req.url === '/healthz')) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -44,6 +46,11 @@ export function createHttpRouter(cart: CartController) {
       // Same unauthenticated stub posture as confirm above. Decode inside the try so a
       // malformed %-escape answers 400 rather than crashing the request listener.
       void deviceOrders(cart, ordersMatch[1]!, res);
+      return;
+    }
+
+    if (req.method === 'GET' && pathOf(req.url).startsWith(IMAGE_PATH_PREFIX)) {
+      void proxyImage(images, req, res);
       return;
     }
 
@@ -106,6 +113,49 @@ async function deviceOrders(cart: CartController, raw_device_id: string, res: Se
     res.end(JSON.stringify(orders));
   } catch (err) {
     logger.error('device.orders_failed', { device_id, ...errorMeta(err) });
+    sendError(res, 500, messageOf(err));
+  }
+}
+
+/**
+ * Serves Odoo's `/web/image/...` under our own origin, unchanged. The client addresses an image
+ * exactly as it would address Odoo — same path, same query, same cache headers back — and the
+ * only thing added is the `X-Odoo-Database` header, which an `<img src>` cannot send and without
+ * which a multi-database host refuses the route.
+ *
+ * An item with no image answers **200 with Odoo's generic placeholder**, not 404 — Odoo does not
+ * distinguish the two, and neither does this. Do not read a 200 here as "the item has a photo".
+ */
+async function proxyImage(images: OdooImageClient, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // The NORMALIZED path, so `..` cannot walk out of /web/image/ into another Odoo route with our
+  // database header attached; the query string rides along verbatim (`unique=` is the client's
+  // cache-buster, and Odoo's cache headers depend on it).
+  const url = new URL(req.url ?? '/', 'http://localhost');
+  const path = `${url.pathname}${url.search}`;
+
+  try {
+    const image = await images.fetchImage(path, req.headers['if-none-match']);
+    if (image.notModified) {
+      res.writeHead(304).end();
+      return;
+    }
+    res
+      .writeHead(200, {
+        'content-type': image.contentType,
+        'content-length': image.bytes.length,
+        ...(image.etag !== undefined ? { etag: image.etag } : {}),
+        ...(image.cacheControl !== undefined ? { 'cache-control': image.cacheControl } : {}),
+      })
+      .end(image.bytes);
+  } catch (err) {
+    if (err instanceof OdooError) {
+      // 502 with Odoo's message so a misconfigured ODOO_API_DATABASE is diagnosable rather
+      // than showing up as a broken image.
+      logger.warn('odoo.image_proxy_failed', { path, ...errorMeta(err) });
+      sendError(res, 502, err.message);
+      return;
+    }
+    logger.error('odoo.image_proxy_error', { path, ...errorMeta(err) });
     sendError(res, 500, messageOf(err));
   }
 }
