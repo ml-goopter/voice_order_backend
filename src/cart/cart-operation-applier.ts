@@ -31,13 +31,17 @@ async function priced(cart: Cart, items: CartLine[], menu: MenuLookup, pos: PosC
   const extraOf = new Map(
     menuItems.flatMap((i) => i.modifiers.map((m) => [m.ptav_id, m.price_extra_cents] as const)),
   );
-  const subtotal = items.reduce((sum, line) => {
+  // Per-line ex-tax subtotal: surcharge is per unit, so the whole line scales with quantity.
+  // This is the local estimate; the controller's POS quote overwrites it when it succeeds
+  // (applyQuoteToCart), and it stands as the fallback when the quote fails.
+  const pricedItems = items.map((line) => {
     const unit =
       (priceOf.get(line.product_tmpl_id) ?? 0) +
       line.modifiers.reduce((acc, m) => acc + (extraOf.get(m.ptav_id) ?? 0), 0);
-    return sum + unit * line.quantity;
-  }, 0);
-  return { ...cart, items, subtotal_cents: subtotal, tax_cents: 0, total_cents: subtotal, last_updated: nowIso() };
+    return { ...line, price_cents: unit * line.quantity };
+  });
+  const subtotal = pricedItems.reduce((sum, line) => sum + line.price_cents, 0);
+  return { ...cart, items: pricedItems, subtotal_cents: subtotal, tax_cents: 0, total_cents: subtotal, last_updated: nowIso() };
 }
 
 /**
@@ -70,6 +74,7 @@ export async function applyOperation(
         names: item.names,
         quantity: op.quantity,
         modifiers,
+        price_cents: 0, // set by priced() below
       };
       return ok(await priced(cart, [...cart.items, line], menu, pos));
     }
