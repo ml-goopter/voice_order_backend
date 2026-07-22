@@ -151,7 +151,7 @@ function transcript(text: string, over: Partial<AppEventMap['stt.final_transcrip
  * view re-resolves every name from the menu and never reads them, so these fixtures fill the
  * required fields with a placeholder that would be obvious if it ever surfaced in a view. */
 const mod = (ptav_id: CartModifier['ptav_id']): CartModifier => ({ ptav_id, name: 'SNAPSHOT_UNREAD' });
-const line = (l: Omit<CartLine, 'name' | 'names'>): CartLine => ({ ...l, name: 'SNAPSHOT_UNREAD', names: {} });
+const line = (l: Omit<CartLine, 'name' | 'names' | 'price_cents'>): CartLine => ({ ...l, name: 'SNAPSHOT_UNREAD', names: {}, price_cents: 0 });
 
 function cartWith(version: number, lines: Cart['items'] = []): Cart {
   return {

@@ -106,7 +106,8 @@ describe('applyOperation', () => {
       expect(line.names).toEqual({ en_US: 'Chicken Burger', zh_CN: '鸡肉汉堡' });
       expect(line.quantity).toBe(2);
       expect(line.modifiers).toEqual([]);
-      // 2 × 500 = 1000
+      // 2 × 500 = 1000 — the line carries its own ex-tax subtotal too.
+      expect(line.price_cents).toBe(1000);
       expect(next.subtotal_cents).toBe(1000);
       expect(next.total_cents).toBe(1000);
     });
@@ -121,6 +122,7 @@ describe('applyOperation', () => {
         ),
       );
       // 2 × (500 + 150) = 1300 — the surcharge is per unit, not per line.
+      expect(next.items[0]!.price_cents).toBe(1300);
       expect(next.subtotal_cents).toBe(1300);
       expect(next.total_cents).toBe(1300);
     });
@@ -213,6 +215,7 @@ describe('applyOperation', () => {
       const { cart: withItem, line_id } = await addItem(cart, menu, 'chicken_burger', 1);
       const next = expectOk(await applyOperation(withItem, { action: 'update_quantity', line_id, quantity: 3 }, menu, POS));
       expect(next.items[0]!.quantity).toBe(3);
+      expect(next.items[0]!.price_cents).toBe(1500);
       expect(next.subtotal_cents).toBe(1500);
     });
 
@@ -315,7 +318,7 @@ describe('applyOperation — pricing and menu edge cases', () => {
       pos_config_id: POS,
       version: 1,
       // name/names are snapshotted at add time; no applier path reads them back, hence the placeholder.
-      items: [{ line_id: 'ln_1', product_tmpl_id: 100, name: 'SNAPSHOT_UNREAD', names: {}, quantity: 2, modifiers: [] }],
+      items: [{ line_id: 'ln_1', product_tmpl_id: 100, name: 'SNAPSHOT_UNREAD', names: {}, quantity: 2, modifiers: [], price_cents: 1000 }],
       subtotal_cents: 1000,
       tax_cents: 0,
       total_cents: 1000,
@@ -331,6 +334,7 @@ describe('applyOperation — pricing and menu edge cases', () => {
       await applyOperation(cartWithLine(), { action: 'update_quantity', line_id: 'ln_1', quantity: 3 }, emptyMenu, POS),
     );
     expect(next.items[0]!.quantity).toBe(3);
+    expect(next.items[0]!.price_cents).toBe(0);
     expect(next.subtotal_cents).toBe(0);
     expect(next.total_cents).toBe(0);
   });

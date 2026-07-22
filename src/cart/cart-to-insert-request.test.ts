@@ -23,6 +23,7 @@ function fullCart(): Cart {
           { ptav_id: 900, name: 'No mayo' },
           { ptav_id: 901, name: 'Extra cheese', names: { en_US: 'Extra cheese' } },
         ],
+        price_cents: 1300,
       },
     ],
   };
@@ -55,7 +56,7 @@ describe('toInsertCartRequest', () => {
   it('flattens modifiers to ptav_ids and omits them entirely when there are none', () => {
     const cart = emptyCart('cart_2', 1, { device_id: 'dev_1' });
     cart.items = [
-      { line_id: 'ln_1', product_tmpl_id: 100, name: 'Fries', names: { en_US: 'Fries' }, quantity: 1, modifiers: [] },
+      { line_id: 'ln_1', product_tmpl_id: 100, name: 'Fries', names: { en_US: 'Fries' }, quantity: 1, modifiers: [], price_cents: 300 },
     ];
 
     expect(toInsertCartRequest(cart).items[0]).toEqual({ line_id: 'ln_1', product_tmpl_id: 100, quantity: 1 });
