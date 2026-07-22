@@ -12,11 +12,17 @@ const CONFIRM_ROUTE = /^\/v1\/carts\/([^/]+)\/confirm$/;
 /** GET /v1/devices/:device_id/orders */
 const ORDERS_ROUTE = /^\/v1\/devices\/([^/]+)\/orders$/;
 
+/**
+ * Percent-encoded separators and dot segments: a URL parser resolves `..` but splits only on a
+ * literal `/`, so `%2f`/`%5c`/`%2e` survive normalization and would leave the escaping question
+ * to whoever unquotes the path downstream. No image path needs them.
+ */
+const ENCODED_TRAVERSAL = /%2e|%2f|%5c|\\/i;
 
 /**
- * The app's whole REST surface: `/health` plus one confirm route. Hand-rolled on the
- * existing node:http server — two routes do not justify a framework in a WebSocket-first
- * app, where everything else rides on `/ws`.
+ * The app's whole REST surface: `/health`, confirm, past orders, and the Odoo image proxy.
+ * Hand-rolled on the existing node:http server — a handful of routes do not justify a framework
+ * in a WebSocket-first app, where everything else rides on `/ws`.
  *
  * Unlike the Odoo far side, which answers HTTP 200 even on failure (SPEC § "Found during
  * implementation"), this router returns honest status codes. That asymmetry is deliberate:
@@ -49,8 +55,11 @@ export function createHttpRouter(cart: CartController, images: OdooImageClient) 
       return;
     }
 
-    if (req.method === 'GET' && pathOf(req.url).startsWith(IMAGE_PATH_PREFIX)) {
-      void proxyImage(images, req, res);
+    // HEAD must answer exactly as GET does, headers and status alike (RFC 9110 §9.3.2) — caches
+    // and monitors probe with it, and a 404 there reads as "this image does not exist".
+    const target = req.method === 'GET' || req.method === 'HEAD' ? urlOf(req.url) : null;
+    if (target !== null && target.pathname.startsWith(IMAGE_PATH_PREFIX) && !ENCODED_TRAVERSAL.test(target.pathname)) {
+      void proxyImage(images, req, res, target);
       return;
     }
 
@@ -126,28 +135,52 @@ async function deviceOrders(cart: CartController, raw_device_id: string, res: Se
  * An item with no image answers **200 with Odoo's generic placeholder**, not 404 — Odoo does not
  * distinguish the two, and neither does this. Do not read a 200 here as "the item has a photo".
  */
-async function proxyImage(images: OdooImageClient, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function proxyImage(
+  images: OdooImageClient,
+  req: IncomingMessage,
+  res: ServerResponse,
+  target: URL,
+): Promise<void> {
   // The NORMALIZED path, so `..` cannot walk out of /web/image/ into another Odoo route with our
   // database header attached; the query string rides along verbatim (`unique=` is the client's
   // cache-buster, and Odoo's cache headers depend on it).
-  const url = new URL(req.url ?? '/', 'http://localhost');
-  const path = `${url.pathname}${url.search}`;
+  const path = `${target.pathname}${target.search}`;
+
+  // A browser that navigates away mid-load, or scrolls a thumbnail out of a virtualized list,
+  // destroys the response — stop paying for the upstream fetch and its buffer.
+  const abort = new AbortController();
+  res.on('close', () => abort.abort());
 
   try {
-    const image = await images.fetchImage(path, req.headers['if-none-match']);
+    const image = await images.fetchImage(path, {
+      ifNoneMatch: req.headers['if-none-match'],
+      signal: abort.signal,
+    });
+    const cacheHeaders = {
+      ...(image.etag !== undefined ? { etag: image.etag } : {}),
+      ...(image.cacheControl !== undefined ? { 'cache-control': image.cacheControl } : {}),
+    };
     if (image.notModified) {
-      res.writeHead(304).end();
+      // The validator must ride along or the browser cannot refresh its stored entry's
+      // freshness, and every render revalidates forever (RFC 9110 §15.4.5).
+      res.writeHead(304, cacheHeaders).end();
       return;
     }
     res
       .writeHead(200, {
         'content-type': image.contentType,
         'content-length': image.bytes.length,
-        ...(image.etag !== undefined ? { etag: image.etag } : {}),
-        ...(image.cacheControl !== undefined ? { 'cache-control': image.cacheControl } : {}),
+        // Odoo sends both on its own image responses; relaying only the cache headers would
+        // strip them. Content-sniffing an image body into markup is the attack they prevent.
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'",
+        ...cacheHeaders,
       })
-      .end(image.bytes);
+      // Same headers as GET, no body — Node does not strip it for us.
+      .end(req.method === 'HEAD' ? undefined : image.bytes);
   } catch (err) {
+    // The socket is already gone (client hung up, which aborted the fetch); nothing to answer.
+    if (res.writableEnded || res.destroyed) return;
     if (err instanceof OdooError) {
       // 502 with Odoo's message so a misconfigured ODOO_API_DATABASE is diagnosable rather
       // than showing up as a broken image.
@@ -165,7 +198,20 @@ function sendError(res: ServerResponse, status: number, message: string): void {
   res.end(JSON.stringify({ error: message }));
 }
 
+/**
+ * The request target as a URL, or null when it is not one. `//` is a legal HTTP request-line but
+ * an invalid URL (empty host), and an uncaught TypeError in the request listener would take the
+ * process down — the same hazard the confirm/orders decoding guards against.
+ */
+function urlOf(url: string | undefined): URL | null {
+  try {
+    return new URL(url ?? '/', 'http://localhost');
+  } catch {
+    return null;
+  }
+}
+
 /** Strip the query string; `req.url` is a path-with-query, and routes match on the path. */
 function pathOf(url: string | undefined): string {
-  return new URL(url ?? '/', 'http://localhost').pathname;
+  return urlOf(url)?.pathname ?? '';
 }

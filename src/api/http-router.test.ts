@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { connect, type AddressInfo } from 'node:net';
 import { createHttpRouter } from './http-router.js';
 import type { CartController } from '../cart/cart-controller.js';
 import { NotFoundError } from '../shared/errors.js';
@@ -32,6 +32,28 @@ const ok: CartController['confirm'] = async () => 42;
 
 /** Serve with only the image client varied. */
 const serveImages = (images: OdooImageClient): Promise<string> => serve(ok, async () => [], images);
+
+/**
+ * Send a request line verbatim over a raw socket and resolve its status line. `fetch` normalizes
+ * the target before it leaves the client, so it cannot express the malformed or encoded targets
+ * these routes must survive — a test written with `fetch` would assert on a rewritten URL.
+ */
+function rawRequest(base: string, requestLine: string, timeoutMs = 2000): Promise<string> {
+  const { port } = new URL(base);
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(port), '127.0.0.1', () => {
+      socket.write(`${requestLine}\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`);
+    });
+    let body = '';
+    socket.setTimeout(timeoutMs, () => {
+      socket.destroy();
+      reject(new Error(`no response to ${requestLine} within ${timeoutMs}ms`));
+    });
+    socket.on('data', (chunk) => (body += chunk.toString()));
+    socket.on('error', reject);
+    socket.on('close', () => resolve(body.split('\r\n')[0] ?? ''));
+  });
+}
 
 describe('POST /v1/carts/:cart_id/confirm', () => {
   it('answers a bare 200 with no body on success', async () => {
@@ -203,8 +225,8 @@ describe('GET /web/image/... (Odoo image proxy)', () => {
     return {
       calls,
       client: {
-        fetchImage: async (path, ifNoneMatch) => {
-          calls.push([path, ifNoneMatch]);
+        fetchImage: async (path, opts) => {
+          calls.push([path, opts?.ifNoneMatch]);
           return { notModified: false, bytes: PNG, contentType: 'image/png' };
         },
       },
@@ -220,6 +242,15 @@ describe('GET /web/image/... (Odoo image proxy)', () => {
     expect(res.headers.get('content-type')).toBe('image/png');
     expect(res.headers.get('content-length')).toBe('4');
     expect(Buffer.from(await res.arrayBuffer())).toEqual(PNG);
+  });
+
+  it('marks the response un-sniffable and script-free — we serve these from our own origin', async () => {
+    const base = await serveImages(stubImages);
+
+    const res = await fetch(`${base}${IMAGE}`);
+
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('content-security-policy')).toBe("default-src 'none'");
   });
 
   it('forwards the upstream etag and cache-control', async () => {
@@ -248,25 +279,56 @@ describe('GET /web/image/... (Odoo image proxy)', () => {
     expect(rec.calls).toEqual([[`${IMAGE}?unique=abc123`, undefined]]);
   });
 
-  it('normalizes the path so `..` cannot walk out of /web/image/', async () => {
+  it('answers HEAD exactly as GET, headers and all, with no body', async () => {
+    // Caches and monitors probe with HEAD; a 404 there reads as "this image does not exist".
+    const base = await serveImages(stubImages);
+
+    const res = await fetch(`${base}${IMAGE}`, { method: 'HEAD' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect(res.headers.get('content-length')).toBe('4');
+    expect(await res.text()).toBe('');
+  });
+
+  it('rejects `..` that a URL parser resolves out of the image prefix', async () => {
     const rec = recorder();
     const base = await serveImages(rec.client);
 
-    // Encoded so fetch() forwards it verbatim instead of resolving it client-side.
-    const res = await fetch(`${base}/web/image/%2E%2E/%2E%2E/web/session/authenticate`);
-
-    // Normalized to /web/session/authenticate, which no longer matches the prefix.
-    expect(res.status).toBe(404);
+    expect(await rawRequest(base, 'GET /web/image/../../web/session/authenticate HTTP/1.1')).toContain('404');
     expect(rec.calls).toEqual([]);
   });
 
-  it('forwards if-none-match and relays a 304 with no body', async () => {
+  it.each(['%2e%2e%2fweb%2fjsonrpc', '..%5cweb%5cjsonrpc', '%2E%2E/%2E%2E/web/session/authenticate'])(
+    'rejects percent-encoded traversal /web/image/%s',
+    async (suffix) => {
+      // Sent raw: a URL parser splits only on a literal `/`, so `%2f` survives normalization and
+      // whether it escapes would be decided by whoever unquotes the path downstream.
+      const rec = recorder();
+      const base = await serveImages(rec.client);
+
+      expect(await rawRequest(base, `GET /web/image/${suffix} HTTP/1.1`)).toContain('404');
+      expect(rec.calls).toEqual([]);
+    },
+  );
+
+  it('answers a request target that is not a valid URL instead of hanging', async () => {
+    // `//` is a legal request-line but an invalid URL (empty host). An uncaught TypeError in the
+    // request listener would leave the socket unanswered and, under node, kill the process.
+    const base = await serveImages(stubImages);
+
+    expect(await rawRequest(base, 'GET // HTTP/1.1')).toContain('404');
+  });
+
+  it('forwards if-none-match and relays a 304 carrying the validator', async () => {
+    // A 304 without the validator leaves the browser's stored entry unrefreshed, so it
+    // revalidates on every render forever (RFC 9110 §15.4.5).
     const rec = {
       calls: [] as Array<string | undefined>,
       client: {
-        fetchImage: async (_p: string, ifNoneMatch?: string) => {
-          rec.calls.push(ifNoneMatch);
-          return { notModified: true as const };
+        fetchImage: async (_p: string, opts?: { ifNoneMatch?: string | undefined }) => {
+          rec.calls.push(opts?.ifNoneMatch);
+          return { notModified: true as const, etag: '"abc"', cacheControl: 'max-age=60' };
         },
       },
     };
@@ -275,8 +337,24 @@ describe('GET /web/image/... (Odoo image proxy)', () => {
     const res = await fetch(`${base}${IMAGE}`, { headers: { 'if-none-match': '"abc"' } });
 
     expect(res.status).toBe(304);
+    expect(res.headers.get('etag')).toBe('"abc"');
+    expect(res.headers.get('cache-control')).toBe('max-age=60');
     expect(await res.text()).toBe('');
     expect(rec.calls).toEqual(['"abc"']);
+  });
+
+  it('hands the client an abort signal so a hang-up cancels the upstream fetch', async () => {
+    let signal: AbortSignal | undefined;
+    const base = await serveImages({
+      fetchImage: async (_p, opts) => {
+        signal = opts?.signal;
+        return { notModified: false, bytes: PNG, contentType: 'image/png' };
+      },
+    });
+
+    await fetch(`${base}${IMAGE}`);
+
+    expect(signal).toBeInstanceOf(AbortSignal);
   });
 
   it('answers 502 with Odoo’s message when the fetch fails', async () => {
