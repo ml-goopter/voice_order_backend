@@ -56,6 +56,9 @@ interface ModifierRow {
   price_extra: string | null; // numeric → string in node-pg
   names: Translatable;
   attr_name: Translatable;
+  attribute_line_id: number | null; // ptal — the per-product group
+  display_type: string | null; // product_attribute.display_type
+  attr_active: boolean | null; // product_attribute.active
 }
 
 /**
@@ -253,6 +256,9 @@ export class PostgresMenuStore implements MenuStore {
       `SELECT ptav.product_tmpl_id,
               ptav.id AS ptav_id,
               ptav.price_extra,
+              ptav.attribute_line_id,
+              pa.display_type,
+              pa.active AS attr_active,
               pav.name AS names,
               pa.name  AS attr_name
          FROM product_template_attribute_value ptav
@@ -267,6 +273,15 @@ export class PostgresMenuStore implements MenuStore {
     const modsByTmpl = new Map<number, CandidateModifier[]>();
     for (const m of modRows) {
       const list = modsByTmpl.get(m.product_tmpl_id) ?? [];
+      // A group is REQUIRED (pick exactly one) iff its attribute is live and not `multi` — Odoo
+      // stores no requiredness column, so `display_type` is the only signal
+      // (docs/pos-product-modifier-order-schema.md §Required modifiers, which filters on
+      // `pa.active` for the same reason). Every leg degrades OPEN: a null display_type, a null
+      // attribute_line_id, or an archived attribute yields an UNrequired, ungrouped option.
+      // Inferring "required" from missing or archived data would make the item unorderable —
+      // strictly worse than not enforcing a rule we never enforced before.
+      const required =
+        m.display_type != null && m.display_type !== 'multi' && m.attr_active !== false && m.attribute_line_id != null;
       list.push({
         modifier_key: String(m.ptav_id),
         ptav_id: m.ptav_id,
@@ -275,6 +290,18 @@ export class PostgresMenuStore implements MenuStore {
         // Full translatable map for the client; falls back to the attribute's names
         // when the value itself has none (mirrors the `name` fallback chain).
         names: namesOf(m.names, m.attr_name),
+        // Group metadata rides ONLY on required options. An optional (`multi`) group needs none of
+        // it — nothing validates it and the option names are self-describing — and emitting it
+        // anyway cost ~2.2 KB of JSON per item, re-sent to the model on every agent step, for a
+        // field that always read `false`. Omitting it keeps an all-`multi` tenant's payload
+        // byte-identical to before this feature. Absent `required` therefore means "optional".
+        ...(required
+          ? {
+              group_key: String(m.attribute_line_id),
+              group_name: firstName(m.attr_name),
+              required: true,
+            }
+          : {}),
       });
       modsByTmpl.set(m.product_tmpl_id, list);
     }

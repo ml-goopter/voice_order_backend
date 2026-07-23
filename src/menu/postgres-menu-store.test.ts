@@ -98,6 +98,8 @@ describe('PostgresMenuStore hydration (JOIN to Odoo)', () => {
     price_extra: '1.50',
     names: { en_US: 'Large' },
     attr_name: { en_US: 'Size' },
+    attribute_line_id: 7,
+    display_type: 'multi',
   };
 
   it('maps a joined item + modifier to a runtime MenuItem', async () => {
@@ -113,9 +115,51 @@ describe('PostgresMenuStore hydration (JOIN to Odoo)', () => {
       available: true,
       modifiers: [
         // price_extra 1.50 → cents, mirroring base_price_cents.
+        // display_type 'multi' ⇒ optional ⇒ NO group fields at all (absent means optional), so an
+        // all-multi tenant's payload is unchanged by the required-group feature.
         { modifier_key: '5', ptav_id: 5, price_extra_cents: 150, name: 'Large', names: { en_US: 'Large' } },
       ],
     });
+  });
+
+  // Requiredness is inferred from display_type alone (docs/pos-product-modifier-order-schema.md
+  // §Required modifiers): anything that is not 'multi' is a pick-exactly-one group. Optional
+  // groups carry no group fields at all, so `required` is `true` or absent — never `false`.
+  it.each([
+    ['radio', true],
+    ['pills', true],
+    ['select', true],
+    ['multi', undefined],
+  ])('maps display_type %s to required=%s', async (display_type, required) => {
+    const pool = new FakePool();
+    pool.itemRows = [itemRow];
+    pool.modRows = [{ ...modRow, display_type }];
+    const item = await makeStore(pool).getItem(1, 42);
+    expect(item?.modifiers[0]?.required).toBe(required);
+  });
+
+  it('carries group_key/group_name only on a required group', async () => {
+    const pool = new FakePool();
+    pool.itemRows = [itemRow];
+    pool.modRows = [{ ...modRow, display_type: 'radio' }];
+    const item = await makeStore(pool).getItem(1, 42);
+    expect(item?.modifiers[0]).toMatchObject({ group_key: '7', group_name: 'Size', required: true });
+  });
+
+  // Degrade OPEN in every direction: requiredness inferred from missing or archived data would
+  // make the item unorderable. An ungrouped option can never join a required group, so it never
+  // blocks. `attr_active: false` is the live jadegarden1 "Sides" case (an archived attribute).
+  it.each([
+    ['a null display_type', { display_type: null }],
+    ['a null attribute_line_id', { attribute_line_id: null }],
+    ['an archived attribute', { display_type: 'radio', attr_active: false }],
+  ])('treats %s as ungrouped and NOT required', async (_label, overrides) => {
+    const pool = new FakePool();
+    pool.itemRows = [itemRow];
+    pool.modRows = [{ ...modRow, display_type: 'radio', ...overrides }];
+    const item = await makeStore(pool).getItem(1, 42);
+    expect(item?.modifiers[0]?.required).toBeUndefined();
+    expect(item?.modifiers[0]?.group_key).toBeUndefined();
   });
 
   it('maps a null price_extra to a zero surcharge', async () => {
