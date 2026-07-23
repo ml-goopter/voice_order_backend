@@ -9,10 +9,12 @@ import type { MentionedItem } from '../../contracts/mentioned-item.js';
 import { toMentionedItem } from '../mentioned-items.js';
 import { logger } from '../../config/logger.js';
 
-// runTools only reaches MenuService on a `search_menu` call, so the propose-only cases below can
-// use a bare stub that would throw if touched (which proves search is not on that path). The
-// search cases build their own stub with `menuReturning`.
-const menu = {} as MenuService;
+// `propose_cart` resolves each add_item's key to check required modifier groups, so even a
+// propose-only case reaches MenuService. This stub resolves nothing, which is the documented
+// degrade (unknown item ⇒ the required-group check is skipped) and keeps these cases focused on
+// the reply/mentioned-items behavior they were written for. `searchMenu` is absent on purpose:
+// these cases must not search.
+const menu = { resolveItemKey: async () => undefined } as unknown as MenuService;
 
 const call = (args: unknown): ToolCall => ({ id: 'c0', name: TOOL_NAMES.propose, arguments: args });
 
@@ -61,11 +63,13 @@ const candidate = (key: string, name: string): CandidateItem => ({
   available_modifiers: [],
 });
 
-/** A `MenuService` stub whose `searchMenu` returns one scripted item set per call, in order. */
+/** A `MenuService` stub whose `searchMenu` returns one scripted item set per call, in order.
+ *  `resolveItemKey` resolves nothing, so a propose in the same batch skips the required-group check. */
 function menuReturning(...sets: CandidateItem[][]): MenuService {
   let i = 0;
   return {
     searchMenu: async () => ({ items: sets[i++] ?? [] }),
+    resolveItemKey: async () => undefined,
   } as unknown as MenuService;
 }
 
@@ -113,6 +117,129 @@ describe('runTools — bundled propose_cart reply (approach B)', () => {
     const toolMsg = patch.agent_messages?.at(-1);
     expect(toolMsg?.role).toBe('tool');
     expect((toolMsg as { content: string }).content).toContain('at least one operation');
+  });
+});
+
+describe('runTools — required modifier groups block propose_cart', () => {
+  /** An item with one required pick-one group ("Noodles"). */
+  const mushu = {
+    product_tmpl_id: 3413,
+    menu_item_key: 'mushu_pork',
+    names: { en_US: 'A11. Mushu Pork' },
+    base_price_cents: 1500,
+    available: true,
+    modifiers: [
+      { modifier_key: '10', ptav_id: 10, name: 'Chow Mein', price_extra_cents: 0, group_key: 'g1', group_name: 'Noodles', required: true },
+      { modifier_key: '11', ptav_id: 11, name: 'Rice Noodles', price_extra_cents: 0, group_key: 'g1', group_name: 'Noodles', required: true },
+    ],
+  };
+  const menuWith = (item: unknown) =>
+    ({ resolveItemKey: async () => item } as unknown as MenuService);
+
+  const proposeMushu = (modifiers: Array<{ modifier_key: string }> = []) => ({
+    operations: [{ action: 'add_item', menu_item_key: 'mushu_pork', quantity: 1, modifiers }],
+    reply: 'Added it.',
+  });
+
+  it('rejects an add_item missing its required choice, with no output and no reply', async () => {
+    const patch = await runTools(menuWith(mushu), stateWith(proposeMushu()));
+
+    // No terminal channel written ⇒ the loop router sends control back to the agent to ask.
+    expect(patch.output).toBeNull();
+    expect(patch.reply).toBeUndefined();
+    const toolMsg = patch.agent_messages?.at(-1) as { role: string; content: string };
+    expect(toolMsg.role).toBe('tool');
+    expect(toolMsg.content).toContain('Noodles');
+    expect(toolMsg.content).toContain('Chow Mein, Rice Noodles');
+    // It must steer the agent to END the turn asking, not to re-propose — the customer cannot
+    // answer from inside the tool loop, so an in-loop retry can only guess or hit the step limit.
+    expect(toolMsg.content).toContain('end this turn with a spoken reply');
+  });
+
+  it('accepts the same add_item once exactly one required option is chosen', async () => {
+    const patch = await runTools(menuWith(mushu), stateWith(proposeMushu([{ modifier_key: '10' }])));
+
+    expect(patch.output?.operations).toHaveLength(1);
+    expect(patch.reply).toBe('Added it.');
+  });
+
+  it('rejects two choices from the same required group', async () => {
+    const patch = await runTools(
+      menuWith(mushu),
+      stateWith(proposeMushu([{ modifier_key: '10' }, { modifier_key: '11' }])),
+    );
+
+    expect(patch.output).toBeNull();
+    expect((patch.agent_messages?.at(-1) as { content: string }).content).toContain('only one choice');
+  });
+
+  // Izumi has zero required groups; the feature must be a no-op there. An optional option carries
+  // no group fields at all, which is exactly what the store emits for a `multi` group.
+  it('accepts an item whose groups are all optional with nothing selected', async () => {
+    const optionalOnly = {
+      ...mushu,
+      modifiers: [{ modifier_key: '20', ptav_id: 20, name: 'Bok Choy', price_extra_cents: 150 }],
+    };
+
+    const patch = await runTools(menuWith(optionalOnly), stateWith(proposeMushu()));
+
+    expect(patch.output?.operations).toHaveLength(1);
+  });
+
+  // The edit path runs off `s.cart_view`, which the other cases leave unset. Without this, nothing
+  // verifies runTools passes the cart view through at all.
+  it('rejects a remove_modifier that empties a required group on a cart line', async () => {
+    const line = {
+      line_id: 'L1',
+      menu_item_key: 'mushu_pork',
+      name: 'A11. Mushu Pork',
+      quantity: 1,
+      base_price_cents: 1500,
+      modifiers: [mushu.modifiers[0]],
+      available_modifiers: mushu.modifiers,
+    };
+    const state = {
+      ...stateWith({ operations: [{ action: 'remove_modifier', line_id: 'L1', modifier_key: '10' }] }),
+      cart_view: { cart_id: 'cart_1', pos_config_id: 1, version: 1, items: [line] },
+    } as unknown as OrderStateType;
+
+    const patch = await runTools(menu, state);
+
+    expect(patch.output).toBeNull();
+    expect((patch.agent_messages?.at(-1) as { content: string }).content).toContain('Noodles');
+  });
+
+  it('logs the tool call as failed so the error is visible', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    await runTools(menuWith(mushu), stateWith(proposeMushu()));
+
+    expect(warn).toHaveBeenCalledWith(
+      'order.agent_tool',
+      expect.objectContaining({ ok: false, tool: TOOL_NAMES.propose }),
+    );
+    warn.mockRestore();
+  });
+
+  // A menu outage must not block ordering, but it must not be silent either. A genuine menu MISS
+  // returns undefined, so a THROW is always abnormal — hence error level, not warn: this is the
+  // only signal distinguishing "check permanently broken" from routine noise.
+  it('skips the check and logs an ERROR when the menu read throws', async () => {
+    const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
+    const broken = {
+      resolveItemKey: async () => {
+        throw new Error('pg down');
+      },
+    } as unknown as MenuService;
+
+    const patch = await runTools(broken, stateWith(proposeMushu()));
+
+    expect(patch.output?.operations).toHaveLength(1);
+    expect(error).toHaveBeenCalledWith(
+      'order.required_modifier_check_skipped',
+      expect.objectContaining({ menu_item_key: 'mushu_pork', message: 'pg down' }),
+    );
+    error.mockRestore();
   });
 });
 
