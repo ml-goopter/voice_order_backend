@@ -7,6 +7,14 @@ export interface CartModifierView {
   name: string;
   /** Per-unit surcharge, so the agent can quote an option's cost. */
   price_extra_cents: Cents;
+  /**
+   * The three group fields are present ONLY on an option belonging to a REQUIRED (pick-exactly-one)
+   * group; an optional/`multi` option carries none of them. So absent ⇒ optional, and `required` is
+   * never `false` on the wire.
+   */
+  group_key?: string;
+  group_name?: string;
+  required?: boolean;
 }
 
 /**

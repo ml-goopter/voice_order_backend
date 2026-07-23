@@ -7,11 +7,16 @@ import type { CandidateModifier } from '../../menu/menu-types.js';
 import type { CartModifierView, CartView } from '../../contracts/cart-view.js';
 import { displayName } from '../../shared/display-name.js';
 
-/** Project a menu modifier to its prompt-facing view — keys/names/price, no numeric ids. */
+/** Project a menu modifier to its prompt-facing view — keys/names/price/group, no numeric ids. */
 const toModifierView = (m: CandidateModifier): CartModifierView => ({
   modifier_key: m.modifier_key,
   name: m.name,
   price_extra_cents: m.price_extra_cents,
+  // Carry the group + requiredness so the agent can honour pick-one groups on an EDIT (e.g. not
+  // stripping the last option of a required group), and so propose_cart can enforce it.
+  ...(m.group_key !== undefined ? { group_key: m.group_key } : {}),
+  ...(m.group_name !== undefined ? { group_name: m.group_name } : {}),
+  ...(m.required !== undefined ? { required: m.required } : {}),
 });
 
 /** Load the current cart snapshot; the turn's base_version comes from cart.version (§9). */
