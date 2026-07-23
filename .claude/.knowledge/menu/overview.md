@@ -37,7 +37,22 @@ the test/dev double.
   `price_extra_cents = round(ptav.price_extra·100)` (the per-unit surcharge; read per
   ptav, since the same option value may be priced differently on another item),
   modifier `name` en_US-first plus a full `names` map (`namesOf`, value-names else the
-  attribute's, for the client). `ensureIndex()` runs idempotent DDL (`CREATE EXTENSION
+  attribute's, for the client). The modifier JOIN also reads `ptav.attribute_line_id` and
+  `pa.display_type`/`pa.active` to attach the option's **group + requiredness**: `group_key =
+  String(attribute_line_id)` (the per-product group — the same attribute on another product is a
+  different group), `group_name` = the attribute's name, and `required` = the attribute is live and
+  `display_type <> 'multi'` (radio/pills/select ⇒ pick EXACTLY one; Odoo has no requiredness
+  column, so `display_type` is the only signal — docs/pos-product-modifier-order-schema.md
+  §Required modifiers, whose canonical query filters `pa.active` for the same reason). The three
+  fields ride **only on required options**; an optional (`multi`) option carries none of them, so
+  **absent ⇒ optional** and `required` is never `false` on the wire. That is a payload decision:
+  emitting them everywhere cost ~2.2 KB of JSON per item — re-sent to the model on every agent
+  step — to say `false` ~34 times, and it keeps an all-`multi` tenant byte-identical to before the
+  feature (live: 125 of 7,345 ptav rows carry them in jadegarden1, **0 of 4,202** in
+  pos_izumisushi). Every leg degrades OPEN — a null `display_type`, a null `attribute_line_id`, or
+  an ARCHIVED attribute yields an ungrouped, unrequired option — because an option with no group
+  can never join a required group and so can never block an order, whereas inferring "required"
+  from missing or archived data would make the item unorderable. `ensureIndex()` runs idempotent DDL (`CREATE EXTENSION
   vector`, `CREATE TABLE item_vector`, a `(pos,tmpl)` btree + an HNSW
   `vector_cosine_ops` index); no-ops when `dims <= 0`. Any query error degrades to
   empty → the matcher's fuzzy fallback. Uses a shared `pg.Pool`

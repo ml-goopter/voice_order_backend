@@ -25,6 +25,10 @@ module and depended on by several.
 - **`cart-view.ts`** — prompt-facing cart projections (`CartView` / `CartLineView` /
   `CartModifierView`) + `HistoryTurn`. What the agent sees: keys/names/per-unit prices, no
   numeric ids, no totals. (Was `ordering/schemas/order-graph-input.schema.ts`.)
+  `CartModifierView` also carries the optional `group_key` / `group_name` / `required` triple
+  (mirroring `menu`'s `CandidateModifier`) so the agent can honour pick-one groups when EDITING a
+  line — a swap must remove the old option and add the new one — and so `propose_cart` can
+  validate the line's resulting modifier set.
 - **`intent.ts`** — the classifier output contract: `intentSchema` (`z.enum(['service','junk'])`),
   `Intent`, `DEFAULT_INTENT`. The langgraph routing table `INTENT_ROUTE` deliberately stays in
   `ordering/graph/intents.ts` (it needs `END`); only the label set is shared here.

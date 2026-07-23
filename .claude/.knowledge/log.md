@@ -7,6 +7,39 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-23 — menu/ordering: required modifier groups enforced at `propose_cart`
+- **What:** modifier options now carry their per-product group and requiredness
+  (`group_key` = `attribute_line_id`, `group_name`, `required`) on `CandidateModifier` and
+  `CartModifierView`, hydrated from Odoo (`ptav.attribute_line_id` + `pa.display_type` added to
+  the modifier JOIN). New `ordering/tools/required-modifiers.ts` runs
+  `findRequiredModifierViolations` over the modifier set a `propose_cart` batch RESULTS in;
+  a required group holding anything other than exactly one option makes the call a retriable
+  tool error. A REQUIRED OPTIONS prompt section tells the agent to ASK which option the customer
+  wants instead of guessing.
+- **Why:** Odoo enforces requiredness nowhere (`goopter_pos_attribute_selection_limit` is
+  uninstalled and there is no `required` column), and the POS silently pre-selects the first
+  option. On a voice path a silent default puts food the customer never chose on the order, so the
+  agent must ask. Failing inside `propose_cart` — rather than deferring to the cart module — is
+  what keeps the correction inside the SAME turn: the tool error re-enters the agent loop, whereas
+  a `cart.operation_rejected` would arrive after the turn already ended.
+- **Where:** `menu/menu-types.ts`, `menu/postgres-menu-store.ts` (+test),
+  `contracts/cart-view.ts`, `ordering/nodes/load-cart.node.ts`,
+  `ordering/tools/required-modifiers.ts` (new, +test), `ordering/tools/run-tools.ts` (+test),
+  `llm/agent-prompt-builder.ts`.
+- **Notes:** requiredness is inferred from `display_type <> 'multi'` on a LIVE attribute. Every leg
+  degrades OPEN — a null `display_type`/`attribute_line_id`, an archived attribute, an unresolved
+  or unavailable item — because inferring "required" from missing or archived data would block the
+  item from being ordered at all; a menu read that THROWS logs
+  `order.required_modifier_check_skipped` at ERROR (a genuine miss returns `undefined`, so a throw
+  is always abnormal and must not hide a permanently disabled check). The group fields ride only on
+  required options, so an all-`multi` tenant's prompt payload is unchanged. A line is judged only
+  on the groups the batch changed, so an unrelated edit to an already non-compliant line is not
+  rejected. Verified against live Odoo: jadegarden1 tmpl 3413 is
+  `radio` (Chicken/Pork → enforced), tmpl 3410 is all `multi` (unenforced). **pos_izumisushi has
+  only `multi` attributes, so this is a no-op there** — Jade Garden is the only tenant that
+  exercises the path. Jade's `Rice / Noodles` and `cooking style` are modelled `multi` and are
+  therefore optional by this rule, matching POS behavior rather than menu-author intent.
+
 ## 2026-07-22 — ordering: `mentioned_items` on `order.reply`
 - **What:** the agent declares the `menu_item_key`s its spoken reply named; each is verified
   against what this turn's `search_menu` calls actually returned and the resolved `MentionedItem`s
