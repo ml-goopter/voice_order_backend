@@ -26,6 +26,7 @@ import { RedisCartRepository } from './cart/cart-repository.js';
 import { CartController } from './cart/cart-controller.js';
 import { registerCartHandlers } from './cart/register-handlers.js';
 import { HttpOdooClient } from './odoo/odoo-client.js';
+import { HttpOdooImageClient } from './odoo/odoo-image-client.js';
 import { createHttpRouter } from './api/http-router.js';
 
 export interface App {
@@ -68,6 +69,10 @@ export function createApp(): App {
   const cartController = new CartController(carts, menu, repo, bus);
   registerCartHandlers(bus, cartController);
 
+  // Item photos, proxied off Odoo's public /web/image route — a browser cannot send the
+  // X-Odoo-Database header that a multi-database host requires.
+  const odooImages = new HttpOdooImageClient();
+
   let ws: WebSocketServerHandle | null = null;
 
   return {
@@ -83,7 +88,7 @@ export function createApp(): App {
         logger.warn('menu.index_unavailable', { message: messageOf(err) });
       }
 
-      ws = startWebSocketServer(gateway, config.port, createHttpRouter(cartController));
+      ws = startWebSocketServer(gateway, config.port, createHttpRouter(cartController, odooImages));
       logger.info('app.started', { port: config.port, env: config.nodeEnv });
     },
     async stop() {

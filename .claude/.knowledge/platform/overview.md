@@ -36,6 +36,12 @@ constructs modules and wires them to the event bus.
   | `GET /health`, `GET /healthz` | 200 + `healthCheck()` |
   | `POST /v1/carts/:cart_id/confirm` | 200 **empty** (no body in or out); 404 unknown cart; 502 + Odoo's message; 500 otherwise |
   | `GET /v1/devices/:device_id/orders` | 200 + JSON array of the device's **confirmed** carts (via `cart.ordersByDevice` → the Redis device index); `[]` for an unknown device (not 404); 400 on a malformed `%`-escape; 500 otherwise |
+  | `GET /web/image/...` | the bytes of an Odoo image, proxied verbatim via `odoo/odoo-image-client` (path, query and cache headers pass through; we add only `X-Odoo-Database`); 304 on `If-None-Match`; 502 on Odoo failure. Path-prefix matched on the **normalized** path, so `..` cannot reach another Odoo route |
+
+  The image route keeps Odoo's own URL shape deliberately: the client addresses an image exactly
+  as it would address Odoo, so pointing it at a direct origin later is a base-URL change and
+  nothing else. A 200 there does **not** mean the item has a photo — Odoo answers imageless items
+  with a generic placeholder (see the odoo bundle).
 
   Confirm takes **no request body** — the cart already knows its table. A re-confirm is
   200, not an error (idempotent). `pos_order_id` is persisted on the cart but deliberately
