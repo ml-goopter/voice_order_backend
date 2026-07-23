@@ -32,6 +32,12 @@ export interface CartLine {
   names: Record<LangCode, string>;
   quantity: number;
   modifiers: CartModifier[];
+  /**
+   * This line's subtotal in integer cents, **ex-tax**: (base + Σ modifier surcharge) × quantity.
+   * Server-authoritative when priced by the POS quote (`applyQuoteToCart`), otherwise the
+   * applier's local estimate. Untaxed — unlike the cart's tax-included `total_cents`.
+   */
+  price_cents: Cents;
 }
 
 /** The full cart snapshot — mirrors the Redis value. */

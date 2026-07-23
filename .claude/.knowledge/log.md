@@ -61,6 +61,21 @@ timestamp: 2026-07-07
   it needs one of: `dbfilter = ^%d$` in `odoo.conf`, an nginx `X-Odoo-Database` header on a
   dedicated hostname, or a backend proxy. Image coverage is 27/380 POS items. Verified against
   `jadegarden1` on 2026-07-22.
+## 2026-07-21 — cart: per-line `price_cents` on every cart line
+- **What:** `CartLine` gains `price_cents` — the line's **ex-tax** subtotal
+  `(base + Σ modifier surcharge) × quantity`. `priced()` (cart-operation-applier) now stamps it
+  as the local estimate on every reprice; `applyQuoteToCart` overwrites it with the POS quote's
+  per-line `price_subtotal` (matched by `line_id`), keeping the local estimate as the fallback for
+  any line the quote didn't return. This reuses `QuoteResponse.lines`, which was previously
+  discarded (only the three cart-level totals were read). Per-line prices sum to the cart's ex-tax
+  `subtotal_cents`; tax stays cart-level only.
+- **Why:** the frontend needs a per-line price to render next to each cart line; the Odoo quote
+  already returns it, so no new price computation — just plumbing the discarded per-line data.
+- **Where:** `cart/cart-types.ts`, `cart/cart-operation-applier.ts`, `cart/apply-quote.ts` (+ their
+  tests); `shared/docs/frontend-integration-guide.md` §5/§8.
+- **Notes:** mirrors the existing two-layer pricing (POS quote authoritative, local estimate as
+  fallback on quote failure). `price_cents` is ex-tax by decision — it does **not** include the
+  quote's `price_subtotal_incl`.
 
 ## 2026-07-17 — ordering: let a turn propose AND reply in one `propose_cart` (approach B)
 - **What:** `propose_cart` gains optional `reply`/`language` args. When present, the `tools` node
