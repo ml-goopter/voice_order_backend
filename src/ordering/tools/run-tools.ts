@@ -5,10 +5,12 @@ import type { MenuService } from '../../menu/menu-service.js';
 import type { OrderStateType } from '../graph/state.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import { parseOrderGraphOutput } from '../schemas/order-graph-output.schema.js';
-import { normalizeLangCode } from '../graph/parse-spoken-reply.js';
+import { parseAgentReply } from '../graph/parse-agent-reply.js';
 import { formatZodError } from '../../shared/zod-error.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import { logger } from '../../config/logger.js';
+import type { MentionedItem } from '../../contracts/mentioned-item.js';
+import { toMentionedItem, resolveMentionedItems } from '../mentioned-items.js';
 
 /**
  * Every field optional: an argument-less call is a valid "what's popular?" browse. Unknown keys
@@ -36,6 +38,13 @@ interface ToolExecResult {
   /** The language the agent declared `reply` is in; omitted when absent or malformed (the caller
    *  then defaults to `TTS_LANGUAGE`, matching the standalone spoken-reply path). */
   reply_language?: LangCode;
+  /** Set only by a `search_menu` call: this call's items, projected and keyed by
+   *  `menu_item_key`, for `runTools` to fold into the turn's accumulated `search_results`. */
+  search_results?: Record<string, MentionedItem>;
+  /** Set only by a `propose_cart` call that bundled a `reply`: the raw keys it declared the reply
+   *  named. Deferred here rather than resolved inline — this function does not see search calls
+   *  made earlier in the SAME batch, only `runTools` accumulates that as it iterates. */
+  mentioned_item_keys?: string[];
   error?: string;
   meta?: Record<string, unknown>;
 }
@@ -50,11 +59,14 @@ async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolC
         return { content: error, error };
       }
       const set = await menu.searchMenu(s.pos_config_id, parsed.data);
+      const search_results: Record<string, MentionedItem> = {};
+      for (const item of set.items) search_results[item.menu_item_key] = toMentionedItem(item);
       // Spreading the parsed args logs only the filters the model actually sent (absent optionals
       // are not keys), so a bare browse stays a bare line. `results` is the other half of the
       // story: a filter combination that matched nothing is what sends the agent round the loop.
       return {
         content: JSON.stringify(set.items),
+        search_results,
         meta: { ...parsed.data, results: set.items.length },
       };
     }
@@ -74,15 +86,16 @@ async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolC
         return { content: error, error };
       }
       // A `propose_cart` may bundle a spoken confirmation (approach B): commit AND speak in one
-      // terminal call. A blank/whitespace reply means "no confirmation" (not an error); a malformed
-      // `language` drops only the language (degrade to the TTS default, same as parse-spoken-reply).
-      const reply = typeof argsObj.reply === 'string' && argsObj.reply.trim() ? argsObj.reply : undefined;
-      const reply_language = reply !== undefined ? normalizeLangCode(argsObj.language) : undefined;
+      // terminal call. Its reply fields are parsed by the same function as the standalone spoken
+      // terminal, so the two can't drift on what counts as a usable reply; an absent one is not an
+      // error. `null` there means "nothing to say", which is `undefined` in this result shape.
+      const agentReply = parseAgentReply(argsObj);
+      const reply = agentReply.reply !== null ? agentReply.reply : undefined;
       return {
         content: 'Proposal accepted.',
         output: result.value,
-        ...(reply !== undefined ? { reply } : {}),
-        ...(reply_language !== undefined ? { reply_language } : {}),
+        ...(reply !== undefined ? { reply, mentioned_item_keys: agentReply.mentioned_items } : {}),
+        ...(agentReply.language !== undefined ? { reply_language: agentReply.language } : {}),
         meta: { operations: result.value.operations.length, ...(reply !== undefined ? { reply: true } : {}) },
       };
     }
@@ -109,6 +122,15 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
   // without a bundled reply leaves them unset and `lww` keeps the normalized (cleared) defaults.
   let reply: string | undefined;
   let reply_language: LangCode | undefined;
+  // Accumulated across every `search_menu` call in this batch, seeded from the turn's existing
+  // `search_results` so a later agent step keeps what an earlier step already found. Left
+  // `undefined` when this batch has no search call, so the returned patch omits the key entirely
+  // and `lww` leaves the channel (this turn's accumulation so far, or the normalized default) alone.
+  let search_results: Record<string, MentionedItem> | undefined;
+  // Set only when this batch's `propose_cart` bundled a reply — resolved against everything
+  // accumulated in THIS batch so far (a same-batch search feeding a same-batch propose must still
+  // resolve), not just the turn's state entering this node.
+  let mentioned_items: MentionedItem[] | undefined;
   const toolMsgs: AgentMessage[] = [];
 
   for (const call of calls) {
@@ -118,6 +140,19 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
     if (res.output !== undefined) output = res.output;
     if (res.reply !== undefined) reply = res.reply;
     if (res.reply_language !== undefined) reply_language = res.reply_language;
+    // Later calls win on a key collision — the fresher read.
+    if (res.search_results !== undefined) {
+      search_results = { ...(search_results ?? s.search_results), ...res.search_results };
+    }
+    // Unresolvable keys never fail the call — the proposal already committed via `output` above.
+    let mentionedCount: number | undefined;
+    if (res.mentioned_item_keys !== undefined) {
+      mentioned_items = resolveMentionedItems(res.mentioned_item_keys, search_results ?? s.search_results, {
+        request_id: s.request_id,
+        cart_id: s.cart_id,
+      });
+      mentionedCount = mentioned_items.length;
+    }
 
     const meta = {
       tool: call.name,
@@ -126,6 +161,7 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
       request_id: s.request_id,
       cart_id: s.cart_id,
       ...res.meta,
+      ...(mentionedCount !== undefined ? { mentioned_items: mentionedCount } : {}),
     };
     // A tool error is the agent's problem to retry, not a fault of ours — warn, don't error, so
     // `order.node_failed` stays the signal for a genuinely broken turn.
@@ -138,5 +174,7 @@ export async function runTools(menu: MenuService, s: OrderStateType): Promise<Pa
     output,
     ...(reply !== undefined ? { reply } : {}),
     ...(reply_language !== undefined ? { reply_language } : {}),
+    ...(search_results !== undefined ? { search_results } : {}),
+    ...(mentioned_items !== undefined ? { mentioned_items } : {}),
   };
 }

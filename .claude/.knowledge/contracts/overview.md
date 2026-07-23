@@ -3,7 +3,7 @@ type: Concept
 title: Cross-module contracts
 description: Shared DTOs/schemas (cart operations, proposal, prompt cart view, intent) with no business-module deps.
 resource: src/contracts
-timestamp: 2026-07-16
+timestamp: 2026-07-22
 ---
 
 # Cross-module contracts
@@ -28,6 +28,14 @@ module and depended on by several.
 - **`intent.ts`** — the classifier output contract: `intentSchema` (`z.enum(['service','junk'])`),
   `Intent`, `DEFAULT_INTENT`. The langgraph routing table `INTENT_ROUTE` deliberately stays in
   `ordering/graph/intents.ts` (it needs `END`); only the label set is shared here.
+- **`mentioned-item.ts`** — `MentionedItem` (`menu_item_key`, `product_tmpl_id`, `name`, optional
+  `names`, `base_price_cents`, optional `popularity`): a menu item the agent named in a spoken reply,
+  carried on `order.reply` so the client can render what was spoken. Every field is echoed
+  server-side from the search result the agent was shown — the agent supplies only the key — so the
+  model can never mis-state a price. `available_modifiers` is deliberately omitted (a spoken
+  suggestion is not a configurator). `PopularityTier` lives here too, and `menu/menu-types.ts`
+  re-exports it: the canonical definition must sit in `contracts` because a contract type uses it
+  and `contracts` may not import from `menu`.
 
 ## Dependencies
 - `zod` (schemas), `shared/{types,result,errors,zod-error}`. **No business-module imports** —

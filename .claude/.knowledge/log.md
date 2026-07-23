@@ -7,6 +7,30 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-22 — ordering: `mentioned_items` on `order.reply`
+- **What:** the agent declares the `menu_item_key`s its spoken reply named; each is verified
+  against what this turn's `search_menu` calls actually returned and the resolved `MentionedItem`s
+  ride on `order.reply` out to the WS client. New `contracts/mentioned-item.ts` (+ `PopularityTier`
+  moved there, re-exported from `menu-types`), `ordering/mentioned-items.ts`
+  (`toMentionedItem`/`resolveMentionedItems`), turn-scoped `search_results` + `mentioned_items`
+  channels, optional field on `OrderReply` and `OrderReplyMsg`, and a MENTIONED ITEMS prompt
+  section. Preceded by a behavior-preserving refactor: both terminals (`propose_cart` args and the
+  standalone spoken JSON) now parse through one `parseAgentReply`, and
+  `graph/parse-spoken-reply.ts` was renamed `parse-agent-reply.ts`.
+- **Why:** a recommendation reached the customer as speech only, so the app could not show cards or
+  prices for what was just said. Verification is deliberately "the agent actually retrieved it this
+  turn" with NO menu-lookup fallback: a key the agent never searched for is the hallucination the
+  check exists to catch, and a lookup would launder it into a verified item. An unresolved key is
+  dropped with a warn, never a tool error — the turn degrades to speech with no cards.
+- **Where:** `contracts/mentioned-item.ts`, `ordering/{mentioned-items,order-graph,order-understanding-service}.ts`,
+  `ordering/graph/{parse-agent-reply,state,build-graph}.ts`, `ordering/tools/{tool-specs,run-tools}.ts`,
+  `llm/agent-prompt-builder.ts`, `events/event-types.ts`, `realtime/{realtime-message-types,realtime-gateway}.ts`,
+  `config/constants.ts`.
+- **Notes:** optional at every hop, so an existing client is unaffected; TTS still receives only the
+  reply text. `LIMITS.maxMentionedItems` (8) is a payload/card-count guard — a turn accumulates
+  every search it ran, so the agent may legitimately have seen more items than one search returns.
+  Not recorded to `history`: the "re-search before reusing a key" rule must stay true. Plan:
+  `docs/plans/mentioned-items.md`; spec: `docs/agent-tools.md` §11.
 ## 2026-07-22 — odoo: harden the image proxy (adversarial review follow-up)
 - **What:** ten fixes to the route added the same day. The client's prefix guard now runs on the
   **normalized** path (it ran on the raw string while `fetch` normalizes, so

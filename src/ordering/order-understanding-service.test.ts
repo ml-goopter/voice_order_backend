@@ -50,12 +50,21 @@ const propose = (operations: unknown[]): ChatResult => ({ toolCalls: [call(TOOL_
 const proposeWithReply = (operations: unknown[], reply: string, language?: string): ChatResult => ({
   toolCalls: [call(TOOL_NAMES.propose, { operations, reply, ...(language !== undefined ? { language } : {}) })],
 });
+/** A bundled confirmation that also declares `mentioned_items` (the keys the reply named). */
+const proposeWithReplyAndItems = (operations: unknown[], reply: string, mentioned_items: string[]): ChatResult => ({
+  toolCalls: [call(TOOL_NAMES.propose, { operations, reply, mentioned_items })],
+});
 /** The agent ends the turn by SPEAKING (no tool call). Plain text is the DEGRADE path (the prompt
  *  asks for JSON) — still a valid reply, just with no declared language. */
 const reply = (text: string): ChatResult => ({ text, toolCalls: [] });
 /** The agent speaking in the format it is actually prompted for: strict JSON {reply, language}. */
 const jsonReply = (text: string, language: string): ChatResult => ({
   text: JSON.stringify({ reply: text, language }),
+  toolCalls: [],
+});
+/** A standalone spoken reply that also declares `mentioned_items`. */
+const jsonReplyWithItems = (text: string, language: string, mentioned_items: string[]): ChatResult => ({
+  text: JSON.stringify({ reply: text, language, mentioned_items }),
   toolCalls: [],
 });
 
@@ -680,5 +689,54 @@ describe('OrderUnderstandingService', () => {
       cache_hit_rate: 0.8,
     });
     infoSpy.mockRestore();
+  });
+
+  describe('mentioned_items on order.reply', () => {
+    it('carries mentioned_items on the standalone-reply path', async () => {
+      const { service, bus } = await makeService(
+        [[search('coke'), jsonReplyWithItems('How about a Coke?', 'en', ['coke'])]],
+        cartWith(0),
+      );
+      const replies = collect(bus, 'order.reply');
+
+      await service.handleFinalTranscript(transcript('what do you have to drink'));
+
+      expect(replies).toHaveLength(1);
+      expect(replies[0]?.mentioned_items).toEqual([
+        { menu_item_key: 'coke', product_tmpl_id: 12, name: 'Coke', names: { en_US: 'Coke' }, base_price_cents: 300 },
+      ]);
+    });
+
+    it('carries mentioned_items on the bundled propose_cart path', async () => {
+      const ops = [{ action: 'add_item', menu_item_key: 'chicken_burger', quantity: 1, modifiers: [] }];
+      const { service, bus } = await makeService(
+        [[search('chicken burger'), proposeWithReplyAndItems(ops, 'Added it — enjoy!', ['chicken_burger'])]],
+        cartWith(0),
+      );
+      const replies = collect(bus, 'order.reply');
+
+      await service.handleFinalTranscript(transcript('add a chicken burger'));
+
+      expect(replies).toHaveLength(1);
+      expect(replies[0]?.mentioned_items).toEqual([
+        {
+          menu_item_key: 'chicken_burger',
+          product_tmpl_id: 10,
+          name: 'Chicken Burger',
+          names: { en_US: 'Chicken Burger' },
+          base_price_cents: 1000,
+        },
+      ]);
+    });
+
+    it('omits mentioned_items when the reply names nothing verifiable', async () => {
+      const { service, bus } = await makeService([[jsonReply('Anything else?', 'en')]], cartWith(0));
+      const replies = collect(bus, 'order.reply');
+
+      await service.handleFinalTranscript(transcript('that is all'));
+
+      expect(replies).toHaveLength(1);
+      expect('mentioned_items' in replies[0]!).toBe(false);
+    });
   });
 });

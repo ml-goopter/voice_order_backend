@@ -5,7 +5,7 @@ proposed cart operations or a spoken reply. Covers the graph topology, every sta
 the agent ⇄ tools loop, the checkpointer thread model, and error handling.
 
 Scope: `src/ordering/graph/` (`build-graph.ts`, `state.ts`, `intents.ts`, `instrument.ts`,
-`parse-spoken-reply.ts`), `src/ordering/order-graph.ts` (the façade), `src/ordering/tools/`
+`parse-agent-reply.ts`), `src/ordering/order-graph.ts` (the façade), `src/ordering/tools/`
 (the agent's tools), and the `src/ordering/nodes/*` invoked by the graph. The service loop that
 *drives* the graph (`order-understanding-service.ts`) is covered only where it touches graph
 behavior — see `ordering/overview.md` for the surrounding module. The design rationale for the
@@ -29,8 +29,8 @@ OrderGraph.start()  ──►  graph.invoke(input, threadConfig)
         │              │ LangGraph StateGraph │  ← this document
         │              └──────────────────────┘
         ▼
-GraphTurnResult: { status: 'complete', output, base_version }
-             or  { status: 'reply', reply, language? }
+GraphTurnResult: { status: 'complete', output, base_version, reply?, language?, mentioned_items? }
+             or  { status: 'reply', reply, language?, mentioned_items? }
              or  { status: 'junk' }
              or  { status: 'fail', reason }
 ```
@@ -151,14 +151,20 @@ requires reducers to be pure + deterministic).
 | `agent_messages` | lww | `[]` | `agent`, `tools`, `normalize` (clear) | the turn's tool-calling scratchpad |
 | `agent_steps` | lww | `0` | `agent`, `normalize` (clear) | agent LLM turns so far; guards `maxAgentSteps` |
 | `failure_reason` | lww | `undefined` | `agent`, `normalize` (clear) | set when the loop ends with no terminal |
+| `token_usage` | lww | zero | `agent`, `normalize` (clear) | this turn's summed LLM usage, read by the façade for the `llm.turn_usage` rollup |
+| `search_results` | lww | `{}` | `tools` (`search_menu`), `normalize` (clear) | `menu_item_key` → `MentionedItem` for everything this turn searched; what a declared `mentioned_items` key is verified against |
+| `mentioned_items` | lww | `[]` | `agent` (spoken), `tools` (bundled), `normalize` (clear) | the verified items this turn's reply named |
 
 Two lifetimes are in play:
 
 1. **Durable across turns** (survive many invokes on the same thread): `history`, plus the input
    ids. Carried by the checkpointer thread.
 2. **Per-turn**: everything else. `cart_view`/`base_version`/`intent` are recomputed each turn by
-   their nodes; the terminals (`output`, `reply`, `reply_language`) and the agent scratchpad
-   (`agent_messages`, `agent_steps`, `failure_reason`) are **explicitly cleared by `normalize`**.
+   their nodes; the terminals (`output`, `reply`, `reply_language`, `mentioned_items`) and the agent
+   scratchpad (`agent_messages`, `agent_steps`, `token_usage`, `failure_reason`, `search_results`)
+   are **explicitly cleared by `normalize`**. `search_results` clearing is what makes verification
+   mean "the agent retrieved it THIS turn" — a stale map would let a key the agent never searched
+   for resolve off last turn's results.
 
 > **Why `normalize` must clear.** The checkpointer persists the *whole* state blob per thread, so
 > a channel that no node happens to overwrite this turn keeps last turn's value. For channels
@@ -351,9 +357,12 @@ the **next transcript**, where `classify`'s pending-reply override force-routes 
 the agent resolves it against `conversation_history`. This is why the old `MAX_CLARIFICATION_ROUNDS`
 cap and clarification stall timeout are gone: a multi-turn conversation is just turns.
 
-### 5.4 The spoken-reply contract (`graph/parse-spoken-reply.ts`)
+### 5.4 The spoken-reply contract (`graph/parse-agent-reply.ts`)
 
-The reply is strict JSON `{"language": "...", "reply": "..."}`. **`language` is demanded FIRST for
+The reply is strict JSON `{"language": "...", "reply": "...", "mentioned_items": [...]}` — the third
+field optional, listing the `menu_item_key`s the reply named (`docs/agent-tools.md` §11). The SAME
+fields, parsed by the SAME `parseAgentReply`, are what `propose_cart` takes as bundled arguments, so
+the two terminals cannot drift. **`language` is demanded FIRST for
 a generation-order reason, not a stylistic one:** the model writes left to right, so a
 `reply`-first shape lets it write the whole reply — drifting into whatever language
 `conversation_history` is in — and only then label what it already wrote, making `language`
@@ -513,7 +522,7 @@ node throw **rejects** `invoke()` and is caught by the service. Both end as
 | `graph/intents.ts` | `intentSchema` (`service`/`junk`) + `INTENT_ROUTE` — the intent set and its routing table. |
 | `graph/state.ts` | `OrderState` annotations, `lww`/`appendHistory` reducers, `mergeHistory`. |
 | `graph/instrument.ts` | `node(name, fn)` — per-node error logging, bubble-up passthrough. |
-| `graph/parse-spoken-reply.ts` | `parseSpokenReply` — the `{language, reply}` terminal, degrading per-field. |
+| `graph/parse-agent-reply.ts` | `parseAgentReply` — the `{language, reply}` field rules for BOTH terminals, degrading per-field; `parseSpokenReply` adds the spoken terminal's text unwrapping. |
 | `tools/tool-specs.ts` | `TOOL_NAMES` + `TOOL_SPECS` — the tools advertised to the agent. |
 | `tools/run-tools.ts` | The `tools` node: executes calls, appends results, sets `output` on a valid `propose_cart`. |
 | `nodes/classify-intent.node.ts` | LLM junk-gate classifier; degrades to `service` on any failure. |

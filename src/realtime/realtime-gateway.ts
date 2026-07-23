@@ -44,6 +44,7 @@ export class RealtimeGateway {
         cart_id: e.cart_id,
         request_id: e.request_id,
         reply: e.reply,
+        ...(e.mentioned_items !== undefined ? { mentioned_items: e.mentioned_items } : {}),
       });
       // Speak the reply: synthesize with TTS and stream the audio back over the same socket. The
       // agent-declared language lets a multi-locale voice speak it in the language it was written in.

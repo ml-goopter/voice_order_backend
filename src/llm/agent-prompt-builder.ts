@@ -41,10 +41,11 @@ export interface AgentContext {
  * System prompt for the tool-calling ordering agent (docs/agent-tools.md §3). The model is NOT
  * handed pre-computed candidates — it must call `search_menu` to discover real menu keys.
  * It ends the turn one of two ways: by calling `propose_cart` (a structured, validated action) —
- * which MAY bundle a short spoken `reply`/`language` to confirm or suggest while committing — or by
- * REPLYING with no tool call — strict JSON `{language, reply}` whose `reply` serves as both a
- * clarifying question and a recommendation, and whose `language` tells TTS which language to speak
- * it in (parsed by graph/parse-spoken-reply.ts). When the turn has anything to commit it must end
+ * which MAY bundle a short spoken `reply`/`language`/`mentioned_items` to confirm or suggest while
+ * committing — or by REPLYING with no tool call — strict JSON `{language, reply, mentioned_items}`
+ * whose `reply` serves as both a clarifying question and a recommendation, whose `language` tells
+ * TTS which language to speak it in, and whose `mentioned_items` lists the menu_item_keys `reply`
+ * named (parsed by graph/parse-agent-reply.ts). When the turn has anything to commit it must end
  * with `propose_cart` (words go in its `reply`); a standalone reply is only for turns with nothing
  * to commit. The operation contract is unchanged from the old parser prompt.
  *
@@ -80,16 +81,20 @@ export function buildAgentSystemPrompt(): string {
     '   - Call `propose_cart` with the operations to apply, when you have something to change. It',
     '     MAY also include a short spoken `reply` (one friendly sentence, e.g. "Added two lattes —',
     '     anything else?") plus its `language` (the ISO-639-1 code you are writing `reply` in,',
-    '     CHOSEN BEFORE you write `reply`, same rule as the standalone reply below). Include `reply`',
-    '     whenever you also have something to say (confirm what you added, suggest a pairing, or any',
-    '     remark that does not block); omit it when there is nothing to say.',
+    '     CHOSEN BEFORE you write `reply`, same rule as the standalone reply below) and its',
+    '     `mentioned_items` (the menu_item_keys `reply` names — see MENTIONED ITEMS below). Include',
+    '     `reply` whenever you also have something to say (confirm what you added, suggest a pairing,',
+    '     or any remark that does not block); omit it when there is nothing to say.',
     '   - Otherwise, end the turn by SPEAKING: DO NOT call any tool, and output STRICT JSON',
     '     (no prose outside it, no code fences), with the fields in THIS ORDER:',
     '     {"language": <ISO-639-1 code of the language you are about to write the reply in, e.g.',
     '     "en", "zh", "es", "fr">, "reply": <the spoken message to the customer, written in that',
-    '     language>}.',
+    '     language>, "mentioned_items": [<menu_item_key>, ...]}. Drop the "mentioned_items" field',
+    '     altogether when your reply names no items — the other two are always required.',
     '     Choose "language" BEFORE you write "reply", and emit it first — it is a decision you make',
-    '     up front, never a label you attach to a reply you have already written.',
+    '     up front, never a label you attach to a reply you have already written. "mentioned_items"',
+    '     goes LAST for the mirror reason: it reports what "reply" just said, so it can only be filled',
+    '     in after "reply" exists — see MENTIONED ITEMS below.',
     '     Use a standalone spoken reply ONLY when there is nothing to commit: to ask a clarifying',
     '     question you need answered before acting, or to recommend items when the customer asked',
     '     what to get and is not also adding anything. The "reply" text is spoken and ends the turn.',
@@ -108,8 +113,10 @@ export function buildAgentSystemPrompt(): string {
     'Example: "add beef jerky then suggest some items" wants a commit AND advice in one turn. Do NOT',
     'reply with the suggestion first (that drops the beef jerky), and do NOT propose the beef jerky',
     'silently (that drops the suggestion). Instead: search_menu for beef jerky, search_menu for',
-    'suggestion candidates, then ONE propose_cart with operations:[add beef jerky] and reply:"Added',
-    'beef jerky — you might also like <X> or <Y>."',
+    'suggestion candidates, then ONE propose_cart with operations:[add beef jerky], reply:"Added',
+    'beef jerky — you might also like <X> or <Y>.", and mentioned_items:[<beef jerky\'s menu_item_key>,',
+    '<X\'s menu_item_key>, <Y\'s menu_item_key>] — every item the reply NAMED, beef jerky included,',
+    'in the order named.',
     'Always end with either a propose_cart call or a spoken reply — never an empty message.',
     '',
     'KEY RULES (for propose_cart):',
@@ -132,6 +139,19 @@ export function buildAgentSystemPrompt(): string {
     'Every price is an integer number of CENTS, per single unit, and never multiplied by quantity: base_price_cents is one item before options, price_extra_cents is what one option adds. Convert to the customer\'s normal spoken money format when you say it aloud (150 → "one fifty"), never read the raw cents.',
     'Quote a price ONLY by reading one of these fields back. You may state what one item costs, or what one option adds. Do NOT add prices together, do NOT multiply by quantity, and do NOT state an order total, a subtotal, or "that comes to…" — you cannot see the cart\'s totals and any figure you compute yourself risks contradicting the real bill. If the customer asks what their total is, say you are not able to give the total and that the order on screen shows it.',
     'You never see prices for a whole line or a whole cart, only per-unit numbers. Treat prices as facts to report, not inputs to arithmetic.',
+    '',
+    'MENTIONED ITEMS (applies to `mentioned_items` on BOTH the standalone reply and propose_cart):',
+    'List the menu_item_key of every menu item your reply NAMES, in the order you name them —',
+    'whether you are adding it, suggesting it, or just answering a question about it.',
+    'Keys ONLY — never names, never prices. The customer\'s app renders the item itself from the',
+    'menu; a name or price you type into mentioned_items is ignored, so writing one there wastes',
+    'effort that belongs in "reply".',
+    'Only keys from THIS turn\'s search_menu results are usable — a key you did not search for this',
+    'turn is dropped, even if it is correct, so re-search before you cite it (see CONTEXT RULES).',
+    'Omit "mentioned_items" entirely when your reply names no items.',
+    'It never changes what you say: fill in "reply" first, then list in "mentioned_items" exactly',
+    'the items that reply already named — it is a report of what you just said, not an instruction',
+    'for what to say.',
     '',
     'LANGUAGE:',
     'The customer may speak ANY language, and you are given no language hint — the CURRENT',

@@ -3,7 +3,7 @@ type: Concept
 title: Realtime Gateway
 description: Owns the WebSocket lifecycle; routes inbound messages and pushes backend events.
 resource: src/realtime
-timestamp: 2026-07-15
+timestamp: 2026-07-22
 ---
 
 # Realtime Gateway
@@ -33,6 +33,9 @@ It owns **no cart logic** — it only delivers what the Cart Module produces.
 - **Spoken replies (`order.reply`):** the gateway sends the reply **text** to the session
   socket **and** drives `TtsService.speak` to synthesize it and stream `tts.*` audio frames
   back over the same socket (base64 in JSON). See the [tts](../tts/index.md) bundle.
+  The frame also carries optional **`mentioned_items`** (`MentionedItem[]`) — the menu items the
+  reply named, verified by the ordering module — so the client can render cards for what it is
+  hearing. Optional at every hop, so a client that ignores it is unaffected; TTS never sees it.
 - **Partial transcripts** are sent to the client directly by the Voice module, not
   here — they never enter the backend event flow (§3).
 - **Client registry** indexes connections `bySession` and `byCart`.

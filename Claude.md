@@ -38,6 +38,8 @@ event bus. Each requirement below is stated so it can be verified by a test or a
 - Turns `stt.final_transcript.received` into an `OrderProposal` (ops + `base_version`) and/or a
   spoken `order.reply` — a `propose_cart` may bundle a confirmation, so a turn can emit both — never
   writes the cart.
+- An `order.reply` carries `mentioned_items` only for keys the agent retrieved via `search_menu`
+  **this turn**; an unresolved key is dropped with a warn, never a lookup and never an error.
 - Processes one turn per `cart_id` at a time, in arrival order (turn N sees turn N-1's result).
 - `junk` utterances short-circuit to END and are not recorded to history; a turn following
   an `agent_reply` is force-routed as `service`.
@@ -55,7 +57,8 @@ event bus. Each requirement below is stated so it can be verified by a test or a
   `order.clarification_needed`/`cart.operation_rejected` to the originating session (else the
   whole cart).
 - Answers `connection.resume` with a `connection.resumed` cart snapshot.
-- On `order.reply`, sends reply text plus streamed `tts.*` audio frames to the session socket.
+- On `order.reply`, sends reply text (plus its `mentioned_items`, when present) and streamed
+  `tts.*` audio frames to the session socket; TTS receives only the text and its language.
 
 
 ## Skills

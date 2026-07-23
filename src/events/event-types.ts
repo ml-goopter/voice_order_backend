@@ -14,6 +14,7 @@ import type {
 import type { Cart } from '../cart/cart-types.js';
 import type { CartOperation } from '../contracts/cart-operation.schema.js';
 import type { OrderProposal } from '../contracts/proposal.js';
+import type { MentionedItem } from '../contracts/mentioned-item.js';
 
 /** No `language`: STT's per-turn language detection is not used anywhere (docs/text-to-speech.md
  *  §Multilingual). The agent declares the reply's language instead — see `OrderReply.language`. */
@@ -47,6 +48,9 @@ export interface OrderReply {
   /** The language the AGENT declared it wrote `reply` in, so TTS speaks it in the language it was
    *  actually written in. `en` when it declared none. Never sourced from STT detection. */
   language: LangCode;
+  /** Menu items the reply named, verified against this turn's search results. Absent when the
+   *  reply named nothing verifiable — optional so an existing client is unaffected. */
+  mentioned_items?: MentionedItem[];
 }
 
 export interface CartUpdated {

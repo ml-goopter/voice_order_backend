@@ -4,6 +4,7 @@
  */
 import type { CartId, SessionId } from '../shared/types.js';
 import type { Cart } from '../cart/cart-types.js';
+import type { MentionedItem } from '../contracts/mentioned-item.js';
 
 // ── Inbound (mobile app → gateway) ────────────────────────────────────────────
 export interface VoiceStartMsg {
@@ -51,6 +52,9 @@ export interface OrderReplyMsg {
   request_id: string;
   /** The spoken reply — a clarifying question or a recommendation (one merged outcome). */
   reply: string;
+  /** Menu items the reply named, verified server-side against this turn's search results —
+   *  absent when the reply named nothing verifiable. */
+  mentioned_items?: MentionedItem[];
 }
 /**
  * Spoken-reply audio (from `order.reply`), streamed as base64 inside JSON — the socket carries no
