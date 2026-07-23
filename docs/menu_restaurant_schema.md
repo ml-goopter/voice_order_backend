@@ -16,6 +16,97 @@ Key fields:
 ### `product_product` — sellable variant of a template
 - `product_tmpl_id` → `product_template`, `barcode`, `combination_indices`, `standard_price`, `alternative_name`
 
+### Item images — stored as attachments, **not** columns
+`product_template` has **no `image_*` column**: the Odoo `image.mixin` fields
+(`image_1920` / `1024` / `512` / `256` / `128`) are `attachment=True`, so the binaries live in
+**`ir_attachment`** (there is no `product_image` table here). To find an item's image:
+
+- `res_model = 'product.template'`, `res_id = product_template.id`,
+  `res_field = 'image_1920'` (the master) plus resized derivatives
+  `image_1024` / `512` / `256` / `128`.
+
+**Stored as bytes on disk — never bytes in the DB.** The `ir_attachment` row holds only
+*metadata*: `store_fname` (e.g. `d7/d711…`), `mimetype`, `file_size`, `checksum`. The inline
+`db_datas` (`bytea`) column is **NULL** for every product image. The actual bytes are a file on
+Odoo's filestore, e.g. `/var/lib/odoo/filestore/jadegarden1/d7/d7111b…`. `store_fname` is
+`<first-2-hex>/<sha1-of-content>`, and the filestore is **deduped by sha1** — when the source
+image is small, `image_512` / `image_1024` / `image_1920` share one file and one checksum.
+A DB-only dump does **not** contain the images; you need the filestore directory too.
+
+**Served as bytes over a URL — not base64, not JSON.** There is no "image URL" column anywhere.
+You *address* an image by URL and Odoo streams the raw binary back:
+
+```
+GET /web/image/product.template/<product_tmpl_id>/<field>   →  200, Content-Type: image/png, body = raw bytes
+```
+
+Use it directly as an `<img src>` — no JS, no fetch, no auth header, no base64. Three rules:
+
+- **No login required, but only some fields are public.** Anonymously (no cookie, no session)
+  `image_128` and `image_512` return the **real** image; `image_256`, `image_1024`, and
+  `image_1920` return a **generic placeholder**. Use `image_128` for thumbnails and `image_512`
+  for detail; the larger fields need an authenticated session.
+- **The database must be selected**, or the route 404s with *"No database is selected."* This
+  server hosts 7 databases and sets no `dbfilter`, so nothing is implied. `?db=` on the image
+  route does **not** work (still 404) — the db must arrive via the `X-Odoo-Database` header,
+  a hostname (`dbfilter`), or an existing session cookie.
+- **Always pass a `unique` cache-buster**, or every request re-downloads:
+
+  | URL | `Cache-Control` |
+  |---|---|
+  | `…/image_512` | `no-cache, private` |
+  | `…/image_512?unique=<token>` | `max-age=31536000, private, immutable` |
+
+  Any token works; it just has to change when the image does. `product_template.write_date` is
+  the cheap choice (no `ir_attachment` join); `ir_attachment.checksum` is exact.
+
+#### Enabling anonymous `<img src>` access
+
+A browser cannot send `X-Odoo-Database`, so a bare `<img>` needs the db resolved server-side.
+**Some server-side change is unavoidable** — the db is simply not in the request. Three options:
+
+1. **Odoo `dbfilter`** (no nginx change). Add `dbfilter = ^%d$` to `odoo.conf` and restart. `%d`
+   is the first host component, so `jadegarden1.<domain>` → db `jadegarden1`, and each
+   restaurant gets its own host. Works because `proxy_mode = True` and nginx already forwards
+   `X-Forwarded-Host`. Trade-off: plain `localhost` no longer selects a db (`^localhost$` matches
+   nothing), so the Odoo UI moves to `jadegarden1.localhost`.
+2. **nginx injects the header.** On a **dedicated** hostname per restaurant, add
+   `proxy_set_header X-Odoo-Database jadegarden1;`. Never put this on the catch-all
+   `server_name _` block — it pins all 7 databases to one and breaks the others.
+3. **Proxy through our backend.** ✅ **This is what we do** — the only option needing no Odoo/nginx
+   change. The backend serves `GET /web/image/...` on its own origin and forwards the request to
+   Odoo with the header attached (`src/odoo/odoo-image-client.ts`, routed in
+   `src/api/http-router.ts`). It is *transparent*: the client sends the same path it would send
+   Odoo, and the query string plus `Content-Type` / `ETag` / `Cache-Control` pass through both
+   ways, so `?unique=` behaves exactly as documented above.
+
+   ```html
+   <img src="{BACKEND}/web/image/product.template/42/image_512?unique=<token>">
+   ```
+
+   It does **not** return a real 404 for a missing image — the placeholder passes through like
+   any other body. Doing that needs an `ir_attachment` lookup; see
+   `docs/plans/menu-item-images.md` §6.
+
+For local browsing without any of the above, visit `/web/login?db=jadegarden1` once to pin the db
+to the session cookie; image URLs then work in that browser.
+
+**Coverage is sparse — treat images as optional.** In `jadegarden1` (verified 2026-07-22) only
+**27 of 380** POS items (`available_in_pos`) have an image; variant-level (`product.product`)
+images are not used. **A missing image is not detectable over HTTP** — it returns `200 image/png`
+with the placeholder, never a 404. If a placeholder is an acceptable rendering, emit the URL
+unconditionally and skip the check; if the client must distinguish "has an image," determine it
+from the DB (the join below), never from the response.
+
+```sql
+-- Items that have an image (jadegarden1)
+SELECT t.id, t.name->>'en_US' AS item, a.mimetype, a.file_size
+FROM product_template t
+JOIN ir_attachment a
+  ON a.res_model = 'product.template' AND a.res_field = 'image_1920' AND a.res_id = t.id
+WHERE t.available_in_pos;
+```
+
 ### Categories
 - **`product_category`** — accounting/inventory tree (`parent_id`, `complete_name`, `parent_path`)
 - **`pos_category`** — POS menu categories on screen (`parent_id`, `sequence`, `color`, `hour_after` / `hour_until` for time-based visibility)
@@ -55,6 +146,7 @@ product_template 1──* product_template_attribute_line ──* product_templa
 product_attribute 1──* product_attribute_value
 product_combo    1──* product_combo_item ──* product_product
 pos_order        1──* restaurant_order_course
+product_template 1──* ir_attachment          (res_model='product.template', res_id, res_field='image_1920' + resized)
 ```
 
 ## Full column listings
@@ -331,3 +423,22 @@ pos_order        1──* restaurant_order_course
 | write_date | timestamp | YES |
 | start_time | double precision | YES |
 | end_time | double precision | YES |
+
+### `ir_attachment` (image-relevant columns)
+Odoo's generic attachment store; holds product images (see **Item images** above). Filter by
+`res_model` / `res_field` / `res_id`. Full table has ~20 more columns (access, indexing, etc.).
+| column | type | nullable | note |
+|---|---|---|---|
+| id | integer | NO | |
+| name | character varying | NO | attachment display name |
+| res_model | character varying | YES | e.g. `product.template` |
+| res_field | character varying | YES | e.g. `image_1920` / `image_1024` / … (NULL for standalone files) |
+| res_id | integer | YES | the owning record's id (e.g. `product_template.id`) |
+| type | character varying | NO | `binary` (filestore) or `url` |
+| store_fname | character varying | YES | filestore path when stored on disk |
+| db_datas | bytea | YES | inline bytes (NULL for product images — they use the filestore) |
+| mimetype | character varying | YES | e.g. `image/png` |
+| file_size | integer | YES | |
+| checksum | character varying | YES | sha1 of the content |
+| create_date | timestamp | YES | |
+| write_date | timestamp | YES | |

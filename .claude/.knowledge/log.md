@@ -31,6 +31,75 @@ timestamp: 2026-07-07
   every search it ran, so the agent may legitimately have seen more items than one search returns.
   Not recorded to `history`: the "re-search before reusing a key" rule must stay true. Plan:
   `docs/plans/mentioned-items.md`; spec: `docs/agent-tools.md` §11.
+## 2026-07-22 — odoo: harden the image proxy (adversarial review follow-up)
+- **What:** ten fixes to the route added the same day. The client's prefix guard now runs on the
+  **normalized** path (it ran on the raw string while `fetch` normalizes, so
+  `/web/image/../../web/session/authenticate` passed it and requested an RPC route **with our
+  database header**) and additionally rejects off-host targets and percent-encoded separators.
+  `X-Content-Type-Options`/`Content-Security-Policy` are now sent and `image/svg+xml` refused; the
+  size cap binds **while reading** instead of after `arrayBuffer()` allocated everything; `new
+  URL(req.url)` is guarded (`GET //` is a legal request-line but an invalid URL — the TypeError
+  escaped the request listener); a 304 carries its validator; `HEAD` answers as `GET`; the upstream
+  fetch aborts on client hang-up; `content-type` compares case-insensitively and `content-length`
+  parses strictly.
+- **Why:** an adversarial review of the previous commits, per CLAUDE.md's workflow. Each finding
+  was reproduced before being fixed, and two reported ones were **not** reproducible (an unknown
+  `product_tmpl_id` returns Odoo's placeholder at 200, not a 502; the `%2f` form does not escape on
+  this nginx+Odoo stack) — those were closed as defence-in-depth, not live holes.
+- **Where:** `src/odoo/odoo-image-client{,.test}.ts`, `src/api/http-router{,.test}.ts`.
+- **Notes:** the traversal test being replaced was vacuous — undici rewrites the URL before it
+  leaves the client, so it never exercised the router. Malformed and encoded targets are now sent
+  over a **raw socket**; `fetch` cannot express them. `pathOf` returning `''` on an unparseable
+  target fixes the same latent crash for the confirm/orders routes.
+
+## 2026-07-22 — odoo/api: proxy Odoo item images so a browser can render them
+- **What:** new `odoo/odoo-image-client.ts` (`HttpOdooImageClient`) and a `GET /web/image/...`
+  route on the HTTP router. A **transparent** proxy: the client sends the exact path it would send
+  Odoo, we forward path + query and relay `content-type`/`etag`/`cache-control`, adding only the
+  `X-Odoo-Database` header. `createHttpRouter` now takes an `OdooImageClient` second argument.
+- **Why:** an `<img src>` cannot send `X-Odoo-Database`, and without it this multi-database host
+  (7 dbs, no `dbfilter`) refuses `/web/image` — so the frontend could not render menu photos at all.
+- **Where:** `src/odoo/odoo-image-client{,.test}.ts`, `src/api/http-router{,.test}.ts`,
+  `src/app.ts`, `src/realtime/websocket-server.test.ts` (router arity), plan in
+  `docs/plans/menu-item-images.md`.
+- **Notes:** no new env vars (reuses `ODOO_API_URL`/`ODOO_API_DATABASE`) and no bearer token —
+  `/web/image` is a public route. **An item with no image answers 200 with Odoo's generic
+  placeholder, never 404** (only 27/380 POS items have one); detecting absence needs an
+  `ir_attachment` lookup, deliberately deferred. Nothing yet supplies a `unique=` token, so images
+  are served `no-cache` until one is. Verified end-to-end against `jadegarden1`: bytes identical to
+  a direct fetch, 304 on `If-None-Match`, `?unique=` flips to `immutable`, blank
+  `ODOO_API_DATABASE` → 502 not a broken image.
+
+## 2026-07-22 — docs: how Odoo stores and serves product images
+- **What:** documented item images in `docs/menu_restaurant_schema.md` — they are `ir_attachment`
+  rows (`res_model='product.template'`, `res_field='image_1920'` + resized), with **metadata in the
+  DB and bytes on the filestore** (`db_datas` NULL; `store_fname` is sha1-addressed and deduped).
+  Serving is `GET /web/image/product.template/<id>/<field>` returning raw bytes (never
+  base64/JSON), plus the rules for anonymous `<img src>` access: only `image_128`/`image_512` are
+  public (the rest return a placeholder), the db must be resolved server-side, and
+  `?unique=<token>` is required for caching. Added an `ir_attachment` column listing.
+- **Why:** the frontend wants to render menu-item images; nothing in our backend touches images
+  today, so the access path and its constraints had to be established and written down.
+- **Where:** `docs/menu_restaurant_schema.md` (docs only — no code changed).
+- **Notes:** a bare `<img>` cannot reach Odoo as configured (7 databases, no `dbfilter`). Enabling
+  it needs one of: `dbfilter = ^%d$` in `odoo.conf`, an nginx `X-Odoo-Database` header on a
+  dedicated hostname, or a backend proxy. Image coverage is 27/380 POS items. Verified against
+  `jadegarden1` on 2026-07-22.
+## 2026-07-21 — cart: per-line `price_cents` on every cart line
+- **What:** `CartLine` gains `price_cents` — the line's **ex-tax** subtotal
+  `(base + Σ modifier surcharge) × quantity`. `priced()` (cart-operation-applier) now stamps it
+  as the local estimate on every reprice; `applyQuoteToCart` overwrites it with the POS quote's
+  per-line `price_subtotal` (matched by `line_id`), keeping the local estimate as the fallback for
+  any line the quote didn't return. This reuses `QuoteResponse.lines`, which was previously
+  discarded (only the three cart-level totals were read). Per-line prices sum to the cart's ex-tax
+  `subtotal_cents`; tax stays cart-level only.
+- **Why:** the frontend needs a per-line price to render next to each cart line; the Odoo quote
+  already returns it, so no new price computation — just plumbing the discarded per-line data.
+- **Where:** `cart/cart-types.ts`, `cart/cart-operation-applier.ts`, `cart/apply-quote.ts` (+ their
+  tests); `shared/docs/frontend-integration-guide.md` §5/§8.
+- **Notes:** mirrors the existing two-layer pricing (POS quote authoritative, local estimate as
+  fallback on quote failure). `price_cents` is ex-tax by decision — it does **not** include the
+  quote's `price_subtotal_incl`.
 
 ## 2026-07-17 — ordering: let a turn propose AND reply in one `propose_cart` (approach B)
 - **What:** `propose_cart` gains optional `reply`/`language` args. When present, the `tools` node

@@ -3,7 +3,7 @@ type: Concept
 title: Cart Module
 description: Deterministic sole writer — apply lock, optimistic version/rebase, idempotency.
 resource: src/cart
-timestamp: 2026-07-16
+timestamp: 2026-07-21
 ---
 
 # Cart Module
@@ -50,7 +50,8 @@ against the POS's authoritative quote, and confirms carts, via the
   - Bumps `version`, then — **best-effort authoritative pricing** — `repo.quoteCart` asks
     Odoo to price the post-apply cart (`OdooClient.quote` → `/goopter_cart_api/v1/quote`) and
     `applyQuoteToCart` overwrites the cart's `*_cents` with the returned **tax-included**
-    totals (decimals → cents). A quote failure (Odoo down, an item pulled mid-flow) is
+    totals and each line's ex-tax `price_cents` from the quote's per-line `price_subtotal`
+    (decimals → cents). A quote failure (Odoo down, an item pulled mid-flow) is
     swallowed with a `cart.quote_failed` warning and the **local estimate is kept**, so a
     pricing outage never loses a valid edit; the next successful edit re-quotes. Then
     `commitApplied` writes the cart blob, the idempotency mark AND the device/table indexes in
@@ -83,14 +84,21 @@ against the POS's authoritative quote, and confirms carts, via the
     far side's line uuid `{cart_id}:{line_id}` makes the insert idempotent (SPEC
     § Idempotency), so a replay creates no duplicate lines. We inherit idempotency from
     the far side rather than implementing our own.
-- **Pricing** is two-layer. The applier computes a **local estimate** —
-  `(base_price_cents + Σ modifier price_extra_cents) × quantity` per line, surcharge per unit,
-  **no tax** — read live from the `MenuLookup` on every reprice (never from the line's
-  snapshot, which is `name`/`names` for display only; batched through one `getItems` MGET).
-  Then the controller replaces that estimate with the **POS's server-authoritative quote**
-  (`applyQuoteToCart`, see above): the persisted `*_cents` are Odoo's tax-included totals on a
-  successful quote, and fall back to the local (untaxed) estimate only when the quote fails.
-  So `cart.updated` now carries the real charge, not just our guess.
+- **Pricing** is two-layer, at both cart AND line level. The applier computes a **local
+  estimate** — `(base_price_cents + Σ modifier price_extra_cents) × quantity` per line, surcharge
+  per unit, **no tax** — read live from the `MenuLookup` on every reprice (never from the line's
+  snapshot, which is `name`/`names` for display only; batched through one `getItems` MGET). It
+  stamps this onto each line's **`price_cents`** (ex-tax line subtotal) as well as the cart's
+  `subtotal_cents`/`total_cents`. Then the controller replaces those estimates with the **POS's
+  server-authoritative quote** (`applyQuoteToCart`, see above): the persisted cart `*_cents` are
+  Odoo's tax-included totals, and each line's `price_cents` is overwritten with the quote's
+  per-line `price_subtotal` (ex-tax, matched by `line_id`) — the `QuoteResponse.lines` breakdown
+  that was previously discarded. Both fall back to the local (untaxed) estimate when the quote
+  fails, and per line whenever the quote omits/malforms a line's subtotal (the `quote.lines` read
+  is guarded so a missing/absent `lines` never throws — cart totals still apply from `amount_*`).
+  `price_cents` is **ex-tax**: when the quote prices every line (the normal case) they sum to the
+  cart's ex-tax `subtotal_cents`, and tax lives only at the cart level. So `cart.updated` now carries the real charge per line and in
+  total, not just our guess.
 
 ## Dependencies
 - `persistence` (CartCache, CartRepository — both Redis-backed, with in-memory

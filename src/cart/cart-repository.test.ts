@@ -247,7 +247,7 @@ describe('RedisCartRepository', () => {
     const repo = new RedisCartRepository(redis as unknown as Redis, 3600, odoo, 60);
     const cart = emptyCart('cart_q', 7, { device_id: 'dev_q', table_id: 3 });
     cart.items = [
-      { line_id: 'ln_1', product_tmpl_id: 100, names: {}, name: 'x', quantity: 2, modifiers: [{ ptav_id: 900, name: 'm' }] },
+      { line_id: 'ln_1', product_tmpl_id: 100, names: {}, name: 'x', quantity: 2, modifiers: [{ ptav_id: 900, name: 'm' }], price_cents: 1000 },
     ];
 
     expect(await repo.quoteCart(cart)).toEqual(priced);
