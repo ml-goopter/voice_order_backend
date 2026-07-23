@@ -18,6 +18,22 @@ export interface CandidateModifier {
    * item. Required — a missing price would silently under-charge.
    */
   price_extra_cents: Cents;
+  /**
+   * Group metadata, carried ONLY when this option belongs to a REQUIRED group — i.e. a live
+   * attribute whose `display_type <> 'multi'` (radio/pills/select), meaning pick EXACTLY one.
+   * Requiredness is not stored in Odoo; `display_type` is the only signal
+   * (docs/pos-product-modifier-order-schema.md §Required modifiers).
+   *
+   * An option in an optional (`multi`) group carries none of the three, so **absent ⇒ optional**
+   * and `required` is never `false` here. Emitting them for optional groups cost ~2.2 KB per item
+   * in prompt payload to say "false" 34 times.
+   *
+   * `group_key` is `String(attribute_line_id)` — the group is per PRODUCT, so the same attribute on
+   * another product is a different group. Opaque; never sent back in an operation.
+   */
+  group_key?: string;
+  group_name?: string;
+  required?: boolean;
 }
 
 /** A menu item the Candidate Matcher surfaced for a transcript chunk (design §7). */

@@ -5,7 +5,8 @@ measured over a representative **5-turn** session.
 
 - **Source of truth:** produced by `scripts/estimate-prompt-tokens.ts`, which runs the real
   prompt builders (`buildIntentPrompt`, `buildAgentSystemPrompt`, `buildAgentUserMessage`) and
-  the real `TOOL_SPECS`. Re-run it to regenerate these numbers.
+  the real `TOOL_SPECS`. Re-run it to regenerate these numbers. **Last regenerated 2026-07-23**
+  (required modifier groups); the figures before that run had drifted ~25% low.
 - **Tokenizer:** o200k_base (GPT-4o / 4.1 / o-series). Groq/Llama and Gemini tokenize
   differently (±10–20%).
 - **Counts are content-only** — real billing adds ~3–4 tok/message envelope + tool-schema
@@ -29,44 +30,44 @@ array, so the fixed system-prompt + tools overhead is billed **once per step**.
 
 | Payload | Tokens | Chars |
 |---|---:|---:|
-| Agent system prompt (`buildAgentSystemPrompt`) | 2,230 | 9,748 |
-| `tools` array (both function defs, on the wire) | 666 | 2,890 |
-| **Fixed agent overhead per step** | **2,896** | — |
+| Agent system prompt (`buildAgentSystemPrompt`) | 3,350 | 14,032 |
+| `tools` array (both function defs, on the wire) | 953 | 4,050 |
+| **Fixed agent overhead per step** | **4,303** | — |
 
 ~900 of the system-prompt tokens are the `propose_cart` JSON Schema; the `tools` array adds
-another 666.
+another 953. The REQUIRED OPTIONS section (pick-one modifier groups) accounts for ~353.
 
 ## Per-payload tokens
 
 | Payload | Tokens |
 |---|---:|
 | T1 intent | 249 |
-| T1 agent user | 63 |
+| T1 agent user | 61 |
 | T1 search result | 55 |
 | T2 intent | 249 |
-| T2 agent user | 183 |
+| T2 agent user | 181 |
 | T2 popularity search result | 112 |
 | T3 intent | *skipped* |
-| T3 agent user | 220 |
+| T3 agent user | 218 |
 | T3 search result | 51 |
 | T4 intent | 251 |
-| T4 agent user | 336 |
+| T4 agent user | 334 |
 | T5 intent | 254 |
 | T5 agent | *none (junk)* |
 
 ## Input (prompt) tokens billed per turn
 
 Each agent step re-sends `system + tools + full scratchpad`, so a 2-call turn (search → propose)
-pays the 2,896 overhead **twice**.
+pays the 4,303 overhead **twice**.
 
 | Turn | Shape | Intent | Agent (all chat steps) | Turn total |
 |---|---|---:|---:|---:|
-| 1 | search → propose (2 calls) | 249 | 6,013 | **6,262** |
-| 2 | search → spoken reply (2 calls) | 249 | 6,310 | **6,559** |
-| 3 | search → propose, **intent skipped** | 0 | 6,323 | **6,323** |
-| 4 | propose directly, no search (1 call) | 251 | 3,232 | **3,483** |
+| 1 | search → propose (2 calls) | 249 | 9,359 | **9,608** |
+| 2 | search → spoken reply (2 calls) | 249 | 9,656 | **9,905** |
+| 3 | search → propose, **intent skipped** | 0 | 9,669 | **9,669** |
+| 4 | propose directly, no search (1 call) | 251 | 4,905 | **5,156** |
 | 5 | junk → short-circuit, no agent | 254 | 0 | **254** |
-| | | | **5-turn total** | **≈ 22,881 input tok** |
+| | | | **5-turn total** | **≈ 34,592 input tok** |
 
 Output/completion tokens are billed separately (~20–120 tok per agent step).
 
@@ -103,8 +104,8 @@ Output/completion tokens are billed separately (~20–120 tok per agent step).
 
 ## The big lever: prompt caching
 
-The **2,896-tok fixed prefix** (system prompt + tools) is re-sent on every agent `chat()`
-step — ~7 steps this session = **~20,300 tok, i.e. ~89% of all input**. If the provider
+The **4,303-tok fixed prefix** (system prompt + tools) is re-sent on every agent `chat()`
+step — ~7 steps this session = **~30,100 tok, i.e. ~87% of all input**. If the provider
 supports prompt caching on that stable prefix (cache reads typically ~10% of input price),
 session input drops from ~$0.0023 to roughly **$0.0004–0.0006** — cutting total session cost by
 **~70–80%**. This is the single highest-leverage optimization, far more than trimming the JSON

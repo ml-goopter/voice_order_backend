@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { AgentMessage, ToolCall } from '../../llm/llm-provider.js';
 import type { LangCode } from '../../shared/types.js';
 import type { MenuService } from '../../menu/menu-service.js';
+import type { MenuItem } from '../../menu/menu-types.js';
+import { findRequiredModifierViolations } from './required-modifiers.js';
 import type { OrderStateType } from '../graph/state.js';
 import type { OrderGraphOutput } from '../schemas/order-graph-output.schema.js';
 import { parseOrderGraphOutput } from '../schemas/order-graph-output.schema.js';
@@ -9,6 +11,7 @@ import { parseAgentReply } from '../graph/parse-agent-reply.js';
 import { formatZodError } from '../../shared/zod-error.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import { logger } from '../../config/logger.js';
+import { messageOf } from '../../shared/errors.js';
 import type { MentionedItem } from '../../contracts/mentioned-item.js';
 import { toMentionedItem, resolveMentionedItems } from '../mentioned-items.js';
 
@@ -49,6 +52,44 @@ interface ToolExecResult {
   meta?: Record<string, unknown>;
 }
 
+/**
+ * Resolve the items a batch's `add_item` ops name (concurrently, one read per DISTINCT key), then
+ * run the pure required-group check. A menu read that fails or misses resolves to "unknown", which
+ * the checker skips — an unreachable menu must not block an order.
+ */
+async function findViolations(
+  menu: MenuService,
+  s: OrderStateType,
+  operations: OrderGraphOutput['operations'],
+): Promise<string[]> {
+  const keys = [
+    ...new Set(operations.filter((o) => o.action === 'add_item').map((o) => o.menu_item_key)),
+  ];
+  const resolved = await Promise.all(
+    keys.map(async (key) => {
+      try {
+        return [key, await menu.resolveItemKey(s.pos_config_id, key)] as const;
+      } catch (err) {
+        // Skipping the check is the deliberate degrade, but it is logged at ERROR, not warn: a
+        // genuine menu miss RETURNS undefined, so a THROW is always abnormal (a broken query, a
+        // missing method, Postgres down). Left at warn, a permanent breakage that silently
+        // disables the whole check would be indistinguishable from routine noise.
+        logger.error('order.required_modifier_check_skipped', {
+          menu_item_key: key,
+          request_id: s.request_id,
+          cart_id: s.cart_id,
+          message: messageOf(err),
+        });
+        return [key, undefined] as const;
+      }
+    }),
+  );
+  const itemsByKey = new Map(
+    resolved.filter((e): e is readonly [string, MenuItem] => e[1] !== undefined),
+  );
+  return findRequiredModifierViolations(operations, s.cart_view, itemsByKey);
+}
+
 /** Execute one tool call against the (in-progress) turn state. */
 async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolCall): Promise<ToolExecResult> {
   switch (call.name) {
@@ -83,6 +124,14 @@ async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolC
       if (result.value.operations.length === 0) {
         const error =
           'Validation error: propose_cart needs at least one operation. If there is nothing to change, do not call propose_cart — reply to the customer in words instead.';
+        return { content: error, error };
+      }
+      // Required modifier groups (display_type <> 'multi') must carry EXACTLY ONE selection. Odoo
+      // enforces this nowhere, so we do — as a retriable tool error, which is what lets the agent
+      // turn around and ASK the customer within the same turn instead of guessing a default.
+      const violations = await findViolations(menu, s, result.value.operations);
+      if (violations.length > 0) {
+        const error = `Validation error: ${violations.join(' ')}`;
         return { content: error, error };
       }
       // A `propose_cart` may bundle a spoken confirmation (approach B): commit AND speak in one

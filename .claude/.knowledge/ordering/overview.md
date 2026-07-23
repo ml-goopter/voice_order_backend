@@ -69,7 +69,12 @@ searches. It is a **pure proposer**; the Cart Module validates and applies.
     and `propose_cart` (validates args against `order-graph-output` zod schema; a failure —
     including an **empty/absent `operations`** list — is a repair-friendly **tool error** the
     agent retries within `maxAgentSteps`, rather than a silent empty proposal; this replaces
-    the old separate schema-repair round). A successful `propose_cart` writes the `output`
+    the old separate schema-repair round). Beyond the shape, `propose_cart` also enforces
+    **required modifier groups** (`tools/required-modifiers.ts`): a group with `required: true`
+    (`display_type <> 'multi'`) must end up holding EXACTLY one option, or the call is another
+    retriable tool error. This business check lives here rather than in the Cart Validator on
+    purpose — a tool error re-enters the agent loop, so the agent can ASK the customer inside the
+    SAME turn, whereas a `cart.operation_rejected` would land after the turn ended. A successful `propose_cart` writes the `output`
     channel and ends the loop; its optional `reply`/`language` args (parsed by the shared
     `parseAgentReply` from `parse-agent-reply.ts` — the same function the standalone spoken
     terminal uses, so a blank reply or off-format code degrades identically on both paths)
@@ -159,6 +164,20 @@ searches. It is a **pure proposer**; the Cart Module validates and applies.
   bad key still commits. Deduped, first-mention order, capped at `LIMITS.maxMentionedItems`.
 - `nodes/*.node.ts` — `classify-intent` (LLM junk-gate classifier, defaults to `service`),
   `normalize`, `load-cart`. (The old `retrieve`/`parse`/`suggest` nodes are gone.)
+- `tools/required-modifiers.ts` — `findRequiredModifierViolations(ops, cartView, itemsByKey)`, pure.
+  Validates the modifier set the batch RESULTS in, not each op in isolation: an `add_item`'s inline
+  modifiers, and — for existing lines — the line's current modifiers with the batch's
+  `add_modifier`/`remove_modifier` applied in order. That is what lets a legitimate SWAP
+  (`remove_modifier` old + `add_modifier` new in one batch) net to exactly one and pass, while
+  catching a bare remove that empties a required group or a bare add that leaves two. A line is
+  judged **only on the groups the batch actually changed** (`touchedGroups`), not on every required
+  group it has: a line can arrive non-compliant (created before this shipped, added via the
+  degraded path, or with a ptav archived out of `available_modifiers`), and "add a side" must not
+  turn into an interrogation about noodles. Everything else degrades OPEN and is skipped — a line
+  the batch removes, an unresolved or UNAVAILABLE item (that is the cart's `unavailable_item`
+  rejection to make, and asking first would waste a turn to reach the same refusal), an unknown
+  `line_id`, an ungrouped option, and a missing `cart_view` (guard is truthy, not `!== null`).
+  Identical messages are deduped.
 - `tools/tool-specs.ts` — `search_menu` + `propose_cart` specs (`propose_cart` has optional
   `reply`/`language`/`mentioned_items`); `tools/run-tools.ts` — the `tools` node executing them
   (captures the bundled reply, accumulates `search_results`, resolves `mentioned_items` against the
