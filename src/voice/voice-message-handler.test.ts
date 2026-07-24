@@ -347,6 +347,35 @@ describe('VoiceMessageHandler', () => {
       }
     });
 
+    it("a restarted session retires the prior session's idle timer (no ghost stop of the live turn)", async () => {
+      vi.useFakeTimers();
+      try {
+        const { handler, conn, stt, manager, sent } = setup();
+
+        // Turn 1: speech arms the idle timer, then the session is left as-is.
+        await handler.handleStart(conn, startMsg);
+        const first = manager.get('s1')!;
+        const firstStream = stt.stream;
+        stt.handlers.onPartial('two burgers'); // arms turn 1's idle timer
+
+        // Turn 2 (hands-free restart) BEFORE turn 1's idle timer would fire.
+        vi.advanceTimersByTime(TIMEOUTS.partialIdleMs - 1_000);
+        await handler.handleStart(conn, startMsg);
+        const second = manager.get('s1')!;
+        expect(second).not.toBe(first); // a fresh session replaced it
+        expect(firstStream.close).toHaveBeenCalledTimes(1); // turn 1's STT stream was closed
+
+        // Let turn 1's original deadline pass: its ghost timer must NOT stop turn 2.
+        vi.advanceTimersByTime(2_000);
+        await vi.runAllTimersAsync();
+        expect(sent).not.toContainEqual(expect.objectContaining({ type: 'voice.stopped' }));
+        expect(second.stopping).toBe(false); // live turn untouched
+        expect(manager.get('s1')?.status).toBe('listening');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('a disconnect disarms the timer', async () => {
       vi.useFakeTimers();
       try {
