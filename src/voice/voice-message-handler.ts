@@ -29,6 +29,15 @@ export class VoiceMessageHandler {
   ) {}
 
   async handleStart(conn: ClientConnection, _msg: VoiceStartMsg): Promise<void> {
+    // A second voice.start on the same socket (hands-free clients restart the mic every
+    // turn) must fully retire the prior session first: disarm its timers and close its STT
+    // stream. Otherwise the old session survives outside the registry with a live idle
+    // timer that later fires a ghost voice.stop against whatever turn is then current.
+    const existing = this.manager.get(conn.session_id);
+    if (existing) {
+      this.clearTimers(existing);
+      this.manager.remove(conn.session_id); // closes the prior STT stream
+    }
     const session = this.manager.create(
       new VoiceSession(conn.session_id, conn.cart_id, conn.pos_config_id),
     );
@@ -144,7 +153,17 @@ export class VoiceMessageHandler {
 
   async handleStop(conn: ClientConnection, _msg: VoiceStopMsg): Promise<void> {
     const session = this.manager.get(conn.session_id);
-    if (!session?.stream) return;
+    if (!session) return;
+    await this.stopSession(conn, session);
+  }
+
+  /**
+   * Flush a specific session and close it out (§11.2 C). Operates on the session it is
+   * handed — the idle timer passes its OWN session so a ghost stop can never reach through
+   * a registry lookup and flush whatever turn happens to be current.
+   */
+  private async stopSession(conn: ClientConnection, session: VoiceSession): Promise<void> {
+    if (!session.stream) return;
     // Ignore a repeat/concurrent voice.stop: a flush is already in flight (stopping),
     // a grace window is pending (finalTimer set), or the session already went terminal.
     // Re-running would flush a closing socket and orphan the first timer.
@@ -184,17 +203,22 @@ export class VoiceMessageHandler {
   handleDisconnect(session_id: string): void {
     const session = this.manager.get(session_id);
     if (session) {
-      if (session.finalTimer) {
-        clearTimeout(session.finalTimer);
-        session.finalTimer = null;
-      }
-      if (session.stopTimer) {
-        clearTimeout(session.stopTimer);
-        session.stopTimer = null;
-      }
+      this.clearTimers(session);
       if (session.status === 'listening') session.status = 'interrupted';
     }
     this.manager.remove(session_id);
+  }
+
+  /** Disarm both per-session timers (idle stop + §11.2 C grace) so neither fires later. */
+  private clearTimers(session: VoiceSession): void {
+    if (session.finalTimer) {
+      clearTimeout(session.finalTimer);
+      session.finalTimer = null;
+    }
+    if (session.stopTimer) {
+      clearTimeout(session.stopTimer);
+      session.stopTimer = null;
+    }
   }
 
   /**
@@ -211,12 +235,17 @@ export class VoiceMessageHandler {
     if (session.status !== 'listening' || session.stopping) return;
     session.stopTimer = setTimeout(() => {
       session.stopTimer = null;
+      // A newer voice.start replaced this session in the registry: this timer is a ghost
+      // and must never stop the live turn. handleStart normally disarms it first; this is
+      // the backstop for a timer that had already fired into the queue.
+      if (this.manager.get(session.session_id) !== session) return;
       if (session.status !== 'listening' || session.stopping) return;
       // Server-initiated stop: tell the client we closed the mic so it can drop its
       // listening UI (a client-sent voice.stop needs no such echo — it already knows).
       conn.send({ type: 'voice.stopped', session_id: session.session_id, reason: 'idle' });
-      // No new speech for partialIdleMs → end-of-turn. Same flush/grace path as voice.stop.
-      void this.handleStop(conn, { type: 'voice.stop', session_id: session.session_id });
+      // No new speech for partialIdleMs → end-of-turn. Same flush/grace path as voice.stop,
+      // on THIS session (not a registry re-lookup).
+      void this.stopSession(conn, session);
     }, TIMEOUTS.partialIdleMs);
     // Housekeeping timer: never keep the process alive on its own account.
     session.stopTimer.unref?.();

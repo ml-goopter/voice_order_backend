@@ -37,13 +37,23 @@ that may eventually touch the cart (§11 invariant).
   speech progress (a growing partial or a final; empty/keepalive and verbatim-repeat
   partials are ignored via `lastPartialText`). It is never reset by `voice.audio_chunk`,
   since the mic keeps streaming audio during silence. If no progress arrives within
-  `TIMEOUTS.partialIdleMs` while `listening`, it first sends the client a `voice.stopped`
+  `TIMEOUTS.partialIdleMs` (60 s) while `listening`, it first sends the client a `voice.stopped`
   (`reason: 'idle'`) notice — a server-initiated stop echoes back so the client can drop its
-  listening UI; a client-sent `voice.stop` gets no such echo — then auto-invokes `handleStop`,
-  the same flush/grace path as a client `voice.stop`. Cleared on stop, disconnect, and STT
-  error; `unref`'d so it never holds the process open. This is the shorter turn-level
-  end-of-turn signal; the separate ~20–30 s session-idle "walked away" backstop
-  (`docs/voice-idle-timeout.md`) is still only proposed.
+  listening UI; a client-sent `voice.stop` gets no such echo — then invokes `stopSession` on
+  its own session, the same flush/grace path as a client `voice.stop`. Cleared on stop,
+  disconnect, restart, and STT error; `unref`'d so it never holds the process open. **This
+  is a per-session timeout, not per-turn:** its 60 s clock spans turns (any partial/final on
+  the session resets it) and, when it fires, it ends the whole session — turn boundaries are
+  the STT provider's ~1.6 s endpointing, which never sends `voice.stopped`. The separate
+  ~20–30 s session-idle "walked away" backstop (`docs/voice-idle-timeout.md`) is still only proposed.
+- **Session restart / ghost-timer safety** — a hands-free client sends a fresh `voice.start`
+  every turn without a `voice.stop`. `handleStart` first retires any existing session for that
+  `session_id` (`clearTimers` + `manager.remove`, which closes the old STT stream) before
+  creating the new one, so the old session's idle timer cannot outlive it. As a backstop, the
+  idle-timer callback bails if the session is no longer the registry's current one for that
+  `session_id` (`manager.get(session_id) !== session`), and `stopSession` acts on the session
+  it is handed rather than a fresh lookup — together these stop a stale timer from flushing
+  whatever turn is current.
 - `handleStop` ignores a repeat/concurrent `voice.stop` (guarded on `stopping`,
   which is set before the flush await, plus a pending timer / terminal status) so an
   overlapping stop never double-flushes the socket, then flushes the stream. If a
