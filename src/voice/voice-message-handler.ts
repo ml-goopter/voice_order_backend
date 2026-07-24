@@ -115,18 +115,28 @@ export class VoiceMessageHandler {
       });
     } catch (error) {
       // Auth/handshake failure (§11.2 A): the session never became listenable.
-      // Tear it down and tell the client, mirroring the onError path.
-      this.manager.remove(session.session_id);
       logger.warn('voice.stt_open_failed', {
         session_id: session.session_id,
         error: messageOf(error),
       });
+      // A newer voice.start (or a disconnect) already replaced/removed this session while
+      // it was connecting: the failure belongs to an abandoned attempt — don't remove the
+      // live session that now owns this session_id, and don't alarm the client.
+      if (this.manager.get(session.session_id) !== session) return;
+      this.manager.remove(session.session_id);
       conn.send({
         type: 'voice.error',
         session_id: session.session_id,
         reason: 'stt_failed',
         message: 'Speech recognition is unavailable. Please try again.',
       });
+      return;
+    }
+    // A newer voice.start (or a disconnect) replaced/removed this session while its STT
+    // stream was still connecting: the just-opened socket is an orphan — close it and do
+    // not go live, else it lingers open until the provider's own idle timeout.
+    if (this.manager.get(session.session_id) !== session) {
+      session.stream.close();
       return;
     }
     // Flush audio that arrived during the connect round-trip so the onset of speech

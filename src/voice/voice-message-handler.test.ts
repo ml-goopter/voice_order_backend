@@ -176,6 +176,89 @@ describe('VoiceMessageHandler', () => {
     expect(manager.get('s1')?.status).toBe('listening');
   });
 
+  it('closes an orphaned STT stream when a restart lands while it was still connecting', async () => {
+    type MockStream = SttStream & { close: Mock<() => void>; sendAudio: Mock<(c: Buffer) => void> };
+    const streams: MockStream[] = [];
+    const settle: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+    const manager = new VoiceSessionManager();
+    const bus = new EventBus();
+    const sent: OutboundMessage[] = [];
+    const conn: ClientConnection = {
+      session_id: 's1', cart_id: 'c1', pos_config_id: 7, device_id: 'dev_1',
+      send: (m) => sent.push(m), close: () => undefined, isAlive: () => true,
+    };
+    // A provider that hands out a distinct, individually-resolvable stream per openStream call.
+    const stt: SttProvider = {
+      name: 'fake',
+      openStream: () =>
+        new Promise<SttStream>((resolve, reject) => {
+          const stream: MockStream = {
+            sendAudio: vi.fn<(c: Buffer) => void>(),
+            stop: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+            close: vi.fn<() => void>(),
+          };
+          streams.push(stream);
+          settle.push({ resolve: () => resolve(stream), reject });
+        }),
+    };
+    const handler = new VoiceMessageHandler(manager, stt, bus);
+
+    const first = handler.handleStart(conn, startMsg); // suspends: stream[0] connecting
+    const second = handler.handleStart(conn, startMsg); // suspends: stream[1] connecting; session A superseded
+    expect(settle).toHaveLength(2);
+
+    settle[0]!.resolve(); // stream[0] connects — but its session was already replaced
+    await first;
+    expect(streams[0]!.close).toHaveBeenCalledTimes(1); // orphan socket closed, not leaked
+    expect(streams[0]!.sendAudio).not.toHaveBeenCalled(); // never went live
+
+    settle[1]!.resolve(); // stream[1] connects — the live session
+    await second;
+    expect(streams[1]!.close).not.toHaveBeenCalled(); // live stream kept open
+    expect(manager.get('s1')?.status).toBe('listening');
+    expect(manager.get('s1')?.stream).toBe(streams[1]!);
+  });
+
+  it('an STT open failure for a superseded session neither removes the live session nor alarms the client', async () => {
+    type MockStream = SttStream & { close: Mock<() => void> };
+    const settle: Array<{ resolve: () => void; reject: (e: Error) => void }> = [];
+    const manager = new VoiceSessionManager();
+    const bus = new EventBus();
+    const sent: OutboundMessage[] = [];
+    const conn: ClientConnection = {
+      session_id: 's1', cart_id: 'c1', pos_config_id: 7, device_id: 'dev_1',
+      send: (m) => sent.push(m), close: () => undefined, isAlive: () => true,
+    };
+    const stt: SttProvider = {
+      name: 'fake',
+      openStream: () =>
+        new Promise<SttStream>((resolve, reject) => {
+          const stream: MockStream = {
+            sendAudio: vi.fn<(c: Buffer) => void>(),
+            stop: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+            close: vi.fn<() => void>(),
+          };
+          settle.push({ resolve: () => resolve(stream), reject });
+        }),
+    };
+    const handler = new VoiceMessageHandler(manager, stt, bus);
+
+    const first = handler.handleStart(conn, startMsg); // session A connecting
+    const second = handler.handleStart(conn, startMsg); // session B replaces A in the registry
+    expect(settle).toHaveLength(2);
+
+    settle[0]!.reject(new Error('handshake failed')); // A's connect fails AFTER being superseded
+    await first;
+    // The failure belongs to the abandoned attempt: the live session B is untouched and the
+    // client (which shares this session_id) is not told the current session failed.
+    expect(sent).not.toContainEqual(expect.objectContaining({ type: 'voice.error' }));
+    expect(manager.get('s1')).toBeDefined();
+
+    settle[1]!.resolve();
+    await second;
+    expect(manager.get('s1')?.status).toBe('listening'); // B is live
+  });
+
   it('ignores a final that lands after the §11.2 C timeout already failed the session', async () => {
     vi.useFakeTimers();
     try {
