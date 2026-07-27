@@ -86,6 +86,14 @@ that may eventually touch the cart (§11 invariant).
 - `stt` provider abstraction.
 - `events` (EventBus) — emits final transcript + session lifecycle events.
 - `realtime` (`ClientConnection`) — sends partials/errors; provides `pos_config_id`.
+- `ratelimit` (indirectly, via the STT provider) — `openStream` can now reject with
+  `RateLimitTimeoutError`, surfaced to the customer as `voice.error` reason `stt_busy`.
+  A session carries an STT permit for its whole life, which makes session bookkeeping
+  capacity-critical: `VoiceSession.retired` + `retire()`/`attachStream()` guarantee a session
+  removed or superseded while its stream is still in flight is torn down and its permit
+  returned (both race directions). Eviction is by session OBJECT, never by id, so a failed
+  open cannot tear down the session that already replaced it, and a retired session never
+  writes to the live socket it shares a `session_id` with.
 
 ## Key files
 - `voice/voice-session.ts` — per-session state (`idle|listening|interrupted|ended|failed`).

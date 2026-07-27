@@ -175,6 +175,12 @@ the test/dev double.
   `config/constants` (`LIMITS`); `config/env` (`ODOO_DATABASE_URL`,
   `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `JINA_API_KEY`,
   `JINA_BASE_URL`). No Redis dependency — the menu module is Redis-free.
+- `ratelimit` — RPM+TPM buckets around the Jina embedding call. Limiter identity is the API
+  KEY ALONE (no model/baseUrl): Jina's quota is shared across all its products, so a reranker
+  or reader adopted later must land on the same bucket. Jina returns no rate-limit or
+  `Retry-After` headers, so the client owns its backoff; headers are read opportunistically
+  with a fallback rather than depended on. An embedding limit degrades to a retriable
+  `search_menu` tool error, not a failed turn.
 
 ## Key files
 - `menu-service.ts` (`MenuService`, `MenuLookup`), `postgres-menu-store.ts`

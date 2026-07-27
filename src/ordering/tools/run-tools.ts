@@ -12,6 +12,7 @@ import { formatZodError } from '../../shared/zod-error.js';
 import { TOOL_NAMES } from './tool-specs.js';
 import { logger } from '../../config/logger.js';
 import { messageOf } from '../../shared/errors.js';
+import { RateLimitTimeoutError } from '../../ratelimit/rate-limiter.js';
 import type { MentionedItem } from '../../contracts/mentioned-item.js';
 import { toMentionedItem, resolveMentionedItems } from '../mentioned-items.js';
 
@@ -90,8 +91,75 @@ async function findViolations(
   return findRequiredModifierViolations(operations, s.cart_view, itemsByKey);
 }
 
-/** Execute one tool call against the (in-progress) turn state. */
+/** Runtime constructors for a programming mistake: a property read off `undefined`, a bad array
+ *  length, a missing binding. Nothing a tool can retry its way out of. */
+const BUG_SHAPED = [TypeError, RangeError, ReferenceError] as const;
+
+/** How far down the `cause` chain to look for IO evidence — `fetch` hides the socket error one
+ *  level deep and SDKs add a couple more. Mirrors `arrival.ts`. */
+const MAX_CAUSE_DEPTH = 5;
+
+/** True when the error carries transport evidence anywhere in its cause chain: an HTTP status or a
+ *  socket/system `code`. This is what keeps `TypeError: fetch failed` — the shape `fetch` reports
+ *  EVERY network failure in, with the real `code` on `cause` — on the retriable side. */
+function hasIoEvidence(err: unknown): boolean {
+  let node: unknown = err;
+  for (let depth = 0; depth < MAX_CAUSE_DEPTH; depth++) {
+    if (node === null || typeof node !== 'object') return false;
+    const e = node as { status?: unknown; statusCode?: unknown; code?: unknown; cause?: unknown };
+    if (typeof e.status === 'number' || typeof e.statusCode === 'number') return true;
+    if (typeof e.code === 'string') return true;
+    node = e.cause;
+  }
+  return false;
+}
+
+/** Is this throw a failed tool/IO call the agent can usefully retry, or a bug in our own code? */
+function isRetriableToolFailure(err: unknown): boolean {
+  if (err instanceof RateLimitTimeoutError) return true;
+  if (!BUG_SHAPED.some((ctor) => err instanceof ctor)) return true;
+  return hasIoEvidence(err);
+}
+
+/**
+ * Execute one tool call, converting a failed tool/IO call into the retriable tool-error channel the
+ * agent already understands (`content` fed back to the model, `error` set for the log line).
+ *
+ * Without this, an exception from a tool — a `search_menu` whose embedder was rate-limited, a
+ * Postgres blip — escapes the graph node and kills the whole turn. That is the wrong blast radius
+ * for one failed retrieval: the agent can search again, search differently, or end the turn by
+ * asking the customer, and the loop is already bounded by `LIMITS.maxAgentSteps`. It is also the
+ * wrong DIAGNOSIS: an embedding-quota timeout escaping to `order-understanding-service` was
+ * reported to operators as `llm_rate_limited`, blaming a provider that was never involved.
+ *
+ * The catch is FILTERED for the same reason. A programming error here — a `TypeError` out of
+ * `parseAgentReply`, `toMentionedItem` or `parseOrderGraphOutput` — is not retriable, and folding
+ * it into this channel is strictly worse than letting it escape: it is logged at WARN as a routine
+ * bad tool call, replayed to the model up to `maxAgentSteps` times, and finally kills the turn as
+ * `agent_step_limit` — a reason that describes nothing about the actual fault. Bug-shaped throws
+ * therefore propagate to `order.node_failed` / `order_parse_failed`, where they name themselves.
+ */
 async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolCall): Promise<ToolExecResult> {
+  try {
+    return await runToolCall(menu, s, call);
+  } catch (err) {
+    if (!isRetriableToolFailure(err)) throw err;
+    // Saturation is named separately from a broken tool so the two are distinguishable in the
+    // logs, and so the message steers the agent somewhere useful: retrying a rate-limited call
+    // immediately just burns steps against a provider that is already saying stop.
+    const limited = err instanceof RateLimitTimeoutError;
+    // Name the tool that actually ran out of capacity. The message used to say "menu search is
+    // temporarily unavailable … do not repeat this search" for EVERY tool, so a saturated
+    // `propose_cart` steered the agent with advice about a search it never made.
+    const error = limited
+      ? `Error: ${call.name} is temporarily unavailable (capacity). Do not repeat this call — end this turn with a spoken reply: answer from what you already know, or tell the customer you could not complete their request just now.`
+      : `Error: tool "${call.name}" failed: ${messageOf(err)}`;
+    return { content: error, error, meta: { rate_limited: limited } };
+  }
+}
+
+/** Execute one tool call against the (in-progress) turn state. */
+async function runToolCall(menu: MenuService, s: OrderStateType, call: ToolCall): Promise<ToolExecResult> {
   switch (call.name) {
     case TOOL_NAMES.search: {
       const parsed = searchArgs.safeParse(call.arguments);
@@ -160,7 +228,8 @@ async function executeToolCall(menu: MenuService, s: OrderStateType, call: ToolC
  * each result to the turn scratchpad (`agent_messages`), and carry the `output` a successful
  * `propose_cart` set. Returns a state patch. A `propose_cart` that fails validation sets no
  * `output` — it is a tool error the agent retries (bounded by `maxAgentSteps`); the loop router
- * sends control back to the agent because no terminal channel was written.
+ * sends control back to the agent because no terminal channel was written. A tool that THROWS
+ * lands in that same channel rather than failing the whole turn (see {@link executeToolCall}).
  */
 export async function runTools(menu: MenuService, s: OrderStateType): Promise<Partial<OrderStateType>> {
   const last = s.agent_messages.at(-1);

@@ -8,6 +8,7 @@ import type { CandidateItem } from '../../menu/menu-types.js';
 import type { MentionedItem } from '../../contracts/mentioned-item.js';
 import { toMentionedItem } from '../mentioned-items.js';
 import { logger } from '../../config/logger.js';
+import { RateLimitTimeoutError } from '../../ratelimit/rate-limiter.js';
 
 // `propose_cart` resolves each add_item's key to check required modifier groups, so even a
 // propose-only case reaches MenuService. This stub resolves nothing, which is the documented
@@ -240,6 +241,134 @@ describe('runTools — required modifier groups block propose_cart', () => {
       expect.objectContaining({ menu_item_key: 'mushu_pork', message: 'pg down' }),
     );
     error.mockRestore();
+  });
+});
+
+describe('runTools — a throwing tool is a retriable tool error, not a dead turn', () => {
+  const throwingMenu = (err: unknown): MenuService =>
+    ({
+      searchMenu: async () => {
+        throw err;
+      },
+      resolveItemKey: async () => undefined,
+    }) as unknown as MenuService;
+
+  it('turns a rate-limited search_menu into a tool message instead of failing the turn', async () => {
+    // Unhandled, this escapes the graph node and kills the whole turn — and lands in
+    // order-understanding-service, which reports ANY RateLimitTimeoutError as `llm_rate_limited`,
+    // blaming a provider that was never involved.
+    const err = new RateLimitTimeoutError('deadline', 'embedding:tpm: timed out waiting for capacity');
+    const state = stateWithSearches([searchCall({ query: 'burger' })]);
+
+    const patch = await runTools(throwingMenu(err), state);
+
+    expect(patch.output).toBeNull();
+    const toolMsg = patch.agent_messages?.at(-1) as { role: string; content: string };
+    expect(toolMsg.role).toBe('tool');
+    expect(toolMsg.content).toMatch(/temporarily unavailable/);
+    // It must name the tool that actually ran out of capacity. A message hardcoded to "menu
+    // search … do not repeat this search" steers a saturated propose_cart with advice about a
+    // search it never made.
+    expect(toolMsg.content).toContain(TOOL_NAMES.search);
+    // No terminal channel was written, so the router loops back to the agent, bounded by
+    // maxAgentSteps — it can answer from what it has or ask the customer.
+    expect(patch.search_results).toBeUndefined();
+  });
+
+  // A tool throw is retriable because a FAILED CALL is retriable. A bug in our own code is not:
+  // swallowed here it is logged at WARN as a routine bad tool call, replayed to the model up to
+  // maxAgentSteps times, and finally kills the turn as `agent_step_limit` — which describes
+  // nothing about the real fault and points every operator at the wrong thing.
+  it('lets a bug-shaped throw escape so the turn fails with a truthful reason', async () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'menu_item_key')");
+
+    await expect(
+      runTools(throwingMenu(bug), stateWithSearches([searchCall({ query: 'burger' })])),
+    ).rejects.toBe(bug);
+  });
+
+  it('lets a RangeError and a ReferenceError escape too', async () => {
+    for (const bug of [new RangeError('Invalid array length'), new ReferenceError('x is not defined')]) {
+      await expect(
+        runTools(throwingMenu(bug), stateWithSearches([searchCall({ query: 'burger' })])),
+      ).rejects.toBe(bug);
+    }
+  });
+
+  // `fetch` reports EVERY network failure as `TypeError: fetch failed` with the real code on
+  // `cause`, so the constructor alone cannot decide. Transport evidence in the chain outranks it —
+  // otherwise filtering the catch would turn a routine embedder outage into a dead turn.
+  it('keeps a fetch-shaped TypeError in the retriable channel', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const ioErr = Object.assign(new TypeError('fetch failed'), {
+      cause: Object.assign(new Error('connect ECONNREFUSED 1.2.3.4:443'), { code: 'ECONNREFUSED' }),
+    });
+
+    const patch = await runTools(throwingMenu(ioErr), stateWithSearches([searchCall({ query: 'burger' })]));
+
+    expect((patch.agent_messages?.at(-1) as { content: string }).content).toContain('fetch failed');
+    expect(warn).toHaveBeenCalledWith(
+      'order.agent_tool',
+      expect.objectContaining({ ok: false, rate_limited: false }),
+    );
+    warn.mockRestore();
+  });
+
+  // An HTTP status is the other transport shape — an SDK that rejects with a 503 as a TypeError
+  // subclass must stay retriable.
+  it('keeps a status-carrying TypeError in the retriable channel', async () => {
+    const patch = await runTools(
+      throwingMenu(Object.assign(new TypeError('upstream 503'), { status: 503 })),
+      stateWithSearches([searchCall({ query: 'burger' })]),
+    );
+
+    expect((patch.agent_messages?.at(-1) as { content: string }).content).toContain('upstream 503');
+  });
+
+  it('names the saturation on the log line so it is not mistaken for a broken tool', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+    const err = new RateLimitTimeoutError('deadline', 'embedding:tpm: timed out waiting for capacity');
+
+    await runTools(throwingMenu(err), stateWithSearches([searchCall({ query: 'burger' })]));
+
+    expect(warn).toHaveBeenCalledWith(
+      'order.agent_tool',
+      expect.objectContaining({ ok: false, tool: TOOL_NAMES.search, rate_limited: true }),
+    );
+    warn.mockRestore();
+  });
+
+  it('carries a non-limit tool failure back to the agent too, marked as not rate-limited', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const patch = await runTools(
+      throwingMenu(new Error('pg down')),
+      stateWithSearches([searchCall({ query: 'burger' })]),
+    );
+
+    expect((patch.agent_messages?.at(-1) as { content: string }).content).toContain('pg down');
+    expect(warn).toHaveBeenCalledWith(
+      'order.agent_tool',
+      expect.objectContaining({ ok: false, rate_limited: false }),
+    );
+    warn.mockRestore();
+  });
+
+  it('lets the batch continue: a later call still runs after an earlier one threw', async () => {
+    let calls = 0;
+    const flaky = {
+      searchMenu: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('transient');
+        return { items: [candidate('coke', 'Coke')] };
+      },
+      resolveItemKey: async () => undefined,
+    } as unknown as MenuService;
+
+    const patch = await runTools(flaky, stateWithSearches([searchCall({ query: 'a' }), searchCall({ query: 'coke' })]));
+
+    expect(Object.keys(patch.search_results ?? {})).toEqual(['coke']);
+    expect(patch.agent_messages).toHaveLength(3); // the assistant call + one tool message each
   });
 });
 

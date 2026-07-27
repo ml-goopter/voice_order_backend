@@ -12,6 +12,7 @@ import type { Intent } from '../contracts/intent.js';
 import { OrderGraph } from './order-graph.js';
 import { OrderUnderstandingService } from './order-understanding-service.js';
 import { LIMITS } from '../config/constants.js';
+import { RateLimitTimeoutError } from '../ratelimit/rate-limiter.js';
 import { TOOL_NAMES } from './tools/tool-specs.js';
 
 const POS = 1;
@@ -689,6 +690,33 @@ describe('OrderUnderstandingService', () => {
       cache_hit_rate: 0.8,
     });
     infoSpy.mockRestore();
+  });
+
+  it('names saturation as llm_rate_limited rather than hiding it in the generic parse failure', async () => {
+    // A rate-limited agent step throws out of the graph. The turn still fails — nothing is
+    // proposed and nothing is spoken — but the reason must read as capacity, not a bad model
+    // response, or the logs will send an operator hunting a prompt bug.
+    const store = InMemoryMenuStore.of(POS, MENU);
+    const carts = new InMemoryCartCache();
+    await carts.set(cartWith(0));
+    const llm: LlmProvider = {
+      name: 'saturated',
+      model: 'saturated',
+      complete: async () => JSON.stringify({ intent: 'service' }),
+      chat: () => Promise.reject(new RateLimitTimeoutError('deadline', 'llm: timed out waiting for capacity')),
+    };
+    const bus = new EventBus();
+    const service = new OrderUnderstandingService(new OrderGraph(new MenuService(store), llm, carts), bus);
+    const failed = collect(bus, 'voice.session_failed');
+    const proposed = collect(bus, 'order.operations_proposed');
+    const replies = collect(bus, 'order.reply');
+
+    await service.handleFinalTranscript(transcript('two chicken burgers'));
+
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.reason).toBe('llm_rate_limited');
+    expect(proposed).toHaveLength(0);
+    expect(replies).toHaveLength(0);
   });
 
   describe('mentioned_items on order.reply', () => {

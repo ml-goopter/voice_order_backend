@@ -7,6 +7,44 @@ timestamp: 2026-07-07
 
 # Change Log
 
+## 2026-07-27 — ratelimit: proactive shaping for every outbound third-party call
+- **What:** new `src/ratelimit/` module (token bucket, semaphore, composite limiter,
+  quota-identity registry, token estimator, `Retry-After` parser, arrival classifier) wired into
+  the AssemblyAI STT, Cartesia TTS, OpenAI-compatible LLM (×2 adapters) and Jina embedding
+  providers. Quota knobs added to `config/env` (all defaulting to `0` = unlimited) and algorithm
+  tunables to `config/constants`. Degradation reuses existing failure paths: new `stt_busy` and
+  `llm_rate_limited` reasons, and an embedding limit now becomes a retriable tool error instead
+  of killing the turn. `app.ts` logs resolved limiter identities at boot.
+- **Why:** the only prior protection was reactive — the OpenAI SDK's internal 429 retries and
+  Jina's single retry — both firing *after* the provider had already rejected us, so a busy
+  restaurant tripped the quota and the retries added load. The design turns on one finding: the
+  four providers meter four different things (AssemblyAI sessions-per-minute, Cartesia
+  concurrency, Jina and OpenAI RPM+TPM), so a uniform request bucket would be wrong for three of
+  them.
+- **Where:** `ratelimit/` (new), `config/{env,constants}`, `.env.example`, `llm/{llm-client,
+  openai-compatible-provider}`, `tts/{tts-client,cartesia-tts-provider}`,
+  `stt/{stt-client,assemblyai-stt-provider}`, `menu/{embedding-service,jina-embedding-service}`,
+  `ordering/{order-understanding-service,tools/run-tools}`, `voice/{voice-session,
+  voice-session-manager,voice-message-handler}`, `app.ts`.
+- **Notes:** ships dark — all-zero limits resolve to a shared `NO_LIMIT` with no allocation and
+  no timers, so it is a genuine no-op until an operator sets quota. Design doc and vendor
+  evidence: `docs/plans/rate-limiting-policy.md` (PR #31).
+  Two vendor caveats worth keeping: Jina's own product page and docs portal publish
+  **contradictory** TPM figures, and OpenAI no longer publishes a concrete RPM/TPM tier matrix —
+  both must be read from the dashboards, not hardcoded.
+  Known limitation: RPM under-books, because one reservation sits outside every transport retry
+  loop (up to 4× OpenAI, 2× Jina, 3× AssemblyAI). TPM is unaffected, being reconciled from real
+  `usage`.
+  Pre-existing bugs fixed en route, because a permit turns them from annoyances into permanent
+  capacity loss: orphaned voice sessions (two `voice.start` inside the connect round-trip left
+  the first unreachable), retired sessions writing ghost transcripts and false errors onto the
+  live socket, and an unhandled rejection from the idle-stop timer that crashes the process under
+  Node's default policy.
+  Follow-ups: move TTS to a persistent Cartesia WebSocket context (concurrency is currently
+  consumed per segment, so a four-sentence reply takes four slots on a 2-slot plan), and add an
+  `STT_CONNECT_RETRIES` knob — the AssemblyAI SDK reads `maxConnectionRetries` from its params
+  but does not declare it in its public typings.
+
 ## 2026-07-23 — menu/ordering: required modifier groups enforced at `propose_cart`
 - **What:** modifier options now carry their per-product group and requiredness
   (`group_key` = `attribute_line_id`, `group_name`, `required`) on `CandidateModifier` and

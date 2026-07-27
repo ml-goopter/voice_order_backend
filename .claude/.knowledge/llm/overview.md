@@ -103,6 +103,21 @@ deterministic source of truth.
 - `contracts/{cart-view, cart-operation.schema, intent}` (prompt-facing types, allowed ops, intent
   label set) — the prompt builders speak these shared contracts and no longer reach into `ordering`.
   `config/env` for provider selection.
+- `ratelimit` — RPM+TPM buckets around both `complete` and `chat`. Cost is unknown before the
+  call, so the TPM bucket is reserved from `estimateTokens(messages)+estimateTokens(tools)+
+  maxOutputTokensEst` and reconciled against `res.usage` afterwards; the reservation basis never
+  shrinks, because providers assess `max(max_tokens, input)` with no refund and refunding locally
+  would make the limiter more permissive than the provider. The estimate is **additive**, not
+  `max(...)` — `max()` reserves nothing for the reply whenever the prompt dominates, which is
+  every agent step here (~4.3k prompt vs 800 reply). `max_tokens` is a MODELLED ceiling and is
+  deliberately **not sent**: at the 800 default it would truncate replies in every existing
+  deployment. Limiters are keyed on `provider|baseUrl|apiKey|model`, so the agent and intent
+  adapters share ONE bucket when they share credentials (the default, since every `INTENT_LLM_*`
+  var falls back to its `LLM_*` twin) — two independent limiters would grant 2× the real quota.
+  The SDK remains the sole reactive 429 handler; the limiter reserves once per LOGICAL call
+  outside the retry loop, and a terminal 429 settles (the provider counted it) and penalizes.
+  `llm.usage` gained `rate_limit_wait_ms` and `estimated_tokens`, so estimate error is queryable
+  against `total_tokens` on the same record.
 
 ## Key files
 - `llm-provider.ts` — `LlmProvider` (`name`, `model`, `complete` + `chat`) + `LlmPrompt`;

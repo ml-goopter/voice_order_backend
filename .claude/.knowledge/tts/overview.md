@@ -76,6 +76,12 @@ turn logic — it is a pure text→audio side-effect of `order.reply`.
   constructs `TtsService`.
 - `config/env` — provider/key/model/voice/language/encoding settings.
 - `@cartesia/cartesia-js` — Cartesia Sonic REST TTS client (`tts.generate`).
+- `ratelimit` — a concurrency semaphore around `synthesize` (Cartesia meters concurrent
+  contexts, 2-15 by plan, and publishes NO request-rate limit, so there is deliberately no RPM
+  bucket). One permit per SEGMENT: a four-sentence reply takes four slots, because the REST
+  `tts.generate` path makes each segment its own context. The acquire is signal-aware so
+  barge-in surrenders a queued slot immediately, and a request timeout composed with the
+  caller's signal stops a hung call retiring a permit.
 
 ## Key files
 - `tts/tts-types.ts` — `TtsProvider` interface (`synthesize(text, signal, language) → Promise<Buffer>`).

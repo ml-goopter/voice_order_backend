@@ -9,6 +9,7 @@ import { CartTurnQueue } from './cart-turn-queue.js';
 import { logger } from '../config/logger.js';
 import { config } from '../config/env.js';
 import { messageOf } from '../shared/errors.js';
+import { RateLimitTimeoutError } from '../ratelimit/rate-limiter.js';
 
 /**
  * Order Understanding module (design §6). A PURE proposer — it never mutates the
@@ -53,6 +54,13 @@ export class OrderUnderstandingService {
       logger.child({ request_id: e.request_id, cart_id: e.cart_id }).warn('order.turn_failed', {
         error: messageOf(error),
       });
+      // Saturation, not a bad model response: name it so the failure reads as capacity in the logs
+      // instead of hiding inside the generic parse failure. The name is specifically about the LLM
+      // and is only accurate because the OTHER metered dependency in this graph — the embedder
+      // behind `search_menu` — can no longer surface here: `run-tools` converts a tool throw into a
+      // retriable tool error (logged `order.agent_tool` with `rate_limited: true`). Any new metered
+      // call reached from a node must be classified the same way, or it will be misreported here.
+      if (error instanceof RateLimitTimeoutError) return { status: 'fail', reason: 'llm_rate_limited' };
       return { status: 'fail', reason: 'order_parse_failed' };
     }
   }

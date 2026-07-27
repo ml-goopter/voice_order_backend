@@ -1,5 +1,6 @@
 import type { EventBus } from '../events/event-bus.js';
 import type { SttProvider } from '../stt/stt-provider.js';
+import type { SttStream } from '../stt/stt-types.js';
 import type { ClientConnection } from '../realtime/client-registry.js';
 import type {
   VoiceAudioChunkMsg,
@@ -12,6 +13,7 @@ import { newRequestId } from '../shared/ids.js';
 import { TIMEOUTS } from '../config/constants.js';
 import { logger } from '../config/logger.js';
 import { messageOf } from '../shared/errors.js';
+import { RateLimitTimeoutError } from '../ratelimit/rate-limiter.js';
 
 /** Cap on audio chunks buffered during STT connect, so a stalled connect can't grow memory unbounded. */
 const MAX_PENDING_AUDIO_CHUNKS = 200;
@@ -42,10 +44,14 @@ export class VoiceMessageHandler {
       new VoiceSession(conn.session_id, conn.cart_id, conn.pos_config_id),
     );
 
+    let stream: SttStream;
     try {
-      session.stream = await this.stt.openStream({
+      stream = await this.stt.openStream({
         // Partial: display-only, straight back to the client (never enters backend flow, §3).
         onPartial: (text) => {
+          // A retired session shares the socket AND the session_id with the turn that replaced it,
+          // so an ungated send injects ghost text into the LIVE display. Same rule as onFinal.
+          if (session.isTerminal) return;
           conn.send({ type: 'voice.partial_transcript', session_id: session.session_id, text });
           // Reset the stopped-talking timer only on real speech progress — ignore empty or
           // keepalive partials and verbatim repeats so a genuine silence can actually elapse.
@@ -103,6 +109,16 @@ export class VoiceMessageHandler {
             clearTimeout(session.stopTimer);
             session.stopTimer = null;
           }
+          // A terminal/retired session's socket error is not the customer's problem: the turn they
+          // are actually speaking is a different session on the same connection, and telling it to
+          // "repeat your last sentence" would abort a healthy turn.
+          if (session.isTerminal) {
+            logger.warn('voice.stt_error_after_retire', {
+              session_id: session.session_id,
+              error: error.message,
+            });
+            return;
+          }
           session.status = 'failed';
           logger.warn('voice.stt_error', { session_id: session.session_id, error: error.message });
           conn.send({
@@ -116,24 +132,52 @@ export class VoiceMessageHandler {
     } catch (error) {
       // Auth/handshake failure (§11.2 A): the session never became listenable.
       // Tear it down and tell the client, mirroring the onError path.
-      this.manager.remove(session.session_id);
+      // Whether this session is still the current one has to be read BEFORE retiring it, because
+      // retiring evicts it from the registry. A concurrent voice.start (hands-free mic restart)
+      // may already have replaced it, and a superseded session's failure must not put a
+      // voice.error on the socket its replacement is happily listening on.
+      const isCurrent = this.manager.get(session.session_id) === session;
+      this.retireSession(session);
       logger.warn('voice.stt_open_failed', {
         session_id: session.session_id,
         error: messageOf(error),
+        superseded: !isCurrent,
       });
+      if (!isCurrent) return;
+      // Local saturation is transient and the customer's own retry is the fix, so it gets its own
+      // reason + a "try again" message rather than the terminal "unavailable" one.
+      const busy = error instanceof RateLimitTimeoutError;
       conn.send({
         type: 'voice.error',
         session_id: session.session_id,
-        reason: 'stt_failed',
-        message: 'Speech recognition is unavailable. Please try again.',
+        reason: busy ? 'stt_busy' : 'stt_failed',
+        message: busy
+          ? "We're a bit busy right now — please try again in a moment."
+          : 'Speech recognition is unavailable. Please try again.',
       });
+      return;
+    }
+    // A concurrent voice.start (hands-free mic restart) or a disconnect may have retired this
+    // session during the connect round-trip. It is unreachable now, so attaching the stream would
+    // strand a live socket nothing can ever close — and with it a rate-limiter permit that never
+    // comes back. `attachStream` closes it instead.
+    if (!session.attachStream(stream)) {
+      logger.info('voice.stt_stream_discarded', { session_id: session.session_id });
       return;
     }
     // Flush audio that arrived during the connect round-trip so the onset of speech
     // reaches STT in order, then go live for subsequent chunks.
-    for (const chunk of session.pendingAudio) session.stream?.sendAudio(chunk);
+    for (const chunk of session.pendingAudio) stream.sendAudio(chunk);
     session.pendingAudio = [];
     session.status = 'listening';
+  }
+
+  /** Retire a session that is going away, evicting it from the registry only if it is still the
+   *  current one: a concurrent voice.start may already have replaced it, and removing by id then
+   *  would close the LIVE turn's stream instead of this dead one's. */
+  private retireSession(session: VoiceSession): void {
+    if (this.manager.get(session.session_id) === session) this.manager.remove(session.session_id);
+    else session.retire();
   }
 
   handleAudioChunk(conn: ClientConnection, msg: VoiceAudioChunkMsg): void {
@@ -245,7 +289,17 @@ export class VoiceMessageHandler {
       conn.send({ type: 'voice.stopped', session_id: session.session_id, reason: 'idle' });
       // No new speech for partialIdleMs → end-of-turn. Same flush/grace path as voice.stop,
       // on THIS session (not a registry re-lookup).
-      void this.stopSession(conn, session);
+      // Nothing awaits this one, so it must handle its own rejection: the socket can die between
+      // the last final and the idle flush (a final suppresses onError, so the session still looks
+      // 'listening'), and forceEndpoint() then throws "Socket is not open for communication".
+      // Unhandled, that is fatal under Node's default --unhandled-rejections=throw. There is
+      // nothing to retry, but a failing idle stop is worth seeing in the logs.
+      void this.stopSession(conn, session).catch((error: unknown) => {
+        logger.warn('voice.idle_stop_failed', {
+          session_id: session.session_id,
+          error: messageOf(error),
+        });
+      });
     }, TIMEOUTS.partialIdleMs);
     // Housekeeping timer: never keep the process alive on its own account.
     session.stopTimer.unref?.();

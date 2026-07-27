@@ -9,6 +9,7 @@ import type { SttProvider } from '../stt/stt-provider.js';
 import type { SttStream, SttStreamHandlers } from '../stt/stt-types.js';
 import type { ClientConnection } from '../realtime/client-registry.js';
 import type { OutboundMessage } from '../realtime/realtime-message-types.js';
+import { RateLimitTimeoutError } from '../ratelimit/rate-limiter.js';
 
 /** Captures the handlers passed to openStream so the test can drive STT events. */
 class FakeSttProvider implements SttProvider {
@@ -256,6 +257,149 @@ describe('VoiceMessageHandler', () => {
     expect(events['voice.session_failed']).toBeUndefined(); // voice notifies directly; it does not emit this event
   });
 
+  it('degrades a rate-limited STT open to a stt_busy voice.error the customer can retry past', async () => {
+    const { manager, stt, bus, conn, sent, events } = setup();
+    stt.openStream = () => Promise.reject(new RateLimitTimeoutError('deadline', 'stt: timed out'));
+    const handler = new VoiceMessageHandler(manager, stt, bus);
+
+    await handler.handleStart(conn, startMsg);
+
+    // Local saturation is transient and the customer's own retry is the fix, so it must not read
+    // as the terminal "unavailable" failure.
+    expect(sent).toContainEqual({
+      type: 'voice.error',
+      session_id: 's1',
+      reason: 'stt_busy',
+      message: "We're a bit busy right now — please try again in a moment.",
+    });
+    expect(manager.get('s1')).toBeUndefined(); // orphaned session torn down
+    expect(events['voice.session_failed']).toBeUndefined(); // voice notifies directly; it does not emit this event
+  });
+
+  // A stream that finishes connecting AFTER its session left the registry has no other owner: the
+  // session is unreachable, so nothing can ever call stop()/close() on it. The socket then bills
+  // until AssemblyAI's 3-hour cutoff and — worse — its rate-limiter permit is retired for good.
+  describe('a stream that resolves after its session is gone', () => {
+    /** openStream with the first call held open, so a second voice.start / a disconnect can
+     *  interleave inside the connect round-trip. */
+    function pendingFirstOpen(stt: FakeSttProvider) {
+      const orphan: SttStream & { close: Mock<() => void> } = {
+        sendAudio: vi.fn<(chunk: Buffer) => void>(),
+        stop: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
+        close: vi.fn<() => void>(),
+      };
+      let calls = 0;
+      let release!: () => void;
+      stt.openStream = (h) => {
+        stt.handlers = h;
+        if (++calls === 1) return new Promise<SttStream>((r) => (release = () => r(orphan)));
+        return Promise.resolve(stt.stream);
+      };
+      return { orphan, release: () => release() };
+    }
+
+    it('closes it when a concurrent voice.start superseded the session mid-connect', async () => {
+      const { manager, stt, bus, conn } = setup();
+      const { orphan, release } = pendingFirstOpen(stt);
+      const handler = new VoiceMessageHandler(manager, stt, bus);
+
+      const first = handler.handleStart(conn, startMsg); // suspends at `await openStream`
+      await handler.handleStart(conn, startMsg); // hands-free restart, inside the round-trip
+      release();
+      await first;
+
+      expect(orphan.close).toHaveBeenCalledTimes(1); // socket dropped, permit handed back
+      // The live turn is untouched: the orphan must not reattach itself over it.
+      expect(manager.get('s1')?.stream).toBe(stt.stream);
+      expect(manager.get('s1')?.status).toBe('listening');
+      expect(stt.stream.close).not.toHaveBeenCalled();
+    });
+
+    it('closes it when the client disconnected mid-connect', async () => {
+      const { manager, stt, bus, conn } = setup();
+      const { orphan, release } = pendingFirstOpen(stt);
+      const handler = new VoiceMessageHandler(manager, stt, bus);
+
+      const first = handler.handleStart(conn, startMsg);
+      handler.handleDisconnect('s1');
+      release();
+      await first;
+
+      expect(orphan.close).toHaveBeenCalledTimes(1);
+      expect(manager.get('s1')).toBeUndefined(); // a late stream never resurrects the session
+    });
+
+    it('drops a final that arrives on a superseded session (it can never touch the cart)', async () => {
+      const { manager, stt, bus, conn, events } = setup();
+      const { release } = pendingFirstOpen(stt);
+      const handler = new VoiceMessageHandler(manager, stt, bus);
+
+      const first = handler.handleStart(conn, startMsg);
+      const orphanHandlers = stt.handlers; // the retired session's callbacks
+      await handler.handleStart(conn, startMsg);
+      release();
+      await first;
+
+      orphanHandlers.onFinal('two burgers');
+      expect(events['stt.final_transcript.received']).toBeUndefined();
+    });
+
+    it('a failed open does not tear down the session that already replaced it', async () => {
+      const { manager, stt, bus, conn, sent } = setup();
+      let calls = 0;
+      let fail!: () => void;
+      stt.openStream = (h) => {
+        stt.handlers = h;
+        if (++calls === 1) return new Promise<SttStream>((_r, reject) => (fail = () => reject(new Error('auth failed'))));
+        return Promise.resolve(stt.stream);
+      };
+      const handler = new VoiceMessageHandler(manager, stt, bus);
+
+      const first = handler.handleStart(conn, startMsg);
+      await handler.handleStart(conn, startMsg);
+      const live = manager.get('s1');
+      fail();
+      await first;
+
+      // The failure belongs to the OLD session; removing by id would have closed the live turn.
+      expect(manager.get('s1')).toBe(live);
+      expect(stt.stream.close).not.toHaveBeenCalled();
+      // ...and it must stay off the wire: the socket and session_id are shared with the live turn,
+      // so a voice.error here would tell a customer who is mid-sentence that STT is unavailable.
+      expect(sent).toEqual([]);
+      expect(live?.status).toBe('listening');
+    });
+
+    it("a retired session's onError does not put a voice.error on the live turn", async () => {
+      const { manager, stt, bus, conn, sent } = setup();
+      const handler = new VoiceMessageHandler(manager, stt, bus);
+
+      await handler.handleStart(conn, startMsg);
+      const orphanHandlers = stt.handlers; // callbacks of the session about to be superseded
+      await handler.handleStart(conn, startMsg); // hands-free mic restart
+      const live = manager.get('s1')!;
+
+      orphanHandlers.onError(new Error('socket closed'));
+
+      expect(sent).toEqual([]);
+      expect(live.status).toBe('listening'); // the live turn is untouched
+    });
+
+    it("a retired session's onPartial does not inject ghost text into the live display", async () => {
+      const { manager, stt, bus, conn, sent } = setup();
+      const handler = new VoiceMessageHandler(manager, stt, bus);
+
+      await handler.handleStart(conn, startMsg);
+      const orphanHandlers = stt.handlers;
+      await handler.handleStart(conn, startMsg);
+      stt.handlers.onPartial('two burgers'); // the LIVE turn's own partial
+
+      orphanHandlers.onPartial('a large coffee'); // ghost from the retired session
+
+      expect(sent).toEqual([{ type: 'voice.partial_transcript', session_id: 's1', text: 'two burgers' }]);
+    });
+  });
+
   it('marks an in-flight session interrupted and closes the stream on disconnect', async () => {
     const { handler, conn, stt, manager } = setup();
     await handler.handleStart(conn, startMsg);
@@ -283,6 +427,39 @@ describe('VoiceMessageHandler', () => {
         // A server-initiated stop tells the client the mic closed so it can drop its listening UI.
         expect(sent).toContainEqual({ type: 'voice.stopped', session_id: 's1', reason: 'idle' });
       } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('survives a throwing flush on the idle path (nothing awaits it, so it cannot reject)', async () => {
+      vi.useFakeTimers();
+      const unhandled: unknown[] = [];
+      const trap = (reason: unknown): void => void unhandled.push(reason);
+      process.on('unhandledRejection', trap);
+      const warnSpy = vi.spyOn(logger, 'warn');
+      try {
+        const { handler, conn, stt } = setup();
+        // The socket dies after a final is delivered: STT suppresses onError in that case, so the
+        // session still looks 'listening' and none of stopSession's guards fire — the flush is
+        // reached and forceEndpoint() throws.
+        stt.stream.stop.mockRejectedValue(new Error('Socket is not open for communication'));
+        await handler.handleStart(conn, startMsg);
+        stt.handlers.onPartial('one coke'); // arms the idle timer
+
+        await vi.advanceTimersByTimeAsync(TIMEOUTS.partialIdleMs);
+        await vi.runAllTimersAsync();
+        // Let any escaping rejection reach the process hook.
+        vi.useRealTimers();
+        await new Promise((r) => setImmediate(r));
+
+        expect(unhandled).toEqual([]);
+        expect(warnSpy).toHaveBeenCalledWith(
+          'voice.idle_stop_failed',
+          expect.objectContaining({ session_id: 's1', error: 'Socket is not open for communication' }),
+        );
+      } finally {
+        warnSpy.mockRestore();
+        process.off('unhandledRejection', trap);
         vi.useRealTimers();
       }
     });

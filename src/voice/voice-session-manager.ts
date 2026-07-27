@@ -14,9 +14,11 @@ export class VoiceSessionManager {
     return session;
   }
 
+  /** Evict and retire: closes the STT stream, and guarantees one still connecting is closed the
+   *  moment it arrives (a removed session is unreachable, so this is its last chance). */
   remove(session_id: SessionId): void {
     const s = this.sessions.get(session_id);
-    if (s?.stream) s.stream.close();
     this.sessions.delete(session_id);
+    s?.retire();
   }
 }
