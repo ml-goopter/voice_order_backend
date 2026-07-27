@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { RateLimiter } from '../ratelimit/rate-limiter.js';
 
 // Records constructor opts and lets each test drive chat.completions.create.
 const createMock = vi.fn();
@@ -16,6 +17,9 @@ vi.mock('openai', () => ({
 const { OpenAiCompatibleLlmProvider } = await import('./openai-compatible-provider.js');
 const { LIMITS } = await import('../config/constants.js');
 const { logger } = await import('../config/logger.js');
+// Aliased: `RateLimiter` is already bound above as a type-only import.
+const { RateLimiter: Limiter, RateLimitTimeoutError } = await import('../ratelimit/rate-limiter.js');
+type TokenBucket = import('../ratelimit/token-bucket.js').TokenBucket;
 
 const CFG = {
   name: 'openai',
@@ -93,6 +97,226 @@ describe('OpenAiCompatibleLlmProvider', () => {
 
   it('exposes model from the injected config', () => {
     expect(new OpenAiCompatibleLlmProvider(CFG).model).toBe('test-model');
+  });
+
+  describe('rate limiting', () => {
+    // The parser and the intent classifier share ONE limiter whenever their creds match (the
+    // INTENT_LLM_* fallbacks), so the wait budget must ride each acquire — otherwise one of the
+    // two operator-set *_RATE_LIMIT_WAIT_MS values is silently lost.
+    function fakeLimiter(): { limiter: RateLimiter; acquire: ReturnType<typeof vi.fn> } {
+      const acquire = vi.fn().mockResolvedValue({ settle: vi.fn(), abandon: vi.fn(), waitedMs: 0 });
+      return { limiter: { acquire, nowMs: () => 0, penalize: vi.fn() } as unknown as RateLimiter, acquire };
+    }
+
+    it('passes its own wait budget to acquire on complete', async () => {
+      const { limiter, acquire } = fakeLimiter();
+      await new OpenAiCompatibleLlmProvider({ ...CFG, rateLimitWaitMs: 1_500 }, limiter).complete(PROMPT);
+      expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ deadlineMs: 1_500 }));
+    });
+
+    it('passes its own wait budget to acquire on chat', async () => {
+      const { limiter, acquire } = fakeLimiter();
+      await new OpenAiCompatibleLlmProvider({ ...CFG, rateLimitWaitMs: 400 }, limiter).chat(
+        [{ role: 'user', content: 'hi' }],
+        [],
+      );
+      expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ deadlineMs: 400 }));
+    });
+
+    // The TPM reservation is only observable through the private bucket, so these reach in rather
+    // than widening the limiter's surface. A frozen clock keeps refill out of the arithmetic.
+    const tpmOf = (l: RateLimiter): TokenBucket => (l as unknown as { tpm: TokenBucket }).tpm;
+    const frozen = (tpm: number) => new Limiter('llm', { tpm }, () => 0);
+
+    // The system/user prompt is 'SYS'/'USR': 3 envelope + ceil(3/4) content tokens each.
+    const PROMPT_ESTIMATE = 8;
+
+    it('reserves the estimate BEFORE create(), then settles with the reported total_tokens', async () => {
+      createMock.mockResolvedValue({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+      const settle = vi.fn();
+      let createCallsWhenReserved = -1;
+      const acquire = vi.fn().mockImplementation(() => {
+        createCallsWhenReserved = createMock.mock.calls.length;
+        return Promise.resolve({ settle, abandon: vi.fn(), waitedMs: 0 });
+      });
+      const limiter = { acquire, nowMs: () => 0, penalize: vi.fn() } as unknown as RateLimiter;
+
+      await new OpenAiCompatibleLlmProvider(CFG, limiter).complete(PROMPT);
+
+      // Reserving after the call would let a whole minute's traffic through before the first
+      // request was ever accounted for.
+      expect(createCallsWhenReserved).toBe(0);
+      expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ cost: PROMPT_ESTIMATE }));
+      expect(settle).toHaveBeenCalledWith(15);
+    });
+
+    it('reserves the input estimate PLUS the assumed output, not the larger of the two', async () => {
+      // A completion's charge is prompt + completion; they are summed, never alternatives. With
+      // `max(...)` a prompt-dominated call (every agent step here is ~4.3k prompt tokens) reserves
+      // nothing at all for its reply, and the whole output is unaccounted for until the response
+      // lands — which is precisely the window in which a concurrent call trips the 429.
+      createMock.mockResolvedValue({ choices: [{ message: { content: '{"ok":true}' } }] });
+      const acquire = vi.fn().mockResolvedValue({ settle: vi.fn(), abandon: vi.fn(), waitedMs: 0 });
+      const limiter = { acquire, nowMs: () => 0, penalize: vi.fn() } as unknown as RateLimiter;
+
+      await new OpenAiCompatibleLlmProvider({ ...CFG, maxOutputTokensEst: 800 }, limiter).complete(PROMPT);
+
+      expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ cost: PROMPT_ESTIMATE + 800 }));
+    });
+
+    it('does NOT refund an over-estimate (the reservation basis never shrinks)', async () => {
+      // Providers assess the estimate before generation and issue no refund when the response
+      // comes in short; a limiter that refunded locally would be more permissive than the provider
+      // it protects and would manufacture the 429s it exists to prevent.
+      createMock.mockResolvedValue({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+      const limiter = frozen(100_000);
+      await new OpenAiCompatibleLlmProvider({ ...CFG, maxOutputTokensEst: 800 }, limiter).complete(PROMPT);
+
+      expect(tpmOf(limiter).available).toBe(100_000 - (PROMPT_ESTIMATE + 800));
+    });
+
+    it('force-takes the delta when the call cost more than the estimate', async () => {
+      createMock.mockResolvedValue({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        usage: { prompt_tokens: 4_000, completion_tokens: 1_000, total_tokens: 5_000 },
+      });
+      const limiter = frozen(100_000);
+      await new OpenAiCompatibleLlmProvider({ ...CFG, maxOutputTokensEst: 800 }, limiter).complete(PROMPT);
+
+      // 808 reserved + 4_192 reconciled: the overshoot is charged, never absorbed.
+      expect(tpmOf(limiter).available).toBe(100_000 - 5_000);
+    });
+
+    it('keeps the charge for a post-send timeout, still logging llm.call_failed', async () => {
+      // The SDK raises APIConnectionTimeoutError once the request deadline expires, which for a
+      // multi-second budget is almost always AFTER the body went out — the provider read it and
+      // billed it. Refunding it because it "failed" shapes against calls that really happened.
+      createMock.mockRejectedValue(Object.assign(new Error('deadline exceeded'), { name: 'APIConnectionTimeoutError' }));
+      const limiter = frozen(100_000);
+      const penalizeSpy = vi.spyOn(limiter, 'penalize');
+      const warnSpy = vi.spyOn(logger, 'warn');
+
+      await expect(
+        new OpenAiCompatibleLlmProvider({ ...CFG, maxOutputTokensEst: 800 }, limiter).complete(PROMPT),
+      ).rejects.toThrow('deadline exceeded');
+
+      expect(tpmOf(limiter).available).toBe(100_000 - (PROMPT_ESTIMATE + 800));
+      expect(penalizeSpy).not.toHaveBeenCalled(); // a timeout says nothing about quota
+      expect(warnSpy).toHaveBeenCalledWith('llm.call_failed', {
+        kind: 'complete',
+        provider: 'openai',
+        model: 'test-model',
+        elapsed_ms: expect.any(Number),
+        reason: 'deadline exceeded',
+      });
+      warnSpy.mockRestore();
+    });
+
+    it('refunds a connection that was never established', async () => {
+      createMock.mockRejectedValue(
+        Object.assign(new Error('Connection error.'), {
+          cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+        }),
+      );
+      const limiter = frozen(100_000);
+
+      await expect(
+        new OpenAiCompatibleLlmProvider({ ...CFG, maxOutputTokensEst: 800 }, limiter).complete(PROMPT),
+      ).rejects.toThrow('Connection error.');
+
+      expect(tpmOf(limiter).available).toBe(100_000);
+    });
+
+    it('penalizes with the parsed Retry-After on a 429 and SETTLES the lease', async () => {
+      createMock.mockRejectedValue(
+        Object.assign(new Error('rate limited'), { status: 429, headers: { 'retry-after': '3' } }),
+      );
+      const abandon = vi.fn();
+      const settle = vi.fn();
+      const penalize = vi.fn();
+      const limiter = {
+        acquire: vi.fn().mockResolvedValue({ settle, abandon, waitedMs: 0 }),
+        nowMs: () => 1_000,
+        penalize,
+      } as unknown as RateLimiter;
+
+      await expect(new OpenAiCompatibleLlmProvider(CFG, limiter).complete(PROMPT)).rejects.toThrow(
+        'rate limited',
+      );
+
+      expect(penalize).toHaveBeenCalledWith(1_000 + 3_000, 'llm_429');
+      // A 429 is a request the provider RECEIVED and counted, so the reservation is not refunded.
+      expect(settle).toHaveBeenCalledTimes(1);
+      expect(abandon).not.toHaveBeenCalled();
+    });
+
+    it('leaves the RPM token and the TPM reservation spent after a 429', async () => {
+      // Observed on a real limiter rather than a spy: a refund here would make this limiter more
+      // permissive than the quota it protects, exactly while that quota is saying stop.
+      createMock.mockRejectedValue(Object.assign(new Error('rate limited'), { status: 429 }));
+      const limiter = new Limiter('llm', { rpm: 60, tpm: 100_000 }, () => 0);
+      const rpmOf = (l: RateLimiter): TokenBucket => (l as unknown as { rpm: TokenBucket }).rpm;
+
+      await expect(
+        new OpenAiCompatibleLlmProvider({ ...CFG, maxOutputTokensEst: 800 }, limiter).complete(PROMPT),
+      ).rejects.toThrow('rate limited');
+
+      expect(rpmOf(limiter).available).toBe(59);
+      expect(tpmOf(limiter).available).toBe(100_000 - (PROMPT_ESTIMATE + 800));
+    });
+
+    it('never calls create() when the limiter rejects, and logs no llm.usage for a call that never happened', async () => {
+      const limiter = {
+        acquire: vi.fn().mockRejectedValue(new RateLimitTimeoutError('deadline', 'llm: timed out')),
+        nowMs: () => 0,
+        penalize: vi.fn(),
+      } as unknown as RateLimiter;
+      const infoSpy = vi.spyOn(logger, 'info');
+
+      await expect(new OpenAiCompatibleLlmProvider(CFG, limiter).complete(PROMPT)).rejects.toBeInstanceOf(
+        RateLimitTimeoutError,
+      );
+
+      expect(createMock).not.toHaveBeenCalled();
+      expect(infoSpy).not.toHaveBeenCalledWith('llm.usage', expect.anything());
+      infoSpy.mockRestore();
+    });
+
+    it('carries rate_limit_wait_ms and estimated_tokens on llm.usage', async () => {
+      createMock.mockResolvedValue({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        usage: { prompt_tokens: 30, completion_tokens: 5, total_tokens: 35 },
+      });
+      const limiter = {
+        acquire: vi.fn().mockResolvedValue({ settle: vi.fn(), abandon: vi.fn(), waitedMs: 250 }),
+        nowMs: () => 0,
+        penalize: vi.fn(),
+      } as unknown as RateLimiter;
+      const infoSpy = vi.spyOn(logger, 'info');
+
+      await new OpenAiCompatibleLlmProvider(CFG, limiter).complete(PROMPT);
+
+      // Reconciliation rides the existing line: estimated_tokens is directly queryable against
+      // total_tokens on the same row.
+      expect(infoSpy).toHaveBeenCalledWith('llm.usage', {
+        kind: 'complete',
+        provider: 'openai',
+        model: 'test-model',
+        elapsed_ms: expect.any(Number),
+        rate_limit_wait_ms: 250,
+        estimated_tokens: PROMPT_ESTIMATE,
+        prompt_tokens: 30,
+        completion_tokens: 5,
+        total_tokens: 35,
+      });
+      infoSpy.mockRestore();
+    });
   });
 
   describe('usage logging', () => {
