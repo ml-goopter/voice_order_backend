@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { classifyIntent } from './classify-intent.node.js';
 import { intentSchema } from '../../contracts/intent.js';
 import type { LlmPrompt, LlmProvider } from '../../llm/llm-provider.js';
+import { RateLimitTimeoutError } from '../../ratelimit/rate-limiter.js';
 
 /** An LlmProvider whose single reply is fixed (or throws). */
 function fakeLlm(reply: string | (() => Promise<string>)): LlmProvider {
@@ -41,6 +42,15 @@ describe('classifyIntent', () => {
 
   it('defaults to service when the LLM call throws', async () => {
     const llm = fakeLlm(() => Promise.reject(new Error('boom')));
+    expect(await classifyIntent(llm, 'x')).toBe('service');
+  });
+
+  // Saturation is just another transport failure here: the junk-gate must never be the thing that
+  // drops a real order, whatever the error type.
+  it('defaults to service when the classifier is rate-limited', async () => {
+    const llm = fakeLlm(() =>
+      Promise.reject(new RateLimitTimeoutError('deadline', 'llm: timed out waiting for capacity')),
+    );
     expect(await classifyIntent(llm, 'x')).toBe('service');
   });
 });

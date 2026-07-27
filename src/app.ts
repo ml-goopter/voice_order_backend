@@ -2,6 +2,7 @@ import { config } from './config/env.js';
 import { logger } from './config/logger.js';
 import { messageOf } from './shared/errors.js';
 import { eventBus } from './events/event-bus.js';
+import { rateLimiters } from './ratelimit/registry.js';
 
 import { createRedisClient, closeRedisClient } from './redis/redis-client.js';
 import { createPgPool, closePgPool } from './db/postgres-client.js';
@@ -35,6 +36,36 @@ export interface App {
   stop(): Promise<void>;
 }
 
+/** One line at boot describing what the registry RESOLVED, not what the env vars say. Every limit
+ *  ships dark, so an operator otherwise cannot tell a deployment that is shaping traffic from one
+ *  that only thinks it is — and the env values alone cannot answer the question that actually bites:
+ *  whether two call sites landed on one shared bucket (`call_sites: ['llm','intent-llm']`) or on two
+ *  buckets each granted the full budget. Emitted after the providers are constructed, since that is
+ *  what registers each limiter.
+ *
+ *  Wait budgets are reported separately: they ride each acquire and are deliberately not part of a
+ *  limiter's identity, so they belong to the call site rather than to any bucket. */
+function logRateLimits(): void {
+  logger.info('ratelimit.configured', {
+    limiters: rateLimiters.describe().map((r) => ({
+      limiter: r.limiter,
+      call_sites: r.callSites,
+      shaped: r.shaped,
+      rpm: r.limits.rpm ?? 0,
+      tpm: r.limits.tpm ?? 0,
+      max_concurrent: r.limits.maxConcurrent ?? 0,
+    })),
+    wait_ms: {
+      stt: config.sttRateLimitWaitMs,
+      tts: config.ttsRateLimitWaitMs,
+      llm: config.llmRateLimitWaitMs,
+      intent_llm: config.intentLlmRateLimitWaitMs,
+      embedding: config.embeddingRateLimitWaitMs,
+    },
+    llm_max_output_tokens_est: config.llmMaxOutputTokensEst,
+  });
+}
+
 /**
  * Composition root. Constructs every module, wires them to the event bus, and
  * exposes start/stop. Modules only ever talk through `eventBus` (design §2).
@@ -52,6 +83,7 @@ export function createApp(): App {
   const tts = new TtsService(createTtsProvider());
   const llm = createLlmProvider();
   const intentLlm = createIntentLlmProvider();
+  logRateLimits();
 
   // Voice + Realtime.
   const voiceManager = new VoiceSessionManager();
