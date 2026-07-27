@@ -59,6 +59,11 @@ constructs modules and wires them to the event bus.
 
 ## Dependencies
 - Used by all modules. `app.ts` imports every module's public surface.
+- `config/env` carries the per-deployment rate-limit quota (every limit defaults to `0` =
+  unlimited, so the feature ships dark) and `config/constants` the `RATE_LIMIT` algorithm
+  tunables. `app.ts` emits a `ratelimit.configured` INFO line at boot listing RESOLVED limiter
+  identities rather than env values — the former reveals whether two adapters collapsed onto
+  one bucket, which is the misconfiguration worth catching. See the `ratelimit` bundle.
 
 ## Key files
 - `config/{env,logger,constants}.ts`,
