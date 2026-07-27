@@ -1,6 +1,7 @@
 import { Cartesia } from '@cartesia/cartesia-js';
 import type { TtsProvider } from './tts-types.js';
 import { CartesiaTtsProvider, type SpeakFn } from './cartesia-tts-provider.js';
+import { rateLimiters } from '../ratelimit/registry.js';
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 
@@ -28,7 +29,18 @@ export function createTtsProvider(): TtsProvider {
       }
       // mp3 is self-describing; only raw PCM (linear16) advertises a sample rate to the client.
       const sampleRate = config.ttsEncoding === 'linear16' ? config.ttsSampleRate : undefined;
-      return new CartesiaTtsProvider(config.ttsEncoding, sampleRate, defaultSpeakFn());
+      // Concurrent contexts are metered per ACCOUNT, so the key is the api key alone; there is
+      // deliberately no rpm/tpm — Cartesia publishes no request-rate limit.
+      return new CartesiaTtsProvider(
+        config.ttsEncoding,
+        sampleRate,
+        defaultSpeakFn(),
+        rateLimiters.get(
+          { name: 'tts', provider: 'cartesia', apiKey: config.cartesiaApiKey },
+          { maxConcurrent: config.ttsMaxConcurrent },
+        ),
+        config.ttsRateLimitWaitMs,
+      );
     default:
       return new NoopTtsProvider();
   }
@@ -44,6 +56,8 @@ function defaultSpeakFn(): SpeakFn {
     config.ttsEncoding === 'linear16'
       ? { container: 'raw', encoding: 'pcm_s16le', sample_rate: config.ttsSampleRate }
       : { container: 'mp3', sample_rate: config.ttsSampleRate, bit_rate: config.ttsBitRate };
+  // `signal` already carries the provider's request timeout composed with barge-in (see
+  // CartesiaTtsProvider.speakBounded), so the SDK's own 1-minute default never governs.
   return async (text, language, signal) => {
     const response = await client.tts.generate(
       {
