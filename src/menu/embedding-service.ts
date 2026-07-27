@@ -1,6 +1,7 @@
 import { config } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { JinaEmbeddingService } from './jina-embedding-service.js';
+import { rateLimiters } from '../ratelimit/registry.js';
 
 /**
  * Embeds text with the SAME model used for menu vectors (design §7). The concrete
@@ -39,7 +40,15 @@ export class StubEmbeddingService implements EmbeddingService {
 export function createEmbeddingService(): EmbeddingService {
   switch (config.embeddingProvider) {
     case 'jina':
-      return new JinaEmbeddingService();
+      // Jina meters RPM and TPM together across ALL its products on one key, so the quota identity
+      // is the key alone — a reranker/reader endpoint adopted later must share this limiter.
+      return new JinaEmbeddingService(
+        rateLimiters.get(
+          { name: 'embedding', provider: 'jina', apiKey: config.jinaApiKey },
+          { rpm: config.embeddingRpm, tpm: config.embeddingTpm, maxConcurrent: config.embeddingMaxConcurrent },
+        ),
+        config.embeddingRateLimitWaitMs,
+      );
     default:
       return new StubEmbeddingService();
   }
